@@ -64,6 +64,7 @@ from platform_core.db import (
     session_scope,
 )
 from platform_core.logging import get_logger
+from platform_core.supervise import GuardedSweep
 
 log = get_logger("payment.checkout.cron")
 
@@ -90,7 +91,7 @@ class PollReport:
         return self.captured + self.expired
 
 
-class ChargePoller:
+class ChargePoller(GuardedSweep):
     """Asks the provider about charges with an Order and no terminal state, one pass at a time."""
 
     def __init__(
@@ -103,53 +104,29 @@ class ChargePoller:
         poll_interval: float = 30.0,
         max_backoff: float = 300.0,
     ) -> None:
+        super().__init__(poll_interval=poll_interval, max_backoff=max_backoff)
         self._discovery_factory = discovery_factory
         self._work_scope = work_scope
         self._provider_resolver = provider_resolver
         self._batch_size = batch_size
-        self._poll_interval = poll_interval
-        self._max_backoff = max_backoff
-        #: Consecutive failed ticks, reset by the first clean one — the number worth alerting on.
-        self.consecutive_failures = 0
-        self._stop_event = asyncio.Event()
 
-    def stop(self) -> None:
-        self._stop_event.set()
+    @property
+    def _log_name(self) -> str:
+        return "payment.charge_poller"
 
-    async def run(self) -> None:
-        log.info("payment.charge_poller.started", poll_interval=self._poll_interval)
-        wait = min(self._poll_interval, self._max_backoff)
-        while not self._stop_event.is_set():
-            try:
-                report = await self.tick()
-            except Exception:
-                self.consecutive_failures += 1
-                log.exception(
-                    "payment.charge_poller.tick_failed",
-                    consecutive_failures=self.consecutive_failures,
-                    retry_in_seconds=wait,
-                )
-                await self._sleep(wait)
-                wait = min(wait * 2, self._max_backoff)
-                continue
-            self.consecutive_failures = 0
-            wait = min(self._poll_interval, self._max_backoff)
-            if report.acted or report.failed:
-                log.info(
-                    "payment.charge_poller.pass",
-                    considered=report.considered,
-                    polled=report.polled,
-                    captured=report.captured,
-                    expired=report.expired,
-                    unchecked=report.unchecked,
-                    skipped=report.skipped,
-                    failed=report.failed,
-                )
-            await self._sleep(self._poll_interval)
-
-    async def _sleep(self, seconds: float) -> None:
-        with suppress(TimeoutError):
-            await asyncio.wait_for(self._stop_event.wait(), timeout=seconds)
+    async def on_tick_success(self, result: PollReport) -> None:
+        report = result
+        if report.acted or report.failed:
+            log.info(
+                "payment.charge_poller.pass",
+                considered=report.considered,
+                polled=report.polled,
+                captured=report.captured,
+                expired=report.expired,
+                unchecked=report.unchecked,
+                skipped=report.skipped,
+                failed=report.failed,
+            )
 
     async def tick(self, now: datetime | None = None) -> PollReport:
         """One pass: discover charges due to be asked about, then ask about each under its own

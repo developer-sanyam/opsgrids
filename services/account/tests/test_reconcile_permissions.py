@@ -44,20 +44,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette import status
 
 from app import selectors, services
-from app.catalogue import (
-    CORE,
-    PermissionCatalogue,
-    PermissionSpec,
-    ProductManifest,
-    ProductRegistration,
-    RoleTemplate,
-    load_product_manifest,
-)
+from app.catalogue import CORE, ProductManifest, load_product_manifest
 from app.config import settings
 from app.models import Membership, Organization, OutboxEvent, Role, RolePermission
 from app.schemas import GrantIn, OrganizationIn, RoleIn
 from platform_core.auth import Scope
 from platform_core.cache import permission_version_key
+from platform_core.catalogue import (
+    PermissionCatalogue,
+    PermissionSpec,
+    ProductRegistration,
+    RoleTemplate,
+)
 from platform_core.internal_auth import mint_service_token
 from tests.helpers import FakeRedis, ctx_for
 

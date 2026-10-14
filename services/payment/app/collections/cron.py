@@ -22,10 +22,9 @@ Runs beside the stuck-charge sweep in `payment-worker` / the API's folded worker
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from collections.abc import Callable
-from contextlib import AbstractAsyncContextManager, suppress
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -37,6 +36,7 @@ from app.deps import CollectionsProviderFactory, get_collections_provider_factor
 from platform_core.db import get_outbox_sessionmaker, session_scope
 from platform_core.errors import ProblemError
 from platform_core.logging import get_logger
+from platform_core.supervise import GuardedSweep
 
 log = get_logger("payment.collections.cron")
 
@@ -52,7 +52,7 @@ class ExpiryReport:
     failed: int = 0
 
 
-class CollectionExpirySweep:
+class CollectionExpirySweep(GuardedSweep):
     """Closes stale checkouts one pass at a time. See the module docstring."""
 
     def __init__(
@@ -68,55 +68,28 @@ class CollectionExpirySweep:
         poll_interval: float = 300.0,
         max_backoff: float = 900.0,
     ) -> None:
+        super().__init__(poll_interval=poll_interval, max_backoff=max_backoff)
         self._discovery_factory = discovery_factory
         self._work_scope = work_scope
         self._provider_factory = provider_factory
         self._ttl = ttl
         self._batch_size = batch_size
-        self._poll_interval = poll_interval
-        self._max_backoff = max_backoff
-        self.consecutive_failures = 0
-        self._stop_event = asyncio.Event()
 
-    def stop(self) -> None:
-        self._stop_event.set()
+    @property
+    def _log_name(self) -> str:
+        return "payment.collection_expiry.sweep"
 
-    async def run(self) -> None:
-        log.info(
-            "payment.collection_expiry.sweep.started",
-            poll_interval=self._poll_interval,
-            ttl_seconds=self._ttl.total_seconds(),
-        )
-        wait = min(self._poll_interval, self._max_backoff)
-        while not self._stop_event.is_set():
-            try:
-                report = await self.tick()
-            except Exception:
-                self.consecutive_failures += 1
-                log.exception(
-                    "payment.collection_expiry.sweep.tick_failed",
-                    consecutive_failures=self.consecutive_failures,
-                    retry_in_seconds=wait,
-                )
-                await self._sleep(wait)
-                wait = min(wait * 2, self._max_backoff)
-                continue
-            self.consecutive_failures = 0
-            wait = min(self._poll_interval, self._max_backoff)
-            if report.expired or report.reconciled or report.failed:
-                log.info(
-                    "payment.collection_expiry.sweep.pass",
-                    considered=report.considered,
-                    expired=report.expired,
-                    reconciled=report.reconciled,
-                    skipped=report.skipped,
-                    failed=report.failed,
-                )
-            await self._sleep(self._poll_interval)
-
-    async def _sleep(self, seconds: float) -> None:
-        with suppress(TimeoutError):
-            await asyncio.wait_for(self._stop_event.wait(), timeout=seconds)
+    async def on_tick_success(self, result: ExpiryReport) -> None:
+        report = result
+        if report.expired or report.reconciled or report.failed:
+            log.info(
+                "payment.collection_expiry.sweep.pass",
+                considered=report.considered,
+                expired=report.expired,
+                reconciled=report.reconciled,
+                skipped=report.skipped,
+                failed=report.failed,
+            )
 
     async def tick(self, now: datetime | None = None) -> ExpiryReport:
         at = now or datetime.now(UTC)

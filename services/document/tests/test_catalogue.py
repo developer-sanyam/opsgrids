@@ -6,9 +6,8 @@ foreign product's permission" â€” the defect this structure exists to prevent â€
 
 from __future__ import annotations
 
-from app.catalogue import (
-    DOCUMENT,
-    DOCUMENT_ROLE_TEMPLATES,
+from app.catalogue import DOCUMENT, DOCUMENT_ROLE_TEMPLATES
+from platform_core.catalogue import (
     Grant,
     PermissionCatalogue,
     PermissionSpec,

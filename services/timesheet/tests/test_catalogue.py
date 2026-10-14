@@ -11,10 +11,8 @@ from app.catalogue import (
     PULSEBOARD_TIME,
     PULSEBOARD_TIME_REGISTRATION,
     PULSEBOARD_TIME_ROLE_TEMPLATES,
-    Grant,
-    RoleTemplate,
-    validate,
 )
+from platform_core.catalogue import Grant, RoleTemplate, validate
 
 
 def test_every_template_belongs_to_the_pulseboard_product() -> None:

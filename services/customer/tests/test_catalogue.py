@@ -7,14 +7,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.catalogue import (
-    CRM_BOOK,
-    CRM_BOOK_REGISTRATION,
-    CRM_BOOK_ROLE_TEMPLATES,
-    Grant,
-    RoleTemplate,
-    validate,
-)
+from app.catalogue import CRM_BOOK, CRM_BOOK_REGISTRATION, CRM_BOOK_ROLE_TEMPLATES
+from platform_core.catalogue import Grant, RoleTemplate, validate
 
 
 def test_every_template_belongs_to_the_crm_product() -> None:

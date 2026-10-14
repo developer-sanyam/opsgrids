@@ -301,7 +301,7 @@ class GuardedSweep:
         self._poll_interval = poll_interval
         self._max_backoff = max_backoff
         self._heartbeat_path = heartbeat_path
-        self._stop = False
+        self._stop_event = asyncio.Event()
         #: Registered process-wide under this sweep's log name, so an API that runs it in-process
         #: can expose `sweep_consecutive_failures` / `sweep_last_success_timestamp_seconds` /
         #: `sweep_alive` on `/metrics` (`SweepHealth`). Also the source of truth for
@@ -327,7 +327,23 @@ class GuardedSweep:
         return min(self._poll_interval, self._max_backoff)
 
     def stop(self) -> None:
-        self._stop = True
+        """Ask the loop to end. Immediate: a sweep sleeping out its poll interval (or a backoff)
+        wakes at once rather than finishing the sleep, so a shutdown is not held up by a daily
+        sweep's 86,400 s wait."""
+        self._stop_event.set()
+
+    async def _sleep(self, seconds: float) -> None:
+        """`asyncio.sleep(seconds)` that `stop()` cuts short. Races the sleep against the stop
+        event; whichever loses is cancelled and awaited, including when this coroutine is itself
+        cancelled, so no helper task outlives the loop."""
+        sleeper = asyncio.ensure_future(asyncio.sleep(seconds))
+        stopper = asyncio.ensure_future(self._stop_event.wait())
+        try:
+            await asyncio.wait({sleeper, stopper}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for task in (sleeper, stopper):
+                task.cancel()
+            await asyncio.gather(sleeper, stopper, return_exceptions=True)
 
     async def tick(self) -> Any:
         raise NotImplementedError
@@ -337,6 +353,22 @@ class GuardedSweep:
         subclass that already logs inside its own `tick()` needs no override here. Runs inside
         the same guarded block `tick()` itself does — see the class docstring."""
 
+    def _tick_succeeded(self, result: Any) -> bool:
+        """Whether a tick that returned normally counts as a *success* for `SweepHealth` and the
+        heartbeat. Default: always. A subclass overrides it for a sweep that can run and yet get
+        nowhere (every attempt of the pass failed), which is the state `sweep_consecutive_failures`
+        exists to page on. A tick that is not a success is still followed by the normal
+        `_delay_after` sleep, not the failure backoff — it did not raise."""
+        return True
+
+    def _delay_after(self, result: Any) -> float:
+        """Seconds to wait after a tick that returned normally. Default: `poll_interval`. A
+        subclass overrides it for an idle backoff (sleep longer while nothing is due) or to drain
+        a backlog at full speed (return 0, which skips the sleep). It may keep state — it is
+        called exactly once per tick, and inside the guarded block, so a bug here backs off like
+        any failed tick rather than ending the loop."""
+        return self._poll_interval
+
     async def run(self) -> None:
         log.info(
             f"{self._log_name}.started",
@@ -344,10 +376,12 @@ class GuardedSweep:
             max_backoff=self._max_backoff,
         )
         backoff = self._initial_backoff
-        while not self._stop:
+        while not self._stop_event.is_set():
             try:
                 result = await self.tick()
                 await self.on_tick_success(result)
+                succeeded = self._tick_succeeded(result)
+                delay = self._delay_after(result)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -355,15 +389,20 @@ class GuardedSweep:
                 log.exception(
                     f"{self._log_name}.tick_failed",
                     consecutive_failures=self.consecutive_failures,
+                    retry_in_seconds=backoff,
                 )
                 self._write_heartbeat(ok=False)
-                await asyncio.sleep(backoff)
+                await self._sleep(backoff)
                 backoff = min(backoff * 2, self._max_backoff)
                 continue
             backoff = self._initial_backoff
-            self.health.record_success()
-            self._write_heartbeat(ok=True)
-            await asyncio.sleep(self._poll_interval)
+            if succeeded:
+                self.health.record_success()
+            else:
+                self.health.record_failure()
+            self._write_heartbeat(ok=succeeded)
+            if delay > 0:
+                await self._sleep(delay)
 
     @property
     def _log_name(self) -> str:

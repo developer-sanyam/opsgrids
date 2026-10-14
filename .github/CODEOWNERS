@@ -29,6 +29,7 @@
 # CI, the quality gate, the layering contract, the workspace itself.
 /.github/                       @developer-sanyam
 /.importlinter                  @developer-sanyam
+/.importlinter.operations       @developer-sanyam
 /pyproject.toml                 @developer-sanyam
 /uv.lock                        @developer-sanyam
 /Makefile                       @developer-sanyam

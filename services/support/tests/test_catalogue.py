@@ -4,14 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.catalogue import (
-    PRODUCT,
-    SUPPORT,
-    SUPPORT_ROLE_TEMPLATES,
-    Grant,
-    RoleTemplate,
-    validate,
-)
+from app.catalogue import PRODUCT, SUPPORT, SUPPORT_ROLE_TEMPLATES
+from platform_core.catalogue import Grant, RoleTemplate, validate
 
 
 def test_every_code_is_namespaced_to_support() -> None:

@@ -57,6 +57,7 @@ from platform_core.db import (
     session_scope,
 )
 from platform_core.logging import get_logger
+from platform_core.supervise import GuardedSweep
 
 log = get_logger("account.cron")
 
@@ -76,7 +77,7 @@ class SweepReport:
     failed: int = 0
 
 
-class DomainRecheckSweep:
+class DomainRecheckSweep(GuardedSweep):
     """Drains the due domain re-checks, one pass at a time. See the module docstring."""
 
     def __init__(
@@ -88,39 +89,27 @@ class DomainRecheckSweep:
         batch_size: int = 50,
         poll_interval: float = 900.0,
     ) -> None:
+        super().__init__(poll_interval=poll_interval)
         self._discovery_factory = discovery_factory
         self._work_scope = work_scope
         self._interval = interval
         self._batch_size = batch_size
-        self._poll_interval = poll_interval
-        # An `Event` rather than a plain flag, so `stop()` interrupts the sleep between ticks
-        # immediately instead of waiting out the rest of a (possibly 15-minute) poll interval —
-        # the same reasoning `services/storefront/app/cron.py`'s own loop states.
-        self._stop_event = asyncio.Event()
 
-    def stop(self) -> None:
-        self._stop_event.set()
+    @property
+    def _log_name(self) -> str:
+        return "account.cron.domain_recheck"
 
-    async def run(self) -> None:
-        log.info(
-            "account.cron.domain_recheck.started",
-            poll_interval=self._poll_interval,
-            batch_size=self._batch_size,
-            interval_seconds=self._interval.total_seconds(),
-        )
-        while not self._stop_event.is_set():
-            report = await self.tick()
-            if report.checked or report.failed:
-                log.info(
-                    "account.cron.domain_recheck.pass",
-                    considered=report.considered,
-                    checked=report.checked,
-                    transitioned_to_failing=report.transitioned_to_failing,
-                    recovered=report.recovered,
-                    failed=report.failed,
-                )
-            with suppress(TimeoutError):
-                await asyncio.wait_for(self._stop_event.wait(), timeout=self._poll_interval)
+    async def on_tick_success(self, result: SweepReport) -> None:
+        report = result
+        if report.checked or report.failed:
+            log.info(
+                "account.cron.domain_recheck.pass",
+                considered=report.considered,
+                checked=report.checked,
+                transitioned_to_failing=report.transitioned_to_failing,
+                recovered=report.recovered,
+                failed=report.failed,
+            )
 
     async def tick(self, now: datetime | None = None) -> SweepReport:
         """One pass: discover verified domains due for a re-check, and advance each. `now`

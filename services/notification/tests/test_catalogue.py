@@ -17,10 +17,8 @@ from app.catalogue import (
     NOTIFICATION,
     NOTIFICATION_REGISTRATION,
     NOTIFICATION_ROLE_TEMPLATES,
-    Grant,
-    RoleTemplate,
-    validate,
 )
+from platform_core.catalogue import Grant, RoleTemplate, validate
 
 
 def test_every_code_is_namespaced_to_this_product() -> None:

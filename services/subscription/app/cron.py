@@ -47,7 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app import domain
 from app.config import settings
 from app.models import DUNNING_ABANDONED, DunningCycle
-from app.supervise import backoff_loop, supervise
+from app.supervise import supervise
 from platform_core.db import (
     assert_app_role,
     assert_outbox_role,
@@ -58,11 +58,15 @@ from platform_core.db import (
     session_scope,
 )
 from platform_core.logging import get_logger
+from platform_core.supervise import GuardedSweep
 
 log = get_logger("subscription.cron")
 
 #: How far a cycle whose action raised is pushed back before the sweep looks at it again.
 CYCLE_FAILURE_BACKOFF = timedelta(minutes=15)
+
+#: The longest a failing sweep waits between passes (the cap the worker's other loops use).
+MAX_BACKOFF_SECONDS = 3600.0
 
 #: A tenant-bound transaction for one organization. `session_scope` in production; a test
 #: substitutes its own so the sweep can be driven without a process-wide engine.
@@ -84,7 +88,7 @@ class SweepReport:
         return self.retried + self.suspended + self.failed
 
 
-class DunningSweep:
+class DunningSweep(GuardedSweep):
     """Drains the due dunning work, one pass at a time.
 
     Constructed with its two session factories rather than reaching for the module-level engines,
@@ -101,33 +105,18 @@ class DunningSweep:
         batch_size: int = 100,
         poll_interval: float = 300.0,
     ) -> None:
+        super().__init__(poll_interval=poll_interval, max_backoff=MAX_BACKOFF_SECONDS)
         self._discovery_factory = discovery_factory
         self._work_scope = work_scope
         self._policy = policy or domain.POLICY
         self._batch_size = batch_size
-        self._poll_interval = poll_interval
-        self._stop = False
 
-    def stop(self) -> None:
-        self._stop = True
+    @property
+    def _log_name(self) -> str:
+        return "dunning.sweep"
 
-    async def run(self) -> None:
-        log.info(
-            "dunning.sweep.started",
-            poll_interval=self._poll_interval,
-            retries=self._policy.max_attempts,
-            grace_days=self._policy.grace.days,
-        )
-        # A pass that raises — discovery on a database blip, anything unforeseen — is logged and
-        # retried with capped backoff, never allowed to take the worker (and the payment consumer
-        # beside it) down. `CancelledError` still propagates (app/supervise.py).
-        await backoff_loop(
-            "dunning.sweep",
-            self.tick,
-            poll_interval=self._poll_interval,
-            stopped=lambda: self._stop,
-            on_pass=self._log_pass,
-        )
+    async def on_tick_success(self, result: SweepReport) -> None:
+        self._log_pass(result)
 
     @staticmethod
     def _log_pass(report: SweepReport) -> None:

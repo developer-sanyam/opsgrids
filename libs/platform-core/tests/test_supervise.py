@@ -566,3 +566,160 @@ class TestRunSupervisedForever:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+
+
+class _CountingSweep(GuardedSweep):
+    """A sweep whose ticks are scripted by the test, to drive the real `run()` in real time."""
+
+    def __init__(self, *, poll_interval: float, max_backoff: float = 300.0) -> None:
+        super().__init__(poll_interval=poll_interval, max_backoff=max_backoff)
+        self.ticks = 0
+        self.fail = False
+
+    async def tick(self) -> int:
+        self.ticks += 1
+        if self.fail:
+            raise RuntimeError("db gone")
+        return self.ticks
+
+
+async def _wait_for(predicate: Any, *, within: float = 2.0) -> None:
+    deadline = asyncio.get_running_loop().time() + within
+    while not predicate():
+        assert asyncio.get_running_loop().time() < deadline, "condition not reached"
+        await asyncio.sleep(0.005)
+
+
+class TestInterruptibleSleep:
+    """`stop()` must end a sleeping sweep at once, not after the rest of its poll interval — a
+    daily sweep (86,400 s) must not hold a shutdown for a day."""
+
+    async def test_stop_interrupts_the_poll_interval_sleep(self) -> None:
+        sweep = _CountingSweep(poll_interval=3600.0)
+        task = asyncio.ensure_future(sweep.run())
+        await _wait_for(lambda: sweep.ticks == 1)
+        await asyncio.sleep(0.02)  # now inside the hour-long sleep
+        assert not task.done()
+        sweep.stop()
+        await asyncio.wait_for(task, timeout=2.0)
+        assert sweep.ticks == 1
+
+    async def test_stop_interrupts_a_failure_backoff(self) -> None:
+        sweep = _CountingSweep(poll_interval=3600.0, max_backoff=3600.0)
+        sweep.fail = True
+        task = asyncio.ensure_future(sweep.run())
+        await _wait_for(lambda: sweep.health.consecutive_failures == 1)
+        await asyncio.sleep(0.02)  # now inside the backoff sleep
+        assert not task.done()
+        sweep.stop()
+        await asyncio.wait_for(task, timeout=2.0)
+
+    async def test_stop_before_run_ends_after_no_tick(self) -> None:
+        sweep = _CountingSweep(poll_interval=3600.0)
+        sweep.stop()
+        await asyncio.wait_for(sweep.run(), timeout=2.0)
+        assert sweep.ticks == 0
+
+    async def test_cancelling_a_sleeping_sweep_leaves_no_helper_task_behind(self) -> None:
+        sweep = _CountingSweep(poll_interval=3600.0)
+        before = {t for t in asyncio.all_tasks() if t is not asyncio.current_task()}
+        task = asyncio.ensure_future(sweep.run())
+        await _wait_for(lambda: sweep.ticks == 1)
+        await asyncio.sleep(0.02)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        leftover = {t for t in asyncio.all_tasks() if t is not asyncio.current_task()} - before
+        assert not leftover
+
+    async def test_an_uninterrupted_sleep_still_waits_its_interval(self) -> None:
+        sweep = _CountingSweep(poll_interval=0.02)
+        task = asyncio.ensure_future(sweep.run())
+        await _wait_for(lambda: sweep.ticks >= 3)
+        sweep.stop()
+        await asyncio.wait_for(task, timeout=2.0)
+
+
+class _HookedSweep(GuardedSweep):
+    """Scripted `_delay_after` / `_tick_succeeded` overrides."""
+
+    def __init__(self, delays: list[float], successes: list[bool]) -> None:
+        super().__init__(poll_interval=5.0, max_backoff=60.0)
+        self._delays = delays
+        self._successes = successes
+        self.ticks = 0
+
+    async def tick(self) -> int:
+        self.ticks += 1
+        if self.ticks == len(self._delays):
+            self.stop()
+        return self.ticks
+
+    def _delay_after(self, result: int) -> float:
+        return self._delays[result - 1]
+
+    def _tick_succeeded(self, result: int) -> bool:
+        return self._successes[result - 1]
+
+
+class TestRunHooks:
+    async def test_delay_after_sets_the_sleep_and_zero_skips_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sleeps: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+        sweep = _HookedSweep([5.0, 0.0, 10.0, 20.0], [True] * 4)
+        await sweep.run()
+        assert sleeps == [5.0, 10.0, 20.0]
+
+    async def test_a_non_success_tick_counts_as_a_failure_without_the_failure_backoff(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sleeps: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+        sweep = _HookedSweep([5.0, 5.0, 5.0], [False, False, True])
+        await sweep.run()
+        assert sleeps == [5.0, 5.0, 5.0]  # the poll delay each time, never a doubled backoff
+        assert sweep.health.consecutive_failures == 0  # the last tick succeeded and reset it
+        assert sweep.health.last_success_ts > 0
+
+    async def test_a_non_success_tick_leaves_the_streak_standing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def fake_sleep(seconds: float) -> None:
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+        sweep = _HookedSweep([5.0, 5.0], [False, False])
+        await sweep.run()
+        assert sweep.health.consecutive_failures == 2
+        assert sweep.health.last_success_ts == 0.0
+
+    async def test_a_raising_delay_hook_backs_off_instead_of_ending_the_loop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sleeps: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+        class _BadDelay(_HookedSweep):
+            def _delay_after(self, result: int) -> float:
+                if result == 1:
+                    raise RuntimeError("bug in the hook")
+                return 5.0
+
+        sweep = _BadDelay([0.0, 0.0], [True, True])
+        await sweep.run()
+        assert sleeps == [5.0, 5.0]  # one failure backoff, then the ordinary delay
+        assert sweep.ticks == 2
