@@ -39,7 +39,6 @@ from app import (
     catalog_client,
     delegation,
     directory_client,
-    pagination,
     plan_change,
     pricing,
     selectors,
@@ -94,6 +93,7 @@ from platform_core.errors import (
     ValidationProblem,
 )
 from platform_core.logging import get_logger
+from platform_core.pagination import decode_keyset_cursor, encode_keyset_cursor
 
 log = get_logger("console.routes")
 
@@ -436,13 +436,13 @@ async def list_usage(
 ) -> UsageListOut:
     after = None
     if cursor is not None:
-        raw_org, meter_key, period = pagination.decode_cursor(cursor, expected_parts=3)
+        raw_org, meter_key, period = decode_keyset_cursor(cursor, expected_parts=3)
         after = (uuid.UUID(raw_org), meter_key, period)
     rows = await selectors.all_usage(
         session, organization_id=organization_id, limit=limit, after=after
     )
     next_cursor = (
-        pagination.encode_cursor(str(rows[-1].organization_id), rows[-1].meter_key, rows[-1].period)
+        encode_keyset_cursor(str(rows[-1].organization_id), rows[-1].meter_key, rows[-1].period)
         if len(rows) == limit
         else None
     )
@@ -463,13 +463,13 @@ async def list_audit(
 ) -> AuditListOut:
     after = None
     if cursor is not None:
-        raw_at, raw_id = pagination.decode_cursor(cursor, expected_parts=2)
+        raw_at, raw_id = decode_keyset_cursor(cursor, expected_parts=2)
         after = (datetime.fromisoformat(raw_at), uuid.UUID(raw_id))
     rows = await selectors.recent_audit(
         session, organization_id=organization_id, limit=limit, after=after
     )
     next_cursor = (
-        pagination.encode_cursor(rows[-1].at.isoformat(), str(rows[-1].id))
+        encode_keyset_cursor(rows[-1].at.isoformat(), str(rows[-1].id))
         if len(rows) == limit
         else None
     )

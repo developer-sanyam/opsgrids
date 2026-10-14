@@ -1,11 +1,15 @@
-"""`app/pagination.py` — the opaque cursor `/admin/audit` and `/admin/usage` page with."""
+"""`platform_core.pagination` keyset cursors — what console's `/admin/audit` and `/admin/usage`
+and catalog's operator lists page with."""
 
 from __future__ import annotations
 
+import base64
+
 import pytest
 
-from app.pagination import decode_cursor, encode_cursor
 from platform_core.errors import ValidationProblem
+from platform_core.pagination import decode_keyset_cursor as decode_cursor
+from platform_core.pagination import encode_keyset_cursor as encode_cursor
 
 
 class TestCursorRoundTrip:
@@ -30,3 +34,15 @@ class TestMalformedCursorsAreRejected:
         token = encode_cursor("only-one-part")
         with pytest.raises(ValidationProblem):
             decode_cursor(token, expected_parts=2)
+
+
+class TestTheWireFormatIsPinned:
+    def test_the_token_is_urlsafe_base64_of_unit_separator_joined_parts(self) -> None:
+        # Tokens already in clients' hands must keep decoding, so the format is part of the API.
+        token = encode_cursor("a", "b")
+        assert base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8") == "a\x1fb"
+
+    def test_invalid_utf8_is_a_validation_problem(self) -> None:
+        token = base64.urlsafe_b64encode(b"\xff\xfe").decode("ascii")
+        with pytest.raises(ValidationProblem):
+            decode_cursor(token, expected_parts=1)
