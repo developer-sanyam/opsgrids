@@ -69,7 +69,7 @@ describe("ProjectFormDialog", () => {
 
     expect(
       await screen.findByText(
-        "Enter a whole-currency amount, like 24000 or 24000.50. No more than two decimal places.",
+        "Enter an amount in digits, like 24000 or 24000.50, with no currency sign or words and no more than two decimal places.",
       ),
     ).toBeTruthy();
     expect(spy).not.toHaveBeenCalled();
@@ -211,7 +211,7 @@ describe("ProjectFormDialog: money in each currency's own decimals", () => {
     await user.click(screen.getByRole("button", { name: "Create project" }));
 
     expect(
-      await screen.findByText("Enter a whole-currency amount, like 24000. JPY has no decimal places."),
+      await screen.findByText("Enter a whole amount in digits, like 24000. JPY has no decimal places."),
     ).toBeTruthy();
     expect(spy).not.toHaveBeenCalled();
   });
