@@ -29,6 +29,7 @@ from typing import Annotated, Any
 
 from fastapi import Depends, Request
 from sqlalchemy import event, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -647,3 +648,38 @@ async def get_scoped(
     if getattr(obj, "deleted_at", None) is not None:
         return None
     return obj
+
+
+def _driver_attr(exc: DBAPIError, attr: str) -> str | None:
+    """`attr` off the driver exception behind a SQLAlchemy `DBAPIError`, or `None`.
+
+    asyncpg's own exception carries `constraint_name` and `sqlstate` directly, but SQLAlchemy's
+    asyncpg dialect re-raises it as a driver-shaped exception first
+    (`AsyncAdapt_asyncpg_dbapi.IntegrityError`, raised `from` the original — see
+    `sqlalchemy.dialects.postgresql.asyncpg._handle_exception`), so the structured attribute
+    survives on `exc.orig.__cause__` rather than on `exc.orig` itself. Both are checked, in that
+    order, so this keeps working if a future SQLAlchemy stops wrapping.
+    """
+    orig = exc.orig
+    value = getattr(orig, attr, None)
+    if value is None:
+        value = getattr(getattr(orig, "__cause__", None), attr, None)
+    return str(value) if value is not None else None
+
+
+def constraint_name(exc: DBAPIError) -> str | None:
+    """The name of the constraint that actually fired, when the driver surfaces one — or `None`
+    when it does not (an unnamed constraint, or an error that is not a constraint violation).
+
+    The shared form of what several services recognise a *specific* unique or exclusion
+    violation with (ADR-0008 §5), rather than reporting every `IntegrityError` as one business
+    rule.
+    """
+    return _driver_attr(exc, "constraint_name")
+
+
+def sqlstate(exc: DBAPIError) -> str | None:
+    """The Postgres SQLSTATE the driver attached, by the same two-hop lookup as
+    `constraint_name` — enough to tell a serialization failure from a data exception without
+    opening a column value or ever seeing a parameter."""
+    return _driver_attr(exc, "sqlstate")

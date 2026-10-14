@@ -74,7 +74,7 @@ from app.selectors import PublicStore, ServiceabilityAnswer
 from platform_core.audit import record_audit, record_sensitive_read
 from platform_core.auth import ScopeContext
 from platform_core.cache import cache_delete
-from platform_core.db import session_scope
+from platform_core.db import constraint_name, session_scope
 from platform_core.errors import BusinessRuleProblem, ConflictProblem, NotFoundProblem
 from platform_core.events import publish_event
 from platform_core.logging import get_logger
@@ -207,18 +207,14 @@ _NAMED_CONFLICTS: dict[str, tuple[str, str, str]] = {
 def _named_conflict(exc: IntegrityError) -> ConflictProblem | None:
     """Turn a unique violation into a 409 that names the field, or return None to re-raise.
 
-    asyncpg carries `constraint_name` on the original exception; SQLAlchemy wraps it one or two
-    layers deep depending on the driver adapter, so both are checked and the statement text is
-    the last resort. An unrecognised constraint is deliberately **not** translated — it falls
-    through to the platform handler's anonymous 409 rather than being given a name this module
-    invented.
+    `platform_core.db.constraint_name` reads the name off the driver exception, which SQLAlchemy
+    wraps one or two layers deep depending on the adapter; the statement text is the last resort.
+    An unrecognised constraint is deliberately **not** translated — it falls through to the
+    platform handler's anonymous 409 rather than being given a name this module invented.
     """
-    orig: Any = exc.orig
-    name = getattr(orig, "constraint_name", None) or getattr(
-        getattr(orig, "__cause__", None), "constraint_name", None
-    )
+    name = constraint_name(exc)
     if name is None:
-        rendered = str(orig)
+        rendered = str(exc.orig)
         name = next((key for key in _NAMED_CONFLICTS if key in rendered), None)
     if name is None:
         return None
