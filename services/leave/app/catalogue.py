@@ -15,71 +15,15 @@ there is no `POST /leave/requests/{id}/decision` here to guard.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
-Scope = str  # "OWN" | "TEAM" | "LOCATION" | "ORG"
+from platform_core.catalogue import (
+    PermissionCatalogue,
+    PermissionSpec,
+    ProductRegistration,
+    RoleTemplate,
+    validate,
+)
 
 PRODUCT = "hrms"
-
-
-@dataclass(frozen=True, slots=True)
-class PermissionSpec:
-    module: str
-    resource: str
-    action: str
-    description: str
-    default_scope: Scope = "OWN"
-    max_scope: Scope = "ORG"
-    is_dangerous: bool = False
-
-    def code(self, product: str) -> str:
-        return f"{product}.{self.module}.{self.resource}.{self.action}"
-
-
-@dataclass(frozen=True, slots=True)
-class Grant:
-    code: str
-    scope: Scope
-
-
-@dataclass(frozen=True, slots=True)
-class RoleTemplate:
-    code: str
-    name: str
-    product: str
-    grants: list[Grant]
-    description: str = ""
-    is_default: bool = False
-    cross_product: bool = False
-
-
-_RANK = {"OWN": 0, "TEAM": 1, "LOCATION": 2, "ORG": 3}
-
-
-def min_scope(wanted: Scope, ceiling: Scope) -> Scope:
-    return wanted if _RANK[wanted] <= _RANK[ceiling] else ceiling
-
-
-class PermissionCatalogue:
-    def __init__(self, product: str, specs: list[PermissionSpec]) -> None:
-        self.product = product
-        self.specs = specs
-
-    def codes(self) -> list[str]:
-        return [s.code(self.product) for s in self.specs]
-
-    def all(self, scope: Scope = "ORG") -> list[Grant]:
-        return [Grant(s.code(self.product), min_scope(scope, s.max_scope)) for s in self.specs]
-
-    def pick(self, *pairs: tuple[str, Scope]) -> list[Grant]:
-        known = set(self.codes())
-        out: list[Grant] = []
-        for code, scope in pairs:
-            full = code if code.startswith(f"{self.product}.") else f"{self.product}.{code}"
-            if full not in known:
-                raise ValueError(f"{full} is not in the {self.product} catalogue")
-            out.append(Grant(full, scope))
-        return out
 
 
 # --------------------------------------------------------------------- hrms leave catalogue
@@ -178,31 +122,7 @@ HRMS_ROLE_TEMPLATES: list[RoleTemplate] = [
 ]
 
 
-def validate(templates: list[RoleTemplate]) -> None:
-    for template in templates:
-        if template.cross_product:
-            continue
-        for grant in template.grants:
-            product = grant.code.split(".", 1)[0]
-            if product != template.product:
-                raise ValueError(
-                    f"Role template {template.code!r} belongs to product "
-                    f"{template.product!r} but grants {grant.code!r}. "
-                    "Set cross_product=True deliberately, or remove the grant."
-                )
-
-
 validate(HRMS_ROLE_TEMPLATES)
-
-
-@dataclass(frozen=True, slots=True)
-class ProductRegistration:
-    product: str
-    catalogue: PermissionCatalogue
-    role_templates: list[RoleTemplate] = field(default_factory=list)
-
-    def __post_init__(self) -> None:
-        validate(self.role_templates)
 
 
 HRMS_REGISTRATION = ProductRegistration(

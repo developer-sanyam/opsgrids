@@ -8,9 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.catalogue import (
-    HRMS,
-    HRMS_ROLE_TEMPLATES,
+from app.catalogue import HRMS, HRMS_ROLE_TEMPLATES
+from platform_core.catalogue import (
     Grant,
     PermissionCatalogue,
     PermissionSpec,

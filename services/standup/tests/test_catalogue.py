@@ -11,10 +11,8 @@ from app.catalogue import (
     PULSEBOARD_STANDUP,
     PULSEBOARD_STANDUP_REGISTRATION,
     PULSEBOARD_STANDUP_ROLE_TEMPLATES,
-    Grant,
-    RoleTemplate,
-    validate,
 )
+from platform_core.catalogue import Grant, RoleTemplate, validate
 
 
 def test_every_template_belongs_to_the_pulseboard_product() -> None:

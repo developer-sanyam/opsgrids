@@ -7,14 +7,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.catalogue import (
-    PROJECTS,
-    PROJECTS_REGISTRATION,
-    PROJECTS_ROLE_TEMPLATES,
-    Grant,
-    RoleTemplate,
-    validate,
-)
+from app.catalogue import PROJECTS, PROJECTS_REGISTRATION, PROJECTS_ROLE_TEMPLATES
+from platform_core.catalogue import Grant, RoleTemplate, validate
 
 
 def test_every_template_belongs_to_the_projects_product() -> None:

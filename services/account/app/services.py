@@ -26,7 +26,7 @@ from starlette.requests import Request
 
 from app import dns_check, selectors
 from app import domain as domain_module
-from app.catalogue import CORE_REGISTRATION, ProductManifest, ProductRegistration, min_scope
+from app.catalogue import CORE_REGISTRATION, ProductManifest
 from app.models import (
     AuditLog,
     Invitation,
@@ -59,6 +59,7 @@ from app.schemas import (
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
 from platform_core.cache import bump_permission_version
+from platform_core.catalogue import ProductRegistration, min_scope
 from platform_core.errors import (
     BusinessRuleProblem,
     ConflictProblem,

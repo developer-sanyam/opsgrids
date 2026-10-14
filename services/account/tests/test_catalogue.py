@@ -11,14 +11,13 @@ from __future__ import annotations
 import pytest
 
 from app import catalogue
-from app.catalogue import (
-    CORE,
-    CORE_ROLE_TEMPLATES,
+from app.catalogue import CORE, CORE_ROLE_TEMPLATES, load_product_manifest
+from platform_core import catalogue as shared_catalogue
+from platform_core.catalogue import (
     Grant,
     PermissionCatalogue,
     PermissionSpec,
     RoleTemplate,
-    load_product_manifest,
     min_scope,
     validate,
 )
@@ -239,7 +238,7 @@ class TestCoreManifestPin:
                     f"{code!r} that CORE_ROLE_TEMPLATES gives it — regenerate with "
                     "`tools/export_permissions.py`"
                 )
-                assert catalogue._RANK[manifest_scope] >= catalogue._RANK[scope], (
+                assert shared_catalogue._RANK[manifest_scope] >= shared_catalogue._RANK[scope], (
                     f"core.json's {template_code!r} template narrows {code!r} to "
                     f"{manifest_scope!r}, but CORE_ROLE_TEMPLATES grants it {scope!r} — a "
                     "merged manifest may only ever widen a shared template's grants "
