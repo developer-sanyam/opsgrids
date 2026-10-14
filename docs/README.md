@@ -12,6 +12,9 @@ Start here.
 | See the whole system on one page | [architecture.html](architecture.html) |
 | Know what exists and how far it is trusted | [what-was-built.md](what-was-built.md) |
 | Know what the platform can and cannot do today | [features.md](features.md) |
+| See products, system design and the API surface on one page | [../SPEC.md](../SPEC.md) |
+| Know what was decided and what already broke once | [../MEMORY.md](../MEMORY.md) |
+| Pick up where the last session stopped | [../HANDOVER.md](../HANDOVER.md) |
 
 ### Building on it
 

@@ -14,7 +14,10 @@ re-uploading their people, or migrating anything.
 | [`docs/features.md`](docs/features.md) | What works, what half-works, what is only a decision |
 | [`docs/backlog.md`](docs/backlog.md) | What is next and what is blocked |
 | [`docs/adr/0000-phase-0-decisions.md`](docs/adr/0000-phase-0-decisions.md) | The eleven decisions that are expensive or impossible to reverse |
-| [`CLAUDE.md`](CLAUDE.md) | Rules that are not style preferences; service anatomy |
+| [`CLAUDE.md`](CLAUDE.md) | Rules that are not style preferences; service anatomy; commands |
+| [`SPEC.md`](SPEC.md) | Products, system design, API surface, features being built |
+| [`MEMORY.md`](MEMORY.md) | Current architecture, decisions made, bugs already fixed |
+| [`HANDOVER.md`](HANDOVER.md) | What is in flight, what is blocked, the next step |
 | `docs/adr/` | Why each significant decision was made |
 
 ## Quick start
