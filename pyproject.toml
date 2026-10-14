@@ -8,9 +8,9 @@ dependencies = [
     # The union of what the *existing* services need. Services are not installed as
     # packages — each exposes a top-level `app`, so only one may live in an environment.
     #
-    # A dependency is added here when the service that needs it is built, not before.
-    # Carrying an unused SDK costs install time, image size and CVE surface for a service
-    # that does not exist yet. The ones waiting their turn:
+    # A dependency is added here when the feature that needs it is built, not before.
+    # Carrying an unused SDK costs install time, image size and CVE surface. The earmark list
+    # is the SDKs a service may need when the feature that uses it is built:
     #   authlib       → auth-service (OIDC client + provider)
     #   geoalchemy2   → attendance-service (geo-fence)
     #   aiosmtplib    → notification-service
@@ -63,7 +63,6 @@ dev = [
     "httpx>=0.28",
     "ruff>=0.8",
     "mypy>=1.13",
-    "pre-commit>=4.0",
     "pip-audit>=2.10.1",
     "pip-licenses>=5.5.5",
     "detect-secrets>=1.5.0",
@@ -164,9 +163,6 @@ plugins = ["pydantic.mypy"]
 # dev/test-time only (see its docstring). publicsuffixlist ships no `py.typed` marker either;
 # `services/account/app/domain.py` is its only caller.
 module = [
-    "geoalchemy2.*",
-    "razorpay.*",
-    "authlib.*",
     "argon2.*",
     "boto3.*",
     "botocore.*",
