@@ -3,6 +3,8 @@
  * Money lives in its own module (`money.ts`) because it has stricter rules.
  */
 
+import { formatInstant } from "@opsgrids/ui";
+
 /** "2026-08-24" -> "24 Aug 2026". Rendered in UTC so a stored date shows as-is. */
 export function formatDate(iso: string | null): string {
   if (!iso) return "—";
@@ -27,29 +29,14 @@ export function formatDateShort(iso: string | null): string {
 }
 
 /**
- * An ISO instant -> "24 Aug 2026, 11:20". Rendered in UTC, deliberately.
- *
- * A filing acknowledgement and its cancellation deadline are facts the portal stated in one zone;
- * re-rendering them in whichever zone the reader's laptop is set to would let two people in one
- * company read different deadlines off the same document. The suffix says which zone it is.
+ * An ISO instant -> "24 Aug, 2:54 pm IST". An instant renders in the viewer's own zone, and the
+ * zone's name is part of the text, so two people reading one deadline in different zones can see
+ * that they are reading the same moment. A calendar date goes through `formatDate` instead.
  */
 export function formatDateTime(iso: string | null): string {
   if (!iso) return "—";
-  const at = new Date(iso);
-  if (Number.isNaN(at.getTime())) return "—";
-  const date = at.toLocaleDateString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "UTC",
-  });
-  const time = at.toLocaleTimeString("en-IN", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-    timeZone: "UTC",
-  });
-  return `${date}, ${time} UTC`;
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return formatInstant(iso, null, { locations: {}, organizationZone: zone }, "datetime").value;
 }
 
 /** Whole days between two ISO dates (b − a). Negative when `b` is before `a`. */

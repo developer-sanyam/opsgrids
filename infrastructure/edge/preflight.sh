@@ -39,7 +39,7 @@ required=$(sed -n 's/^\([A-Z][A-Z0-9_]*\)=.*/\1/p' .env.example)
 # allowed empty *together* and warned about loudly below: a box can be stood up before an
 # off-box bucket exists, and `backup.sh` still takes the local dump and exits non-zero until
 # one is configured — so the gap shows up in cron's mail every night rather than nowhere.
-optional_empty="PII_DECRYPT_KEYS SENTRY_DSN BACKUP_S3_ENDPOINT BACKUP_S3_ACCESS_KEY_ID BACKUP_S3_SECRET_ACCESS_KEY"
+optional_empty="PII_DECRYPT_KEYS BACKUP_S3_ENDPOINT BACKUP_S3_ACCESS_KEY_ID BACKUP_S3_SECRET_ACCESS_KEY"
 # Email and payments may be unconfigured on a box that is being stood up: the services run
 # without them (notification logs, payment runs on its in-process stub and reaches no network)
 # and each is warned about below. WhatsApp is optional until a Meta app exists. COMPOSE_PROFILES

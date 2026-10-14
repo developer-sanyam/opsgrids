@@ -8,6 +8,8 @@
  * decimal string.
  */
 
+import { csvCell, guardCsvCell } from "@opsgrids/client";
+
 import type { ImportCells, ImportColumn } from "@/api/scan";
 
 /** The server's cap on rows per import (`MAX_IMPORT_ROWS`). */
@@ -85,18 +87,11 @@ export function parseCsv(text: string): string[][] {
   return rows;
 }
 
-/** A cell is never a formula: prefix `'` unless it is a plain number (a negative quantity). */
-export function guardCell(value: string): string {
-  if (value !== "" && "=+-@\t\r".includes(value[0] as string) && !/^-?\d+(\.\d+)?$/.test(value)) {
-    return `'${value}`;
-  }
-  return value;
-}
-
-function csvCell(value: string): string {
-  const guarded = guardCell(value);
-  return /[",\r\n]/.test(guarded) ? `"${guarded.replace(/"/g, '""')}"` : guarded;
-}
+/**
+ * A cell is never a formula: prefix `'` unless it is a plain number (a negative quantity). The
+ * rule lives in `@opsgrids/client` so every export in the platform guards cells the same way.
+ */
+export const guardCell = guardCsvCell;
 
 export function toCsv(columns: readonly string[], rows: readonly Record<string, string>[]): string {
   const lines = [columns.map(csvCell).join(",")];

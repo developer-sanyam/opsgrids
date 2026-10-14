@@ -157,7 +157,7 @@ class FilingReclaimSweep:
             poll_interval=self._poll_interval,
             reclaim_after_seconds=self._reclaim_after.total_seconds(),
         )
-        wait = self._poll_interval
+        wait = min(self._poll_interval, self._max_backoff)
         while not self._stop_event.is_set():
             # The per-tick guard: a discovery query raising (a database restart, a deadlock) backs
             # off and tries again — it must never end this loop, because in `finance-worker` this
@@ -177,7 +177,7 @@ class FilingReclaimSweep:
                 wait = min(wait * 2, self._max_backoff)
                 continue
             self.consecutive_failures = 0
-            wait = self._poll_interval
+            wait = min(self._poll_interval, self._max_backoff)
             if report.acted or report.failed:
                 log.info(
                     "finance.filing_reclaim.sweep.pass",

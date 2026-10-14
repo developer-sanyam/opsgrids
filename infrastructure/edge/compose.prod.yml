@@ -108,7 +108,6 @@ x-service-env: &service-env
   CORS_ORIGINS: ${CORS_ORIGINS}
   ACCOUNT_SERVICE_URL: http://account:8000
   PRODUCT_SERVICE_URL: http://product:8000
-  SENTRY_DSN: ${SENTRY_DSN:-}
 
 x-service-common: &service-common
   restart: unless-stopped
@@ -1214,6 +1213,11 @@ services:
       # unsubscribe link already sent, so treat it like any other signing secret.
       ENGAGE_UNSUBSCRIBE_SECRET: ${ENGAGE_UNSUBSCRIBE_SECRET}
       ENGAGE_PUBLIC_API_BASE: ${ENGAGE_PUBLIC_API_BASE}
+      # Optional: rotates the open/click tracking links independently of unsubscribe links. Empty
+      # derives the key from ENGAGE_UNSUBSCRIBE_SECRET. This block is shared with
+      # `notification-worker` by anchor on purpose: a process with the key and one without would
+      # sign and verify with different keys, and every tracking link would answer 404.
+      ENGAGE_TRACKING_SECRET: ${ENGAGE_TRACKING_SECRET:-}
     networks:
       - back
 

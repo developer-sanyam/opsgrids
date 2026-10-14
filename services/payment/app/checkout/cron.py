@@ -118,7 +118,7 @@ class ChargePoller:
 
     async def run(self) -> None:
         log.info("payment.charge_poller.started", poll_interval=self._poll_interval)
-        wait = self._poll_interval
+        wait = min(self._poll_interval, self._max_backoff)
         while not self._stop_event.is_set():
             try:
                 report = await self.tick()
@@ -133,7 +133,7 @@ class ChargePoller:
                 wait = min(wait * 2, self._max_backoff)
                 continue
             self.consecutive_failures = 0
-            wait = self._poll_interval
+            wait = min(self._poll_interval, self._max_backoff)
             if report.acted or report.failed:
                 log.info(
                     "payment.charge_poller.pass",

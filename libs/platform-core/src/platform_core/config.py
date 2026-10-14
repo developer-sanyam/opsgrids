@@ -175,8 +175,9 @@ class ServiceSettings(BaseSettings):
     # --- observability ------------------------------------------------------------
     log_level: str = "INFO"
     log_json: bool = True
-    otel_exporter_otlp_endpoint: str | None = None
-    sentry_dsn: str | None = None
+    # No error-tracking or tracing exporter is wired (no Sentry or OpenTelemetry SDK ships), so
+    # there is deliberately no DSN or OTLP endpoint setting here: a setting nothing reads
+    # suggests a capability the platform does not have. See docs/operations.md, "Error tracking".
 
     # --- platform -----------------------------------------------------------------
     app_base_url: str = "http://localhost:5273"

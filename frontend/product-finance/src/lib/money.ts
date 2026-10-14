@@ -6,51 +6,58 @@
  * rule up to the paisa and rounding never drifts.
  */
 
+import { currencyExponent, toMajor } from "@opsgrids/ui";
+
 /** A monetary amount, in integer minor units (paise for INR). */
 export type Minor = number;
 
 export const CURRENCY = "INR";
 const RUPEE = "₹"; // ₹
 
-const FULL = new Intl.NumberFormat("en-IN", {
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
+/** The sign shown before an amount: the rupee sign for INR, the symbol or code for anything else. */
+function symbolFor(currency: string): string {
+  if (currency === CURRENCY) return RUPEE;
+  try {
+    const parts = new Intl.NumberFormat("en-IN", { style: "currency", currency }).formatToParts(0);
+    const symbol = parts.find((part) => part.type === "currency")?.value ?? currency;
+    return /^[A-Za-z]+$/.test(symbol) ? `${symbol} ` : symbol;
+  } catch {
+    return `${currency} `;
+  }
+}
 
-const WHOLE = new Intl.NumberFormat("en-IN", {
-  minimumFractionDigits: 0,
-  maximumFractionDigits: 0,
-});
+/** A number formatter for a currency's own fraction digits (INR 2, JPY 0, KWD 3). */
+function numberFormat(digits: number, compact = false): Intl.NumberFormat {
+  return new Intl.NumberFormat("en-IN", {
+    ...(compact ? { notation: "compact" as const, maximumFractionDigits: 2 } : {}),
+    ...(compact ? {} : { minimumFractionDigits: digits, maximumFractionDigits: digits }),
+  });
+}
 
-const COMPACT = new Intl.NumberFormat("en-IN", {
-  notation: "compact",
-  maximumFractionDigits: 2,
-});
-
-/** "₹12,34,567.00" — full precision with the Indian digit grouping and the rupee sign. */
-export function formatMoney(minor: Minor): string {
-  return `${RUPEE}${FULL.format(minor / 100)}`;
+/** "₹12,34,567.00" — full precision with the Indian digit grouping and the currency sign. */
+export function formatMoney(minor: Minor, currency: string = CURRENCY): string {
+  return `${symbolFor(currency)}${formatAmount(minor, currency)}`;
 }
 
 /** "12,34,567.00" — same, without the currency sign (for right-aligned columns with a header unit). */
-export function formatAmount(minor: Minor): string {
-  return FULL.format(minor / 100);
+export function formatAmount(minor: Minor, currency: string = CURRENCY): string {
+  return numberFormat(currencyExponent(currency)).format(toMajor(minor, currency));
 }
 
-/** "₹12,34,567" — whole rupees, no paise. For dense summaries where the paise are noise. */
-export function formatMoneyWhole(minor: Minor): string {
-  return `${RUPEE}${WHOLE.format(Math.round(minor / 100))}`;
+/** "₹12,34,567" — whole units, no minor digits. For dense summaries where they are noise. */
+export function formatMoneyWhole(minor: Minor, currency: string = CURRENCY): string {
+  return `${symbolFor(currency)}${numberFormat(0).format(Math.round(toMajor(minor, currency)))}`;
 }
 
 /** "₹12.35L" / "₹1.24Cr" — Indian compact notation for headline KPI figures. */
-export function formatMoneyCompact(minor: Minor): string {
-  return `${RUPEE}${COMPACT.format(minor / 100)}`;
+export function formatMoneyCompact(minor: Minor, currency: string = CURRENCY): string {
+  return `${symbolFor(currency)}${numberFormat(0, true).format(toMajor(minor, currency))}`;
 }
 
 /** A signed amount: "+₹4,500.00" / "−₹4,500.00" (true minus sign, never a hyphen). */
-export function formatMoneySigned(minor: Minor): string {
+export function formatMoneySigned(minor: Minor, currency: string = CURRENCY): string {
   const sign = minor >= 0 ? "+" : "−";
-  return `${sign}${formatMoney(Math.abs(minor))}`;
+  return `${sign}${formatMoney(Math.abs(minor), currency)}`;
 }
 
 /** Sum a list of minor amounts. Kept explicit so intent reads clearly at call sites. */

@@ -1,18 +1,16 @@
+import { formatMoney as formatMajorMoney, toMajor } from "@opsgrids/ui";
+
 import type { CampaignStatus, Channel } from "@/api/types";
 
 /**
  * Money is stored in integer minor units (paise for INR). Every formatter takes minor units and an
- * ISO 4217 currency and divides by 100 exactly once, here — the UI never does its own arithmetic
- * on money.
+ * ISO 4217 currency and divides by the currency's own exponent (100 for INR, 1 for JPY, 1000 for
+ * KWD) exactly once, here — the UI never does its own arithmetic on money.
  */
 
 /** 12345678 paise, "INR" -> "₹1,23,457" — full grouped amount, no decimals. */
 export function formatMoney(minor: number, currency: string): string {
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency,
-    maximumFractionDigits: 0,
-  }).format(minor / 100);
+  return formatMajorMoney(minor, currency);
 }
 
 /** 1420000000 paise, "INR" -> "₹1.4Cr" — a compact headline figure for KPI cards. */
@@ -22,7 +20,7 @@ export function formatMoneyCompact(minor: number, currency: string): string {
     currency,
     notation: "compact",
     maximumFractionDigits: 1,
-  }).format(minor / 100);
+  }).format(toMajor(minor, currency));
 }
 
 /** The value a money input shows for an amount already stored: `125050` paise -> `"1250.50"`. */

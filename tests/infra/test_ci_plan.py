@@ -16,6 +16,7 @@ ALL_APPS = [
     "buyer",
     "dashboard",
     "operations",
+    "worker",
     "hrms",
     "crm",
     "pulseboard",
@@ -26,12 +27,15 @@ ALL_APPS = [
     "itsm",
     "storefront",
     "engage",
+    "internal",
 ]
 
 BASELINE_FILES = {
     "services/checkout/app.py": "v1\n",
     "frontend/opsgrids-ui/src/index.ts": "v1\n",
     "frontend/product-hrms/src/index.ts": "v1\n",
+    "frontend/worker-app/src/index.ts": "v1\n",
+    "frontend/opsgrids-internal/src/index.ts": "v1\n",
     "frontend/product-storefront/src/index.ts": "v1\n",
     "frontend/pnpm-lock.yaml": "v1\n",
     "docs/backlog.md": "v1\n",
@@ -110,6 +114,29 @@ def test_single_app_directory_plans_only_that_app(git_repo: GitRepo) -> None:
     plan = run_ci_plan(git_repo, base)
     assert plan["services"] == "false"
     assert plan["apps"] == ["hrms"]
+
+
+def test_every_app_publish_web_supports_is_planned() -> None:
+    """The list ci-plan.sh deploys is the list publish-web.sh can publish. `worker` and
+    `internal` were missing, so automated deploys never published those bundles."""
+    publish = (CI_PLAN.parent / "publish-web.sh").read_text()
+    usage = next(line for line in publish.splitlines() if line.startswith('\techo "unknown APP'))
+    supported = [name.strip() for name in usage.split("one of:")[1].split('"')[0].split(",")]
+    assert sorted(supported) == sorted(ALL_APPS)
+
+
+def test_worker_directory_plans_the_worker_app(git_repo: GitRepo) -> None:
+    base = _baseline(git_repo)
+    git_repo.commit_from(base, {"frontend/worker-app/src/index.ts": "v2\n"}, "edit worker app")
+    assert run_ci_plan(git_repo, base)["apps"] == ["worker"]
+
+
+def test_internal_directory_plans_the_staff_console(git_repo: GitRepo) -> None:
+    base = _baseline(git_repo)
+    git_repo.commit_from(
+        base, {"frontend/opsgrids-internal/src/index.ts": "v2\n"}, "edit staff console"
+    )
+    assert run_ci_plan(git_repo, base)["apps"] == ["internal"]
 
 
 def test_storefront_directory_plans_both_its_apps(git_repo: GitRepo) -> None:

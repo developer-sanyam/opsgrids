@@ -104,6 +104,16 @@ Structured, with a correlation id propagated from the gateway through every serv
 Note the header-duplication defect fixed in [discoveries.md](discoveries.md): traces from before
 that fix carry a doubled value.
 
+## Error tracking
+
+Error tracking is **not wired**. No Sentry (or OpenTelemetry) SDK ships in any service, so there is
+no DSN or OTLP endpoint setting and nothing reports an exception off the box. An unhandled error
+reaches you only as an `error`-level structured log line and a 5xx in the edge access log, which
+is what the ops-monitor alerts and `docker compose logs` read. The former `SENTRY_DSN` setting was
+removed because it was read by nothing and implied otherwise. Adding real error tracking means an
+SDK dependency (memory the box does not currently have), a setting, and a test that an exception
+reaches it.
+
 ## Secrets
 
 `.env` is gitignored; `.env.example` carries the keys with dummy values. Signing keys are

@@ -20,14 +20,17 @@ want_services="${2:-true}"
 want_apps="${3:-all}"
 
 # app name (publish-web.sh APP=) -> the workspace package whose sources it is built from
-ALL_APPS=(buyer dashboard operations hrms crm pulseboard projects support marketing finance itsm storefront engage)
+ALL_APPS=(buyer dashboard operations worker hrms crm pulseboard projects support marketing finance itsm storefront engage internal)
 dir_for() {
 	case "$1" in
 	# buyer and storefront are two entry points of one package, so the map is many-to-one and
-	# a change under product-storefront must plan both. Every other app is named after its own
+	# a change under product-storefront must plan both. `worker` and `internal` live in worker-app
+	# and opsgrids-internal. Every other app is named after its own
 	# directory and falls through to the default — engage included.
 	buyer | storefront) echo product-storefront ;;
 	dashboard) echo opsgrids-dashboard ;;
+	worker) echo worker-app ;;
+	internal) echo opsgrids-internal ;;
 	*) echo "product-$1" ;;
 	esac
 }

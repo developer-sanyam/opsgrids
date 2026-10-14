@@ -4,6 +4,8 @@
  * These are the only place minor units become a display string.
  */
 
+import { formatInstant, formatMoney as formatMajorMoney, toMajor } from "@opsgrids/ui";
+
 const SYMBOLS: Record<string, string> = {
   INR: "₹",
   USD: "$",
@@ -20,25 +22,14 @@ function symbolFor(currency: string): string {
  * digits (procurement figures are whole-rupee at this altitude). `minor` is integer minor units.
  */
 export function formatMoney(minor: number, currency = "INR"): string {
-  const major = minor / 100;
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency,
-    maximumFractionDigits: 0,
-  }).format(major);
+  return formatMajorMoney(minor, currency);
 }
 
 /**
  * Money with the paise: "₹12,450.75". Used on a line item where the exact figure matters.
  */
 export function formatMoneyPrecise(minor: number, currency = "INR"): string {
-  const major = minor / 100;
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency,
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(major);
+  return formatMajorMoney(minor, currency, { precise: true });
 }
 
 /**
@@ -46,7 +37,7 @@ export function formatMoneyPrecise(minor: number, currency = "INR"): string {
  * (crore / lakh / thousand) rather than locale-dependent compact notation.
  */
 export function formatMoneyCompact(minor: number, currency = "INR"): string {
-  const major = minor / 100;
+  const major = toMajor(minor, currency);
   const sym = symbolFor(currency);
   const abs = Math.abs(major);
   const sign = major < 0 ? "-" : "";
@@ -83,14 +74,8 @@ export function formatDateRange(from: string | null, to: string | null): string 
  *  happened matters (a sync attempt, a health check), not just which day. */
 export function formatDateTime(iso: string | null): string {
   if (!iso) return "—";
-  const d = new Date(iso);
-  return d.toLocaleString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return formatInstant(iso, null, { locations: {}, organizationZone: zone }, "datetime").value;
 }
 
 

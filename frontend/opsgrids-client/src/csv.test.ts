@@ -18,6 +18,15 @@ describe("csvCell", () => {
     expect(csvCell("a@b.com")).toBe("a@b.com");
   });
 
+  it("treats only well-formed numbers as safe", () => {
+    expect(csvCell("-1,200")).toBe(`"-1,200"`);
+    expect(csvCell("-1,20,000.50")).toBe(`"-1,20,000.50"`);
+    expect(csvCell("+SUM()")).toBe("'+SUM()");
+    expect(csvCell("-,")).toBe(`"'-,"`);
+    expect(csvCell("-.")).toBe("'-.");
+    expect(csvCell("-1.2.3")).toBe("'-1.2.3");
+  });
+
   it("still quotes per RFC 4180", () => {
     expect(csvCell('say "hi", ok')).toBe(`"say ""hi"", ok"`);
     expect(csvCell("line\nbreak")).toBe(`"line\nbreak"`);
