@@ -177,7 +177,7 @@ export function GrantsPage() {
       header: "Organization",
       mobile: "title",
       render: (e) => (
-        <Link to={`/accounts/${e.organization_id}`} className="mono truncate text-sm font-semibold text-ink hover:text-accent transition-colors">
+        <Link to={`/accounts/${e.organization_id}`} className="mono block truncate text-sm font-semibold text-ink hover:text-accent transition-colors max-md:py-3">
           {e.organization_id}
         </Link>
       ),

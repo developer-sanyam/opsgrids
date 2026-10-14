@@ -296,7 +296,7 @@ export function OverviewPage() {
             action={
               <Link
                 to="/queue"
-                className="text-sm font-semibold text-accent hover:text-accent-strong transition-colors"
+                className="hit-44 relative text-sm font-semibold text-accent hover:text-accent-strong transition-colors"
               >
                 Open queue
               </Link>

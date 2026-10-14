@@ -477,7 +477,7 @@ export function TicketDetailPage() {
   return (
     <div className="rise flex flex-col gap-5">
       <nav aria-label="Breadcrumb" className="flex items-center gap-1 text-sm font-medium">
-        <Link to="/queue" className="text-muted hover:text-ink transition-colors">
+        <Link to="/queue" className="hit-44 relative text-muted hover:text-ink transition-colors">
           Queue
         </Link>
         <ChevronRightIcon className="size-4 text-faint" />

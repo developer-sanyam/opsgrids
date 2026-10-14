@@ -85,7 +85,7 @@ export function AuditPage() {
       cellClassName: "hidden lg:table-cell",
       headerClassName: "hidden lg:table-cell",
       render: (a) => (
-        <Link to={`/accounts/${a.organization_id}`} className="mono truncate text-sm font-semibold text-ink hover:text-accent transition-colors">
+        <Link to={`/accounts/${a.organization_id}`} className="mono block truncate text-sm font-semibold text-ink hover:text-accent transition-colors max-md:py-3">
           {a.organization_id}
         </Link>
       ),

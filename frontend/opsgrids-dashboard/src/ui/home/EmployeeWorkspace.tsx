@@ -264,7 +264,7 @@ export function EmployeeWorkspace() {
             tasksAccess === "ready" ? (
               <a
                 href={`${projectsHost}/board`}
-                className="text-sm font-semibold text-accent-ink transition-colors hover:text-accent"
+                className="hit-44 relative text-sm font-semibold text-accent-ink transition-colors hover:text-accent"
               >
                 View All
               </a>

@@ -187,7 +187,7 @@ export function OverviewPage() {
             title="Needs attention"
             subtitle="Blocked, over budget, overdue or at risk"
             action={
-              <Link to="/projects" className="text-sm font-semibold text-accent hover:text-accent-strong transition-colors">
+              <Link to="/projects" className="hit-44 relative text-sm font-semibold text-accent hover:text-accent-strong transition-colors">
                 All projects
               </Link>
             }

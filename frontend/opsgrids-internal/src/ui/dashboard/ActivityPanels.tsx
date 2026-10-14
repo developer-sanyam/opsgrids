@@ -90,7 +90,7 @@ export function RecentActivityCard({ audit, orgNameById, canSee }: RecentActivit
     <Card className="flex flex-col gap-4 p-4 sm:p-6 xl:col-span-2">
       <div className="flex items-center justify-between">
         <h2 className="text-base font-bold text-ink">Recent Account Activity</h2>
-        <Link to="/audit" className="text-sm font-semibold text-accent hover:text-accent-strong">
+        <Link to="/audit" className="hit-44 relative text-sm font-semibold text-accent hover:text-accent-strong">
           View all
         </Link>
       </div>

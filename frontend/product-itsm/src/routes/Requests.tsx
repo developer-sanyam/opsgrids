@@ -194,7 +194,7 @@ export function RequestsPage() {
         render: (r) => (
           <span className="inline-flex items-center gap-2">
             <Avatar name={r.requester} size="sm" />
-            <span className="text-sm text-ink-soft whitespace-nowrap">{r.requester}</span>
+            <span className="text-sm text-ink-soft md:whitespace-nowrap">{r.requester}</span>
           </span>
         ),
       },
@@ -210,7 +210,7 @@ export function RequestsPage() {
         cellClassName: "hidden lg:table-cell",
         headerClassName: "hidden lg:table-cell",
         render: (r) => (
-          <span className="text-sm text-muted whitespace-nowrap">{r.assignee ?? "—"}</span>
+          <span className="text-sm text-muted md:whitespace-nowrap">{r.assignee ?? "—"}</span>
         ),
       },
       {

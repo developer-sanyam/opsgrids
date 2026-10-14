@@ -236,7 +236,7 @@ export function OverviewPage() {
             action={
               <Link
                 to="/incidents?priority=P1"
-                className="text-sm font-semibold text-accent hover:text-accent-strong transition-colors"
+                className="hit-44 relative text-sm font-semibold text-accent hover:text-accent-strong transition-colors"
               >
                 View all
               </Link>

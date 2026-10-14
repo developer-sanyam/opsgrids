@@ -55,7 +55,7 @@ export function SubscriptionsPage() {
       render: (s) => (
         <Link
           to={`/accounts/${s.organization_id}`}
-          className="block truncate hover:text-accent transition-colors"
+          className="block truncate py-1 hover:text-accent transition-colors md:py-0"
           onClick={(e) => e.stopPropagation()}
         >
           <OrgIdentity name={s.name} slug={s.slug} organizationId={s.organization_id} />

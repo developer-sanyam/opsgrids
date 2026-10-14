@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { MobileDataCard } from "@opsgrids/ui";
+import { MobileDataCard, Select } from "@opsgrids/ui";
 import type { MobileCardWiring } from "@opsgrids/ui";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
@@ -254,20 +254,13 @@ export function AccountsPage() {
               </Pill>
             ))}
           </div>
-          <label className="ml-auto inline-flex h-11 shrink-0 items-center gap-2 rounded-full bg-ground px-4 focus-within:outline focus-within:outline-2 focus-within:outline-accent focus-within:outline-offset-2">
-            <span className="text-xs font-semibold uppercase tracking-wide text-faint">Sort</span>
-            <select
-              value={sort}
-              onChange={(e) => setSort(e.target.value as SortKey)}
-              className="cursor-pointer bg-transparent text-sm font-semibold text-ink focus:outline-none"
-            >
-              {SORTS.map((s) => (
-                <option key={s.value} value={s.value}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-          </label>
+          <Select
+            label="Sort"
+            value={sort}
+            onChange={(e) => setSort(e.target.value as SortKey)}
+            options={SORTS}
+            containerClassName="lg:ml-auto lg:w-56"
+          />
         </div>
       </Card>
 

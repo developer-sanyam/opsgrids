@@ -747,7 +747,7 @@ export function HomePage() {
               invoicesAccess === "ready" ? (
                 <a
                   href={`${financeHost}/invoices`}
-                  className="text-sm font-semibold text-accent-ink transition-colors hover:text-accent"
+                  className="hit-44 relative text-sm font-semibold text-accent-ink transition-colors hover:text-accent"
                 >
                   View All
                 </a>
@@ -782,7 +782,7 @@ export function HomePage() {
               tasksAccess === "ready" ? (
                 <a
                   href={`${projectsHost}/board`}
-                  className="text-sm font-semibold text-accent-ink transition-colors hover:text-accent"
+                  className="hit-44 relative text-sm font-semibold text-accent-ink transition-colors hover:text-accent"
                 >
                   View All
                 </a>
@@ -900,7 +900,7 @@ function InvoicesByStatusCard({
       skeleton="donut"
       action={
         access === "ready" && data && data.total > 0 ? (
-          <a href={viewAllHref} className="text-sm font-semibold text-accent-ink transition-colors hover:text-accent">
+          <a href={viewAllHref} className="hit-44 relative text-sm font-semibold text-accent-ink transition-colors hover:text-accent">
             View All
           </a>
         ) : undefined
