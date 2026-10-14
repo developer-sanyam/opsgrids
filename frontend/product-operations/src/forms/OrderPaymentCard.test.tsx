@@ -129,6 +129,25 @@ describe("OrderPaymentCard", () => {
     await waitFor(() => expect(onOrderChanged).toHaveBeenCalled());
   });
 
+  it("shows an empty state, not an error, for an order with no payment recorded yet", async () => {
+    getOrderPayments.mockResolvedValue(
+      payments({ can_collect: false, collect_blocked_reason: "Online payments are not set up for this organization" }),
+    );
+    renderScreen(<OrderPaymentCard order={ORDER} onOrderChanged={vi.fn()} />, [COLLECT]);
+
+    expect(await screen.findByText("No payment recorded yet")).toBeDefined();
+    expect(screen.getByText("Online payments are not set up for this organization")).toBeDefined();
+    expect(screen.queryByText(/something went wrong/i)).toBeNull();
+  });
+
+  it("points at the collect action in the empty state when the order can be paid online", async () => {
+    getOrderPayments.mockResolvedValue(payments());
+    renderScreen(<OrderPaymentCard order={ORDER} onOrderChanged={vi.fn()} />, [COLLECT]);
+
+    expect(await screen.findByText("No payment recorded yet")).toBeDefined();
+    expect(screen.getByRole("button", { name: "Collect online payment" })).toBeDefined();
+  });
+
   it("never opens a checkout that cannot be paid for real", async () => {
     const user = userEvent.setup();
     getOrderPayments.mockResolvedValue(payments({ wire: "stub" }));
