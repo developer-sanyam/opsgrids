@@ -90,6 +90,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
+from _db_common import all_organization_ids
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -282,42 +283,6 @@ async def reconcile_fleet(
     return results
 
 
-async def _all_organization_ids() -> list[uuid.UUID]:
-    """Every live organization, read on the directory (BYPASSRLS, SELECT-only) engine.
-
-    `organizations` carries row-level security keyed on its own `id`, so no tenant-bound
-    session can ever enumerate more than the one organization it is bound to — discovering
-    the fleet is, by construction, a platform operation. That does not require
-    `cfg.admin_dsn` — BYPASSRLS *and* owner of every schema — for a read of one column of one
-    table: `cfg.directory_dsn` is the SELECT-only BYPASSRLS role built for exactly this shape
-    of cross-tenant read, already granted `SELECT` on `organizations` by
-    `apply_schema_grants` (`libs/platform-core/src/platform_core/db.py`), run from every
-    service's own migrations. This engine is opened and disposed for exactly this one read;
-    every write that follows reconnects through the ordinary NOBYPASSRLS app role, one
-    organization at a time — the same connection discipline `tools/wire_product.py` uses for
-    its own write, which opens no admin engine at all.
-    """
-    from sqlalchemy import select
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
-    from app.config import settings  # type: ignore[import-not-found]
-    from app.models import Organization  # type: ignore[import-not-found]
-
-    cfg = settings()
-    engine = create_async_engine(cfg.directory_dsn)
-    try:
-        maker = async_sessionmaker(engine, expire_on_commit=False)
-        async with maker() as session:
-            rows = await session.execute(
-                select(Organization.id)
-                .where(Organization.deleted_at.is_(None))
-                .order_by(Organization.created_at)
-            )
-            return [row[0] for row in rows.all()]
-    finally:
-        await engine.dispose()
-
-
 def _main() -> None:
     parser = argparse.ArgumentParser(
         description="Widen an existing organization's system roles to match a product's "
@@ -347,7 +312,7 @@ def _main() -> None:
     # run: every service exposes a top-level `app`, so one process holds exactly one.
     sys.path.insert(0, str(ROOT / "services" / "account"))
 
-    from app.config import settings
+    from app.config import settings  # type: ignore[import-not-found]
     from platform_core.cache import close_redis, init_redis
     from platform_core.db import dispose_engine, init_engine
 
@@ -362,7 +327,7 @@ def _main() -> None:
         checker = HttpActivationChecker(cfg.product_service_url, cfg)
 
         try:
-            org_ids = [args.org] if args.org else await _all_organization_ids()
+            org_ids = [args.org] if args.org else await all_organization_ids()
             if not org_ids:
                 print(json.dumps({"product": args.product_key, "organizations": 0}))
                 return

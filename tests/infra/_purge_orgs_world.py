@@ -36,6 +36,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOL = REPO_ROOT / "tools" / "purge_test_orgs.py"
+# The tool imports its sibling `_db_common`, which is on `sys.path` when run as a script.
+sys.path.insert(0, str(TOOL.parent))
 
 
 def load_tool() -> ModuleType:
