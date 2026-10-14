@@ -1,12 +1,12 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, Navigate, useLocation } from "react-router-dom";
 
 import { ApiError, isAllowedRedirectTarget, problemMessage, useAuth } from "@opsgrids/client";
 import type { LoginStep, OrganizationChoice } from "@opsgrids/client";
-import { EyeIcon, EyeOffIcon } from "@opsgrids/ui";
+import { PasswordField, TextField } from "@opsgrids/ui";
 
-import { AuthCard, Button, Field, InlineError, inputClass } from "@/ui";
+import { AuthCard, Button, InlineError } from "@/ui";
 
 /** Never leak which half was wrong — one message covers a bad email, bad password, or a 4xx. */
 const CREDENTIAL_ERROR = "That email or password is incorrect.";
@@ -45,6 +45,10 @@ function externalDestination(search: string): string | null {
   return next;
 }
 
+/** A standalone text link or text button: quiet, and a 44px target. */
+const TEXT_LINK =
+  "inline-flex min-h-11 items-center self-start text-sm font-semibold text-muted underline-offset-2 hover:text-ink hover:underline";
+
 /** What this screen renders. Distinct from `LoginStep`: it also carries the org list to show. */
 type Step = { kind: "password" } | { kind: "mfa" } | { kind: "org_selection"; organizations: OrganizationChoice[] };
 
@@ -62,13 +66,8 @@ export function LoginPage() {
   const { status, login, verifyMfa, selectOrg } = useAuth();
   const location = useLocation();
 
-  const emailId = useId();
-  const passwordId = useId();
-  const codeId = useId();
-
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
   const [code, setCode] = useState("");
   const [step, setStep] = useState<Step>({ kind: "password" });
   const [submitting, setSubmitting] = useState(false);
@@ -167,7 +166,7 @@ export function LoginPage() {
                   type="button"
                   disabled={submitting}
                   onClick={() => void handlePickOrg(org.organization_id)}
-                  className="w-full rounded-tile border border-line bg-surface px-4 py-3 text-left text-sm font-semibold text-ink transition-colors hover:bg-ground disabled:cursor-not-allowed disabled:text-faint"
+                  className="min-h-11 w-full rounded-tile border border-field-edge bg-surface px-4 py-3 text-left text-sm font-semibold text-ink transition-colors hover:bg-sunken disabled:cursor-not-allowed disabled:text-disabled"
                 >
                   {org.name}
                 </button>
@@ -184,27 +183,22 @@ export function LoginPage() {
       <AuthCard title="Enter your code" intro="From your authenticator app, or one of your recovery codes.">
         <form onSubmit={handleVerifyMfa} className="flex flex-col gap-4" noValidate>
           {error ? <InlineError>{error}</InlineError> : null}
-          <Field id={codeId} label="Code">
-            <input
-              id={codeId}
-              type="text"
-              inputMode="numeric"
-              autoComplete="one-time-code"
-              required
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-              placeholder="123456"
-              className={inputClass}
-            />
-          </Field>
+          {/* Recovery codes mix letters and numbers, so no numeric keypad and no auto-capitalising. */}
+          <TextField
+            label="Code"
+            type="text"
+            autoComplete="one-time-code"
+            autoCapitalize="none"
+            spellCheck={false}
+            required
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            placeholder="123456"
+          />
           <Button type="submit" loading={submitting}>
             {submitting ? "Verifying…" : "Verify"}
           </Button>
-          <button
-            type="button"
-            onClick={backToPassword}
-            className="self-start text-xs font-semibold text-muted underline-offset-2 hover:text-ink hover:underline"
-          >
+          <button type="button" onClick={backToPassword} className={TEXT_LINK}>
             Back to sign in
           </button>
         </form>
@@ -228,51 +222,23 @@ export function LoginPage() {
       <form onSubmit={handleSubmit} className="flex flex-col gap-4" noValidate>
         {error ? <InlineError>{error}</InlineError> : null}
 
-        <Field id={emailId} label="Work email">
-          <input
-            id={emailId}
-            type="email"
-            autoComplete="email"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@company.com"
-            className={inputClass}
-          />
-        </Field>
+        <TextField
+          label="Work email"
+          type="email"
+          autoComplete="email"
+          required
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="you@company.com"
+        />
 
-        <Field id={passwordId} label="Password">
-          <div className="flex items-center rounded-tile bg-ground pr-1.5 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-ink">
-            <input
-              id={passwordId}
-              type={showPassword ? "text" : "password"}
-              autoComplete="current-password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
-              className="h-12 min-w-0 flex-1 bg-transparent px-4 text-sm text-ink placeholder:text-faint focus:outline-none"
-            />
-            <button
-              type="button"
-              onClick={() => setShowPassword((v) => !v)}
-              aria-label={showPassword ? "Hide password" : "Show password"}
-              aria-pressed={showPassword}
-              className="grid size-9 place-items-center rounded-full text-muted transition-colors hover:bg-line hover:text-ink"
-            >
-              {showPassword ? <EyeOffIcon className="size-5" /> : <EyeIcon className="size-5" />}
-            </button>
-          </div>
-        </Field>
+        <PasswordField value={password} onChange={setPassword} placeholder="••••••••" />
 
         <Button type="submit" loading={submitting}>
           {submitting ? "Signing in…" : "Sign in"}
         </Button>
 
-        <Link
-          to="/forgot-password"
-          className="self-start text-xs font-semibold text-muted underline-offset-2 hover:text-ink hover:underline"
-        >
+        <Link to="/forgot-password" className={TEXT_LINK}>
           Forgot your password?
         </Link>
       </form>

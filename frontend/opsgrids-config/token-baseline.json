@@ -5,9 +5,6 @@
   "opsgrids-dashboard/src/routes/Invoices.tsx": {
     "spacing": 7
   },
-  "opsgrids-dashboard/src/routes/Login.tsx": {
-    "spacing": 1
-  },
   "opsgrids-dashboard/src/routes/Marketplace.tsx": {
     "spacing": 2
   },
@@ -31,10 +28,6 @@
   },
   "opsgrids-dashboard/src/routes/admin/Roles.tsx": {
     "spacing": 2
-  },
-  "opsgrids-dashboard/src/ui/forms.tsx": {
-    "arbitrary": 2,
-    "spacing": 5
   },
   "opsgrids-internal/src/routes/AccountActions.tsx": {
     "arbitrary": 1,
@@ -207,11 +200,6 @@
   "product-crm/src/routes/Leads.tsx": {
     "spacing": 2
   },
-  "product-crm/src/routes/Login.tsx": {
-    "colour": 3,
-    "arbitrary": 9,
-    "spacing": 9
-  },
   "product-crm/src/routes/Overview.tsx": {
     "spacing": 4
   },
@@ -318,11 +306,6 @@
   "product-finance/src/routes/Ledger.tsx": {
     "spacing": 6
   },
-  "product-finance/src/routes/Login.tsx": {
-    "colour": 3,
-    "arbitrary": 9,
-    "spacing": 9
-  },
   "product-finance/src/routes/Overview.tsx": {
     "arbitrary": 1,
     "spacing": 7
@@ -381,11 +364,6 @@
   "product-hrms/src/routes/Leave.tsx": {
     "spacing": 1
   },
-  "product-hrms/src/routes/Login.tsx": {
-    "colour": 3,
-    "arbitrary": 9,
-    "spacing": 9
-  },
   "product-hrms/src/routes/MyRequests.tsx": {
     "spacing": 2
   },
@@ -436,11 +414,6 @@
     "arbitrary": 1,
     "spacing": 3
   },
-  "product-itsm/src/routes/Login.tsx": {
-    "colour": 3,
-    "arbitrary": 9,
-    "spacing": 9
-  },
   "product-itsm/src/routes/Overview.tsx": {
     "arbitrary": 1,
     "spacing": 8
@@ -480,11 +453,6 @@
   "product-marketing/src/routes/Channels.tsx": {
     "spacing": 1
   },
-  "product-marketing/src/routes/Login.tsx": {
-    "colour": 3,
-    "arbitrary": 9,
-    "spacing": 9
-  },
   "product-marketing/src/routes/Overview.tsx": {
     "arbitrary": 1,
     "spacing": 8
@@ -515,11 +483,6 @@
   "product-operations/src/routes/ItemCategories.tsx": {
     "spacing": 1
   },
-  "product-operations/src/routes/Login.tsx": {
-    "colour": 3,
-    "arbitrary": 9,
-    "spacing": 9
-  },
   "product-operations/src/routes/PurchaseOrderDetail.tsx": {
     "arbitrary": 1,
     "spacing": 9
@@ -548,11 +511,6 @@
   },
   "product-projects/src/routes/Board.tsx": {
     "spacing": 2
-  },
-  "product-projects/src/routes/Login.tsx": {
-    "colour": 3,
-    "arbitrary": 9,
-    "spacing": 9
   },
   "product-projects/src/routes/MemberFormDialog.tsx": {
     "spacing": 1
@@ -603,11 +561,6 @@
   "product-pulseboard/src/routes/Board.tsx": {
     "arbitrary": 1,
     "spacing": 1
-  },
-  "product-pulseboard/src/routes/Login.tsx": {
-    "colour": 3,
-    "arbitrary": 9,
-    "spacing": 9
   },
   "product-pulseboard/src/routes/Overview.tsx": {
     "arbitrary": 2,
@@ -730,11 +683,6 @@
   "product-support/src/routes/Agents.tsx": {
     "arbitrary": 1,
     "spacing": 10
-  },
-  "product-support/src/routes/Login.tsx": {
-    "colour": 3,
-    "arbitrary": 9,
-    "spacing": 9
   },
   "product-support/src/routes/Overview.tsx": {
     "arbitrary": 1,
