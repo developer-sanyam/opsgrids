@@ -24,11 +24,11 @@ Collected, not hand-maintained — regenerate them rather than edit them (2026-0
 |---|---|---|
 | Services (35, each in its own process) | 4,756 | `make test-services` |
 | `libs/platform-core` | 341 | `make test-libs` |
-| Repository tooling (`tests/infra`) | 37 | `make test-infra` |
-| End-to-end journeys (`e2e/`) | 53 | `make e2e` |
+| Repository tooling (`tests/infra`) | 1,208 | `make test-infra` |
+| End-to-end journeys (`e2e/`) | 76 | `make e2e` |
 | Frontend (14 packages, 198 files, vitest) | 2,061 | `make frontend-test` |
 
-Python counts are `pytest --collect-only`; the frontend count is vitest's own total.
+Python counts: count with `uv run pytest --collect-only`; the frontend count is vitest's own total.
 
 ## How CI runs this, and how long it takes
 

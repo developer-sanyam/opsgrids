@@ -5,7 +5,7 @@ a cloud service.
 
 ## Prerequisites
 
-- **Python 3.13** and [uv](https://docs.astral.sh/uv/)
+- **Python 3.12+** and [uv](https://docs.astral.sh/uv/)
 - **Docker** — for Postgres, Redis, RabbitMQ, MinIO, MailHog
 - **Node 20+ and pnpm** — only if you are working on the frontend
 

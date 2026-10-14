@@ -68,7 +68,6 @@ services/         one directory per microservice
 libs/platform-core   app factory, auth, DB+RLS, outbox, errors, audit, money
 libs/contracts    JSON Schema for every event and API
 frontend/         product SPAs and consoles
-integrations/     partner and per-customer integrations
 infrastructure/   the edge VM: compose, Caddy, the runbook (ADR-0012). Not Helm, not kustomize
 tools/            dev-bootstrap, generators, seeds
 ```
