@@ -67,7 +67,7 @@ from platform_core.db import (
     session_scope,
 )
 from platform_core.logging import get_logger
-from platform_core.supervise import register_sweep_health
+from platform_core.supervise import GuardedSweep
 
 log = get_logger("document.cron")
 
@@ -103,7 +103,7 @@ class SweepReport:
         return self.purged + self.orphan_deleted + self.orphan_would_delete
 
 
-class PurgeSweep:
+class PurgeSweep(GuardedSweep):
     """Drains due purges and, optionally, sweeps orphaned objects. See the module docstring."""
 
     def __init__(
@@ -123,92 +123,70 @@ class PurgeSweep:
         orphan_min_age: timedelta = timedelta(hours=24),
         orphan_max_deletes: int = 100,
     ) -> None:
+        super().__init__(poll_interval=poll_interval, max_backoff=max_backoff)
         self._discovery_factory = discovery_factory
         self._work_scope = work_scope
         self._store = store
         self._scanner = scanner
         self._retention = retention
         self._batch_size = batch_size
-        self._poll_interval = poll_interval
-        self._max_backoff = max_backoff
         self._max_idle_interval = max_idle_interval
         self._orphan_enabled = orphan_enabled
         self._orphan_dry_run = orphan_dry_run
         self._orphan_min_age = orphan_min_age
         self._orphan_max_deletes = orphan_max_deletes
-        self._stop = False
-        #: `sweep_alive` / `sweep_consecutive_failures` / `sweep_last_success_timestamp_seconds`
-        #: on `/metrics` when this runs inside the API — see `platform_core.supervise.SweepHealth`.
-        self.health = register_sweep_health("document.sweep")
+        #: The current idle wait: starts at `poll_interval` and doubles on every pass that made no
+        #: progress, up to `idle_cap`, and snaps back the moment something is purged or removed.
+        #: Below poll_interval, max() clamps the cap to poll_interval — i.e. no idle backoff at
+        #: all, the same opt-out `OutboxRelay.run()` documents.
+        self._idle_cap = max(max_idle_interval, poll_interval)
+        self._idle = poll_interval
 
-    def stop(self) -> None:
-        self._stop = True
+    @property
+    def _log_name(self) -> str:
+        return "document.sweep"
 
-    async def run(self) -> None:
-        log.info(
-            "document.sweep.started",
-            poll_interval=self._poll_interval,
-            retention_days=self._retention.days,
-            orphan_enabled=self._orphan_enabled,
-            orphan_dry_run=self._orphan_dry_run,
-        )
-        # `min(poll_interval, max_backoff)`: the first retry after a failed tick must not wait a
-        # whole (possibly larger-than-the-cap) poll interval — same fix as `GuardedSweep`.
-        initial_backoff = min(self._poll_interval, self._max_backoff)
-        backoff = initial_backoff
-        # Below poll_interval, max() clamps this to poll_interval every pass — the same
-        # opt-out `OutboxRelay.run()` and `scheduler/app/cron.py`'s `Sweep.run` document.
-        idle_cap = max(self._max_idle_interval, self._poll_interval)
-        idle = self._poll_interval
-        while not self._stop:
-            try:
-                report = await self.tick()
-            except Exception:
-                # Discovery itself failed — a DB restart, a deadlock, a connection blip. Not
-                # one asset's problem, all of them: logged and backed off exactly like the
-                # relay's own failure path, never propagated.
-                self.health.record_failure()
-                log.exception(
-                    "document.sweep.tick_failed",
-                    consecutive_failures=self.health.consecutive_failures,
-                )
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, self._max_backoff)
-                continue
-            backoff = initial_backoff
-            if report.acted or report.skipped or report.failed or report.orphan_failed:
-                log.info(
-                    "document.sweep.pass",
-                    considered=report.considered,
-                    purged=report.purged,
-                    skipped=report.skipped,
-                    failed=report.failed,
-                    orphan_considered=report.orphan_considered,
-                    orphan_deleted=report.orphan_deleted,
-                    orphan_would_delete=report.orphan_would_delete,
-                    orphan_failed=report.orphan_failed,
-                )
-            # Progress — something was actually purged or removed — is the only thing that
-            # earns an immediate re-run (a backlog larger than `batch_size` drains back to back).
-            # **Considered is not progress.** The first version of this loop keyed the idle sleep
-            # on "nothing considered", so a tick that found work and got nowhere — one asset
-            # whose object-store delete fails every time, or rows another sweeper's lock keeps
-            # skipping — re-ran at once, with no sleep, forever: ~700 ticks a second of discovery
-            # queries and failing deletes, in a loop that now shares an event loop and a
-            # connection pool with the API's own request traffic (round 3, MEDIUM). Anything
-            # short of progress backs off exactly like an idle tick: doubling, capped.
-            progressed = report.purged > 0 or report.orphan_deleted > 0
-            if report.failed and not progressed:
-                # Every attempt this tick failed: the sweep is running and going nowhere, which is
-                # the state an alert on `sweep_consecutive_failures` exists to catch.
-                self.health.record_failure()
-            else:
-                self.health.record_success()
-            if progressed:
-                idle = self._poll_interval
-            else:
-                await asyncio.sleep(idle)
-                idle = min(idle * 2, idle_cap)
+    async def on_tick_success(self, result: SweepReport) -> None:
+        report = result
+        if report.acted or report.skipped or report.failed or report.orphan_failed:
+            log.info(
+                "document.sweep.pass",
+                considered=report.considered,
+                purged=report.purged,
+                skipped=report.skipped,
+                failed=report.failed,
+                orphan_considered=report.orphan_considered,
+                orphan_deleted=report.orphan_deleted,
+                orphan_would_delete=report.orphan_would_delete,
+                orphan_failed=report.orphan_failed,
+            )
+
+    @staticmethod
+    def _progressed(report: SweepReport) -> bool:
+        return report.purged > 0 or report.orphan_deleted > 0
+
+    def _tick_succeeded(self, result: SweepReport) -> bool:
+        # A pass in which every attempt failed and nothing was purged: the sweep is running and
+        # going nowhere, which is the state an alert on `sweep_consecutive_failures` exists to
+        # catch. It is not a raise, so it earns the idle wait below, not the failure backoff.
+        return not (result.failed and not self._progressed(result))
+
+    def _delay_after(self, result: SweepReport) -> float:
+        # Progress -- something was actually purged or removed -- is the only thing that earns an
+        # immediate re-run (a backlog larger than `batch_size` drains back to back). **Considered
+        # is not progress.** The first version of this loop keyed the idle sleep on "nothing
+        # considered", so a tick that found work and got nowhere -- one asset whose object-store
+        # delete fails every time, or rows another sweeper's lock keeps skipping -- re-ran at
+        # once, with no sleep, forever: ~700 ticks a second of discovery queries and failing
+        # deletes, in a loop that shares an event loop and a connection pool with the API's own
+        # request traffic. Anything short of progress backs off like an idle tick: doubling,
+        # capped.
+        if self._progressed(result):
+            self._idle = self._poll_interval
+            return 0.0
+        delay = self._idle
+        self._idle = min(self._idle * 2, self._idle_cap)
+        return delay
 
     async def tick(self, now: datetime | None = None) -> SweepReport:
         """One pass: purge everything past its retention window, then sweep orphans.

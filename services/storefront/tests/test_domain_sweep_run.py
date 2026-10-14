@@ -34,16 +34,13 @@ async def _run_and_collect(
 ) -> list[float]:
     waits: list[float] = []
 
-    async def fake_wait_for(aw: Any, timeout: float) -> None:  # noqa: ASYNC109 - stands in for asyncio.wait_for's own signature
-        waits.append(timeout)
-        aw.close()  # dispose of the un-awaited `self._stop_event.wait()` coroutine cleanly
-        # Nothing ever sets the event before the timeout in this test: `wait_for` always raises
-        # `TimeoutError`, which `run()`'s own `with suppress(TimeoutError):` swallows — the loop
-        # then re-checks `self._stop_event.is_set()`, which `fake_tick` below has already set
-        # directly once the script is exhausted.
-        raise TimeoutError
+    async def fake_sleep(seconds: float) -> None:
+        # `GuardedSweep._sleep` races `asyncio.sleep(seconds)` against the stop event; the fake
+        # returns at once, so the loop re-checks the event, which `fake_tick` below has already
+        # set directly once the script is exhausted.
+        waits.append(seconds)
 
-    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
 
     remaining = list(tick_results)
 
@@ -132,12 +129,10 @@ class TestSweepHealthIsRecorded:
         seen: list[tuple[int, float]] = []
         ticks = [RuntimeError("x"), RuntimeError("x"), SweepReport()]
 
-        async def spying_wait_for(aw: Any, timeout: float) -> None:  # noqa: ASYNC109
-            aw.close()
+        async def spying_sleep(seconds: float) -> None:
             seen.append((sweep.health.consecutive_failures, sweep.health.last_success_ts))
-            raise TimeoutError
 
-        monkeypatch.setattr(asyncio, "wait_for", spying_wait_for)
+        monkeypatch.setattr(asyncio, "sleep", spying_sleep)
 
         async def fake_tick(now: Any = None) -> SweepReport:
             result = ticks.pop(0)

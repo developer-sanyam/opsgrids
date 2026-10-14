@@ -55,6 +55,7 @@ from platform_core.db import (
     session_scope,
 )
 from platform_core.logging import get_logger
+from platform_core.supervise import GuardedSweep
 
 log = get_logger("scheduler.cron")
 
@@ -78,7 +79,7 @@ class SweepReport:
     failed: int = 0
 
 
-class Sweep:
+class Sweep(GuardedSweep):
     """Drains due jobs and prunes old fired ones, one pass at a time. See the module docstring."""
 
     def __init__(
@@ -92,60 +93,46 @@ class Sweep:
         max_idle_interval: float = 30.0,
         retention: timedelta = services.SCHEDULED_JOB_RETENTION,
     ) -> None:
+        super().__init__(poll_interval=poll_interval, max_backoff=max_backoff)
         self._discovery_factory = discovery_factory
         self._work_scope = work_scope
         self._batch_size = batch_size
-        self._poll_interval = poll_interval
-        self._max_backoff = max_backoff
         self._max_idle_interval = max_idle_interval
         self._retention = retention
-        self._stop = False
-
-    def stop(self) -> None:
-        self._stop = True
-
-    async def run(self) -> None:
-        log.info("scheduler.sweep.started", poll_interval=self._poll_interval)
-        backoff = min(self._poll_interval, self._max_backoff)
-        # Below poll_interval, max() clamps this to poll_interval every pass — i.e. no idle
+        # Below poll_interval, max() clamps this to poll_interval every pass -- i.e. no idle
         # backoff at all, the same opt-out `OutboxRelay.run()` documents.
-        idle_cap = max(self._max_idle_interval, self._poll_interval)
-        idle = self._poll_interval
-        while not self._stop:
-            try:
-                report = await self.tick()
-            except Exception:
-                # Discovery itself failed — a DB restart, a deadlock, a connection blip. Not
-                # one row's problem, all of them: logged and backed off exactly like the
-                # relay's own failure path, never propagated. This process shares an
-                # `asyncio.gather` with the event consumer (`app/worker.py`); an uncaught
-                # exception here takes that down too, over a fault very likely gone by the
-                # next tick.
-                log.exception("scheduler.sweep.tick_failed")
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, self._max_backoff)
-                continue
-            backoff = min(self._poll_interval, self._max_backoff)
-            if report.fired or report.skipped or report.failed or report.purged or report.parked:
-                log.info(
-                    "scheduler.sweep.pass",
-                    considered=report.considered,
-                    fired=report.fired,
-                    skipped=report.skipped,
-                    purged=report.purged,
-                    parked=report.parked,
-                    failed=report.failed,
-                )
-            if report.considered == 0 and report.purged == 0:
-                # Nothing was due and nothing was stale to purge: a genuinely idle tick.
-                # Doubles each consecutive one, capped, and reset the moment either query
-                # finds something — the same shape `OutboxRelay.run()`'s idle backoff uses,
-                # including not sleeping at all on a productive tick: a backlog drains at
-                # full speed rather than pacing itself at `poll_interval` per row.
-                await asyncio.sleep(idle)
-                idle = min(idle * 2, idle_cap)
-            else:
-                idle = self._poll_interval
+        self._idle_cap = max(max_idle_interval, poll_interval)
+        self._idle = poll_interval
+
+    @property
+    def _log_name(self) -> str:
+        return "scheduler.sweep"
+
+    async def on_tick_success(self, result: SweepReport) -> None:
+        report = result
+        if report.fired or report.skipped or report.failed or report.purged or report.parked:
+            log.info(
+                "scheduler.sweep.pass",
+                considered=report.considered,
+                fired=report.fired,
+                skipped=report.skipped,
+                purged=report.purged,
+                parked=report.parked,
+                failed=report.failed,
+            )
+
+    def _delay_after(self, result: SweepReport) -> float:
+        if result.considered == 0 and result.purged == 0:
+            # Nothing was due and nothing was stale to purge: a genuinely idle tick. Doubles each
+            # consecutive one, capped, and reset the moment either query finds something -- the
+            # same shape `OutboxRelay.run()`'s idle backoff uses, including not sleeping at all on
+            # a productive tick: a backlog drains at full speed rather than pacing itself at
+            # `poll_interval` per row.
+            delay = self._idle
+            self._idle = min(self._idle * 2, self._idle_cap)
+            return delay
+        self._idle = self._poll_interval
+        return 0.0
 
     async def tick(self, now: datetime | None = None) -> SweepReport:
         """One pass: fire everything due, then purge fired rows past retention.

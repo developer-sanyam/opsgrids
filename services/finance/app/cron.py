@@ -85,6 +85,7 @@ from platform_core.db import (
     session_scope,
 )
 from platform_core.logging import get_logger
+from platform_core.supervise import GuardedSweep
 
 log = get_logger("finance.cron")
 
@@ -120,7 +121,7 @@ class SweepReport:
         return self.resumed + self.exhausted
 
 
-class FilingReclaimSweep:
+class FilingReclaimSweep(GuardedSweep):
     """Drains compliance filings the platform has lost track of, one pass at a time. See the
     module docstring."""
 
@@ -136,62 +137,29 @@ class FilingReclaimSweep:
         poll_interval: float = 60.0,
         max_backoff: float = 300.0,
     ) -> None:
+        super().__init__(poll_interval=poll_interval, max_backoff=max_backoff)
         self._discovery_factory = discovery_factory
         self._work_scope = work_scope
         self._irp_client_factory = irp_client_factory
         self._eway_client_factory = eway_client_factory
         self._reclaim_after = reclaim_after
         self._batch_size = batch_size
-        self._poll_interval = poll_interval
-        self._max_backoff = max_backoff
-        #: Consecutive failed ticks, reset by the first clean one — the number worth alerting on.
-        self.consecutive_failures = 0
-        self._stop_event = asyncio.Event()
 
-    def stop(self) -> None:
-        self._stop_event.set()
+    @property
+    def _log_name(self) -> str:
+        return "finance.filing_reclaim.sweep"
 
-    async def run(self) -> None:
-        log.info(
-            "finance.filing_reclaim.sweep.started",
-            poll_interval=self._poll_interval,
-            reclaim_after_seconds=self._reclaim_after.total_seconds(),
-        )
-        wait = min(self._poll_interval, self._max_backoff)
-        while not self._stop_event.is_set():
-            # The per-tick guard: a discovery query raising (a database restart, a deadlock) backs
-            # off and tries again — it must never end this loop, because in `finance-worker` this
-            # loop shares a process with the event consumer (`app/worker.py`), and the supervisor
-            # there treats any loop ending as the process ending. `CancelledError` is not an
-            # `Exception` and always propagates.
-            try:
-                report = await self.tick()
-            except Exception:
-                self.consecutive_failures += 1
-                log.exception(
-                    "finance.filing_reclaim.sweep.tick_failed",
-                    consecutive_failures=self.consecutive_failures,
-                    retry_in_seconds=wait,
-                )
-                await self._sleep(wait)
-                wait = min(wait * 2, self._max_backoff)
-                continue
-            self.consecutive_failures = 0
-            wait = min(self._poll_interval, self._max_backoff)
-            if report.acted or report.failed:
-                log.info(
-                    "finance.filing_reclaim.sweep.pass",
-                    considered=report.considered,
-                    resumed=report.resumed,
-                    exhausted=report.exhausted,
-                    skipped=report.skipped,
-                    failed=report.failed,
-                )
-            await self._sleep(self._poll_interval)
-
-    async def _sleep(self, seconds: float) -> None:
-        with suppress(TimeoutError):
-            await asyncio.wait_for(self._stop_event.wait(), timeout=seconds)
+    async def on_tick_success(self, result: SweepReport) -> None:
+        report = result
+        if report.acted or report.failed:
+            log.info(
+                "finance.filing_reclaim.sweep.pass",
+                considered=report.considered,
+                resumed=report.resumed,
+                exhausted=report.exhausted,
+                skipped=report.skipped,
+                failed=report.failed,
+            )
 
     async def tick(self, now: datetime | None = None) -> SweepReport:
         """One pass: discover, then resume each invoice under its own tenant binding.
