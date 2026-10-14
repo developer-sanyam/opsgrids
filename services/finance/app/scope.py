@@ -13,28 +13,12 @@ floor, and `ctx.apply` at ORG returns the statement unchanged.
 
 from __future__ import annotations
 
-from typing import Any
-
 from app.models import Invoice
-from platform_core.auth import register_scope_resolver
+from platform_core.auth import column_scope_resolver, register_scope_resolver
 
 PRODUCT = "finance"
 
 
-class FinanceScopeResolver:
-    """The `ScopeResolver` for finance rows. Owner is the row's own id; there is no team or
-    location dimension for a company's books."""
-
-    def owner_column(self) -> Any:
-        return Invoice.id
-
-    def team_column(self) -> Any | None:
-        return None
-
-    def location_column(self) -> Any | None:
-        return None
-
-
 def register() -> None:
     """Register the resolver for the `finance` product. Idempotent — safe to call at import."""
-    register_scope_resolver(PRODUCT, FinanceScopeResolver)
+    register_scope_resolver(PRODUCT, column_scope_resolver(owner=Invoice.id))

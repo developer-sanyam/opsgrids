@@ -15,27 +15,12 @@ held one gets a clean "not supported on this resource" rather than a silent hole
 
 from __future__ import annotations
 
-from typing import Any
-
 from app.models import Ticket
-from platform_core.auth import register_scope_resolver
+from platform_core.auth import column_scope_resolver, register_scope_resolver
 
 PRODUCT = "support"
 
 
-class TicketScopeResolver:
-    """The `ScopeResolver` for support tickets."""
-
-    def owner_column(self) -> Any:
-        return Ticket.assignee_ref
-
-    def team_column(self) -> Any | None:
-        return None
-
-    def location_column(self) -> Any | None:
-        return None
-
-
 def register() -> None:
     """Register the resolver for the `support` product. Idempotent — safe to call at import."""
-    register_scope_resolver(PRODUCT, TicketScopeResolver)
+    register_scope_resolver(PRODUCT, column_scope_resolver(owner=Ticket.assignee_ref))

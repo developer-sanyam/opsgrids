@@ -18,27 +18,12 @@ for the rows it serves, exactly as the HRMS services do.
 
 from __future__ import annotations
 
-from typing import Any
-
 from app.models import Lead
-from platform_core.auth import register_scope_resolver
+from platform_core.auth import column_scope_resolver, register_scope_resolver
 
 PRODUCT = "crm"
 
 
-class LeadScopeResolver:
-    """The `ScopeResolver` for leads. OWN is the owning rep; TEAM/LOCATION are unsupported."""
-
-    def owner_column(self) -> Any:
-        return Lead.owner_id
-
-    def team_column(self) -> Any | None:
-        return None
-
-    def location_column(self) -> Any | None:
-        return None
-
-
 def register() -> None:
     """Register the resolver for the `crm` product. Idempotent — safe to call at import."""
-    register_scope_resolver(PRODUCT, LeadScopeResolver)
+    register_scope_resolver(PRODUCT, column_scope_resolver(owner=Lead.owner_id))

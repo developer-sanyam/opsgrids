@@ -19,27 +19,12 @@ passes its own owner column (`Project.owner_id`, `Milestone.owner_id`, `Task.ass
 
 from __future__ import annotations
 
-from typing import Any
-
 from app.models import Project
-from platform_core.auth import register_scope_resolver
+from platform_core.auth import column_scope_resolver, register_scope_resolver
 
 PRODUCT = "projects"
 
 
-class ProjectScopeResolver:
-    """The `ScopeResolver` for projects rows. OWN is the owner; TEAM/LOCATION are unsupported."""
-
-    def owner_column(self) -> Any:
-        return Project.owner_id
-
-    def team_column(self) -> Any | None:
-        return None
-
-    def location_column(self) -> Any | None:
-        return None
-
-
 def register() -> None:
     """Register the resolver for the `projects` product. Idempotent — safe to call at import."""
-    register_scope_resolver(PRODUCT, ProjectScopeResolver)
+    register_scope_resolver(PRODUCT, column_scope_resolver(owner=Project.owner_id))

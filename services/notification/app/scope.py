@@ -16,27 +16,12 @@ somehow held one gets a clean "not supported on this resource" rather than a sil
 
 from __future__ import annotations
 
-from typing import Any
-
 from app.models import Rule
-from platform_core.auth import register_scope_resolver
+from platform_core.auth import column_scope_resolver, register_scope_resolver
 
 PRODUCT = "notification"
 
 
-class NotificationScopeResolver:
-    """The `ScopeResolver` for notification's administrative rows."""
-
-    def owner_column(self) -> Any:
-        return Rule.created_by
-
-    def team_column(self) -> Any | None:
-        return None
-
-    def location_column(self) -> Any | None:
-        return None
-
-
 def register() -> None:
     """Register the resolver for the `notification` product. Idempotent — safe at import."""
-    register_scope_resolver(PRODUCT, NotificationScopeResolver)
+    register_scope_resolver(PRODUCT, column_scope_resolver(owner=Rule.created_by))
