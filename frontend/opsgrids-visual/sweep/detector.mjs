@@ -233,12 +233,15 @@ export function detect(opts) {
     const clipsAbove = (el) => {
       for (let n = el.parentElement; n && n !== document.body; n = n.parentElement) {
         const s = style(n);
-        if (s.overflowX !== "visible") return true;
+        // `overflow-x: clip` is the shell's safety net (AppShell): it stops a wide child from
+        // widening the page, but the child is still cut off, so it is still this defect.
+        if (s.overflowX !== "visible" && s.overflowX !== "clip") return true;
         if (s.position === "fixed") return true;
       }
       return false;
     };
-    if (doc.scrollWidth > vw + 1) {
+    const clippedSomewhere = all.some((el) => !outOfFlow(el) && !insideSvg(el) && el.getBoundingClientRect().right > vw + 1 && !clipsAbove(el));
+    if (doc.scrollWidth > vw + 1 || clippedSomewhere) {
       const offenders = all
         .filter((el) => !outOfFlow(el) && !insideSvg(el) && !clipsAbove(el) && el.getBoundingClientRect().right > vw + 1)
         .slice(0, 400);
@@ -252,8 +255,8 @@ export function detect(opts) {
           .sort((x, y) => y.getBoundingClientRect().right - x.getBoundingClientRect().right)
           .slice(0, 2);
       }
-      if (leaves.length === 0) hits.push({ cat: "a", kind: "page-overflow", sig: "html", text: "", rects: [], detail: `scrollWidth ${doc.scrollWidth} > ${vw}`, owner: null });
-      for (const el of leaves) push("a", "page-overflow", el, [rectOf(el)], `right edge ${Math.round(el.getBoundingClientRect().right)} > viewport ${vw}`);
+      if (leaves.length === 0 && doc.scrollWidth > vw + 1) hits.push({ cat: "a", kind: "page-overflow", sig: "html", text: "", rects: [], detail: `scrollWidth ${doc.scrollWidth} > ${vw}`, owner: null });
+      for (const el of leaves) push("a", doc.scrollWidth > vw + 1 ? "page-overflow" : "content-clipped-by-shell", el, [rectOf(el)], `right edge ${Math.round(el.getBoundingClientRect().right)} > viewport ${vw}`);
     }
   }
 
@@ -387,6 +390,9 @@ export function detect(opts) {
       if (s.display === "inline") continue;
       const over = el.scrollWidth - el.clientWidth;
       if (over <= 1 || el.clientWidth === 0) continue;
+      // A `::before` hit area (hit-44) is wider than a small control and counts toward scrollWidth; it paints nothing.
+      const pb = getComputedStyle(el, "::before");
+      if (pb.position === "absolute" && pb.content !== "none" && pb.content !== "normal") continue;
       const clip = s.overflowX === "hidden" || s.overflowX === "clip";
       const scroll = s.overflowX === "auto" || s.overflowX === "scroll";
       if (scroll || el.clientWidth < 24 || inClosedDetails(el) || el.closest("nav, aside")) continue;
@@ -442,8 +448,14 @@ export function detect(opts) {
       if (insideSvg(el) || SKIP_TAG.has(el.tagName.toUpperCase()) || isSrOnly(el) || !ownText(el)) continue;
       // Chart axes are absolutely positioned and aria-hidden by design: their collisions are the point.
       const inChart = el.closest("figure") !== null && !el.closest("[role='tooltip']");
-      if (!inChart && (outOfFlow(el) || el.closest("[role='tooltip'], [aria-hidden='true']"))) continue;
+      if (!inChart && (outOfFlow(el) || el.closest("[role='tooltip'], [role='listbox'], [role='menu'], [aria-hidden='true']"))) continue;
       if (inFixed(el) || inClosedDetails(el) || el.closest(".sr-only")) continue;
+      let layered = false;
+      for (let n = el.parentElement; n && n !== document.body; n = n.parentElement) {
+        const ns = style(n);
+        if (ns.position === "absolute" && ns.zIndex !== "auto") layered = true;
+      }
+      if (layered && !inChart) continue;
       const range = document.createRange();
       range.selectNodeContents(el);
       const rects = Array.from(range.getClientRects())
@@ -600,6 +612,8 @@ export function detectMobile() {
       const vb = H.visibleBox(el);
       if (vb.width <= 0 || vb.height <= 0) continue;
       const r = el.getBoundingClientRect();
+      // Parked off-screen (a skip link until it takes focus): nobody can tap it.
+      if (r.bottom <= 0 || r.right <= 0 || r.left >= vw || r.top >= vh + 4000) continue;
       let w = r.width;
       let h = r.height;
       if (el.matches("input[type='checkbox'], input[type='radio'], [role='checkbox'], [role='radio']")) {
@@ -710,7 +724,7 @@ export function detectOverlay() {
       (b) => H.isVisible(b) && !/^(close|dismiss)/i.test(b.getAttribute("aria-label") || ""),
     );
     // The primary action: the submit button, or a filled accent / negative button. A navigation sheet has none.
-    const primary = buttons.find((b) => b.matches("button[type='submit']")) || buttons.find((b) => /(^|\s)bg-(accent|negative)(\s|$)/.test(typeof b.className === "string" ? b.className : ""));
+    const primary = buttons.find((b) => b.matches("button[type='submit']")) || buttons.find((b) => !b.getAttribute("role") && /(^|\s)bg-(accent|negative)(\s|$)/.test(typeof b.className === "string" ? b.className : ""));
     if (primary) {
       const pr = primary.getBoundingClientRect();
       const vb = H.visibleBox(primary);
@@ -740,8 +754,9 @@ export function focusObscured() {
   for (const el of fields) {
     el.focus();
     const r = el.getBoundingClientRect();
-    const cx = Math.min(Math.max(r.left + r.width / 2, 1), window.innerWidth - 1);
-    const cy = Math.min(Math.max(r.top + r.height / 2, 1), window.innerHeight - 1);
+    // Where the caret is: the top-left of the field, not its centre (a tall textarea is bigger than the screen).
+    const cx = Math.min(Math.max(r.left + Math.min(16, r.width / 2), 1), window.innerWidth - 1);
+    const cy = Math.min(Math.max(r.top + Math.min(16, r.height / 2), 1), window.innerHeight - 1);
     const top = document.elementFromPoint(cx, cy);
     const off = r.bottom < 0 || r.top > window.innerHeight;
     if (!off && top && !el.contains(top) && !top.contains(el) && !(top.closest("label") && top.closest("label").contains(el))) {
