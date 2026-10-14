@@ -462,6 +462,7 @@ function IssueForm({
       <div
         className="sticky z-10 -mx-3 flex items-center justify-between gap-3 border-t border-line bg-surface px-4 py-3 shadow-card md:hidden"
         style={{ bottom: "var(--shell-bottom-inset)" }}
+        data-action-bar=""
       >
         <div className="flex min-w-0 flex-col leading-tight">
           <span className="text-xs text-muted">Total (est.)</span>

@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { CSSProperties, DragEvent, PointerEvent, RefObject } from "react";
 
-import { EmptyState, InlineAlert, LayoutIcon } from "@opsgrids/ui";
+import { EmptyState, InlineAlert, LayoutIcon, TABLET_QUERY, useMediaQuery } from "@opsgrids/ui";
 
 import type { Category, Product } from "@/api/types";
 import type {
@@ -141,6 +141,8 @@ export function Canvas({
   // The width the page is composed at: the merchant's chosen preview, not this pane's width.
   const designWidth = DEVICE_WIDTHS[device] ?? DESKTOP_DESIGN_WIDTH;
   const touch = useCoarsePointer();
+  // The width presets are only on screen from the tablet breakpoint up; below it there is nothing to "choose above".
+  const hasPresets = useMediaQuery(TABLET_QUERY, true);
   const stacked = designWidth < STACK_WIDTH;
   const editable = canEdit && !stacked;
 
@@ -296,7 +298,12 @@ export function Canvas({
                 <div className="p-4">
                   <InlineAlert tone="info" title="You're editing the phone width" live="off">
                     Sections run full width here and follow the order they sit in down the page, so
-                    there is nothing to move sideways. {touch ? "Move up and Move down on the Sections tab still change that order." : "Alt with up or down still changes that order. Choose Desktop or Tablet above to lay the page out."}
+                    there is nothing to move sideways.{" "}
+                    {touch
+                      ? "Move up and Move down on the Sections tab still change that order."
+                      : hasPresets
+                        ? "Alt with up or down still changes that order. Choose Desktop or Tablet above to lay the page out."
+                        : "Alt with up or down still changes that order."}
                   </InlineAlert>
                 </div>
               ) : null}

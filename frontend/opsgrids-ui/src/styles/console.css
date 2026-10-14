@@ -496,6 +496,18 @@ html {
   scroll-padding-top: 1rem;
 }
 
+/*
+ * A bar that sticks above the bottom navigation (a form's Continue, a document's Save) covers what
+ * is under it, so a field focused behind it has to scroll further. A screen with one marks it
+ * `data-action-bar`; the bar is at most 5rem tall. Below 768px only, because from there up the bar
+ * is part of the page, not on top of it.
+ */
+@media (max-width: 767px) {
+  html:has([data-action-bar]) {
+    scroll-padding-bottom: calc(var(--shell-bottom-inset) + 6rem);
+  }
+}
+
 @media (max-width: 767px) {
   html {
     scroll-padding-top: calc(var(--shell-mobile-header-h) + env(safe-area-inset-top) + 1rem);

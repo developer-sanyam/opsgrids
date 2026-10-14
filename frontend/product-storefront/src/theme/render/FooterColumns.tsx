@@ -41,13 +41,13 @@ function FooterLink({ entry }: { entry: LinkEntry }) {
   }
   if (isExternalHref(entry.href)) {
     return (
-      <a href={entry.href} style={linkStyle()}>
+      <a href={entry.href} style={linkStyle()} data-st-target="">
         {entry.label}
       </a>
     );
   }
   return (
-    <Link to={entry.href} style={linkStyle()}>
+    <Link to={entry.href} style={linkStyle()} data-st-target="">
       {entry.label}
     </Link>
   );

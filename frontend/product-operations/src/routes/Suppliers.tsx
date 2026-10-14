@@ -151,7 +151,7 @@ export function SuppliersPage() {
         <button
           type="button"
           onClick={() => navigate(`/suppliers/${s.id}`)}
-          className="flex items-center gap-3 text-left"
+          className="flex min-h-11 items-center gap-3 text-left"
         >
           <Avatar name={s.name} size="sm" />
           <span className="flex flex-col leading-tight">

@@ -85,6 +85,15 @@ export function EditorShell({
   const [phonePane, setPhonePane] = useState<PhonePane>("page");
   const idSeq = useRef(0);
 
+  // A phone edits the page as a phone shows it: 390 wide and stacked, at close to full size, rather
+  // than a 1280px desktop page shrunk to a fifth where nothing can be read or tapped. The presets
+  // are not offered here, so this is the width it opens at and stays at. Once, on arrival.
+  useEffect(() => {
+    if (!roomy) dispatch({ type: "set-device", device: "mobile" });
+    // Arrival only: a later resize must not override a width somebody chose on a wider screen.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const page = currentPage(state);
   const selected = selectedSection(state);
   const dirty = isDirty(state);

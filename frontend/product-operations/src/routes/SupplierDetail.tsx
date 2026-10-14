@@ -278,9 +278,9 @@ export function SupplierDetailPage() {
                 <MailIcon className="size-4 shrink-0 text-faint" />
                 <a
                   href={`mailto:${supplier.contact_email}`}
-                  className="truncate text-accent hover:text-accent-strong transition-colors"
+                  className="inline-flex min-h-11 min-w-0 items-center text-accent hover:text-accent-strong transition-colors"
                 >
-                  {supplier.contact_email}
+                  <span className="truncate">{supplier.contact_email}</span>
                 </a>
               </div>
             ) : null}

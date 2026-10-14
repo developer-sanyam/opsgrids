@@ -58,7 +58,9 @@ export function SectionPalette({
               Sections
             </h2>
             <p className="text-xs text-muted">
-              Drag one onto the page, or press Enter to add it at the bottom.
+              {touch
+                ? "Tap one to add it at the bottom of the page."
+                : "Drag one onto the page, or press Enter to add it at the bottom."}
             </p>
           </div>
 

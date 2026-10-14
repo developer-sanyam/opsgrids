@@ -16,6 +16,7 @@ export function StickyActionBar({ children }: { children: ReactNode }) {
     <div
       className="sticky z-10 -mx-3 flex items-center gap-3 border-t border-line bg-surface px-4 py-3"
       style={{ bottom: "var(--shell-bottom-inset)" }}
+      data-action-bar=""
     >
       {children}
     </div>

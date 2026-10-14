@@ -62,6 +62,12 @@
   .stack-rows th[scope="row"] {
     display: block;
   }
+  .stack-rows caption {
+    display: block;
+  }
+  .stack-rows th[scope="row"] {
+    padding-inline: 0;
+  }
   .stack-rows tr {
     padding-block: calc(var(--spacing) * 3);
   }
@@ -80,6 +86,8 @@
     flex-shrink: 0;
     text-align: left;
     color: var(--color-muted);
+    /* The cell may be `.money` (mono, bold); its label is always plain text. */
+    font-family: var(--font-sans);
     font-weight: 400;
   }
   .stack-rows .stack-title {

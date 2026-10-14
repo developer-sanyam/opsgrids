@@ -257,6 +257,7 @@ function ReceiveForm({ context }: { context: ReceivingContextOut }) {
           <div
             className="sticky z-10 -mx-4 flex items-center justify-end gap-3 border-t border-line bg-surface px-4 py-3 md:static md:mx-0 md:bg-transparent md:px-0 md:pb-0 md:pt-4"
             style={{ bottom: "var(--shell-bottom-inset)" }}
+            data-action-bar=""
           >
             <Button type="submit" loading={post.pending} className="w-full md:w-auto">
               Post receipt

@@ -138,7 +138,7 @@ export function InventoryPage() {
         <button
           type="button"
           onClick={() => navigate(`/inventory/${it.id}`)}
-          className="flex flex-col text-left leading-tight"
+          className="flex min-h-11 flex-col justify-center text-left leading-tight"
         >
           <span className="font-semibold text-ink hover:text-accent transition-colors">
             {it.name}
