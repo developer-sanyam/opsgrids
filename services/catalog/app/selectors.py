@@ -9,7 +9,6 @@ table cannot carry, so it is defended by a negative-authz test.
 
 from __future__ import annotations
 
-import base64
 import uuid
 from collections.abc import Sequence
 from typing import Any
@@ -31,6 +30,7 @@ from app.models import (
     SeatClass,
 )
 from platform_core.errors import ValidationProblem
+from platform_core.pagination import decode_keyset_cursor, encode_keyset_cursor
 
 
 def _audience_ok(org_id: uuid.UUID) -> Any:
@@ -414,25 +414,6 @@ async def find_bespoke_version(
 # `ctx.apply()` here: the audience filter below is a *view* choice, not isolation. The gate is the
 # route's operator-role dependency, tested per route.
 
-#: Unit separator — never legal in a product key, a plan code, a uuid or a number.
-_CURSOR_SEP = "\x1f"
-
-
-def encode_cursor(*parts: str) -> str:
-    """The ordering columns of the last row on a page, as one opaque token."""
-    return base64.urlsafe_b64encode(_CURSOR_SEP.join(parts).encode("utf-8")).decode("ascii")
-
-
-def decode_cursor(cursor: str, *, expected_parts: int) -> list[str]:
-    """A cursor comes back from a client, so a malformed one is a 422, not a 500."""
-    try:
-        parts = base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8").split(_CURSOR_SEP)
-    except (ValueError, UnicodeDecodeError) as exc:
-        raise ValidationProblem("Invalid cursor") from exc
-    if len(parts) != expected_parts:
-        raise ValidationProblem("Invalid cursor")
-    return parts
-
 
 def _public_version_exists() -> Any:
     return (
@@ -481,7 +462,7 @@ async def list_plans_page(
     elif audience == "restricted":
         stmt = stmt.where(_restricted_version_exists())
     if cursor is not None:
-        key, sort_order, code, plan_id = decode_cursor(cursor, expected_parts=4)
+        key, sort_order, code, plan_id = decode_keyset_cursor(cursor, expected_parts=4)
         try:
             after = (key, int(sort_order), code, uuid.UUID(plan_id))
         except ValueError as exc:
@@ -493,7 +474,9 @@ async def list_plans_page(
     next_cursor = None
     if len(rows) > limit and page:
         last = page[-1]
-        next_cursor = encode_cursor(last.product_key, str(last.sort_order), last.code, str(last.id))
+        next_cursor = encode_keyset_cursor(
+            last.product_key, str(last.sort_order), last.code, str(last.id)
+        )
     return page, next_cursor
 
 
@@ -589,7 +572,7 @@ async def version_summaries_page(
     elif audience == "restricted":
         stmt = stmt.where(PlanVersion.restricted_to_org_id.is_not(None))
     if cursor is not None:
-        (raw,) = decode_cursor(cursor, expected_parts=1)
+        (raw,) = decode_keyset_cursor(cursor, expected_parts=1)
         try:
             before = int(raw)
         except ValueError as exc:
@@ -614,7 +597,9 @@ async def version_summaries_page(
         }
         for v, prices, features in page
     ]
-    next_cursor = encode_cursor(str(page[-1][0].version_no)) if len(rows) > limit and page else None
+    next_cursor = (
+        encode_keyset_cursor(str(page[-1][0].version_no)) if len(rows) > limit and page else None
+    )
     return items, next_cursor
 
 
@@ -657,8 +642,6 @@ __all__ = [
     "all_public_flat_plans",
     "clone_source",
     "current_public_versions",
-    "decode_cursor",
-    "encode_cursor",
     "find_bespoke_version",
     "get_idempotency_claim",
     "get_plan",

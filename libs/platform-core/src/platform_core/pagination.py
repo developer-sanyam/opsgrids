@@ -6,10 +6,14 @@ cannot disagree under concurrent writes.
 
 Apply `ScopeContext.apply()` to the statement **before** paginating, or the count leaks
 how many rows exist outside the caller's scope.
+
+Keyset cursors (`encode_keyset_cursor` / `decode_keyset_cursor`) are the alternative for lists
+that read cross-tenant or grow without bound: the cursor is the ordering columns of the last row.
 """
 
 from __future__ import annotations
 
+import base64
 import math
 from typing import Annotated, Any
 
@@ -17,6 +21,12 @@ from fastapi import Depends, Query
 from pydantic import BaseModel
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from platform_core.errors import ValidationProblem
+
+#: Unit separator — never a legal character in a UUID, an ISO timestamp, a number or a
+#: product/plan/meter key, so joining and splitting on it is unambiguous without escaping.
+_CURSOR_SEP = "\x1f"
 
 
 class PageParams(BaseModel):
@@ -76,3 +86,23 @@ class _null_ctx:
 
     async def __aexit__(self, *_: object) -> None:
         return None
+
+
+def encode_keyset_cursor(*parts: str) -> str:
+    """Pack the ordering columns of the last row on a page into one opaque token."""
+    return base64.urlsafe_b64encode(_CURSOR_SEP.join(parts).encode("utf-8")).decode("ascii")
+
+
+def decode_keyset_cursor(cursor: str, *, expected_parts: int) -> list[str]:
+    """Unpack a token `encode_keyset_cursor` produced.
+
+    A cursor comes back from a client, so a stale, doctored or foreign one is a 422
+    (`ValidationProblem`), not a 500 from an index error two frames later.
+    """
+    try:
+        parts = base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8").split(_CURSOR_SEP)
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ValidationProblem("Invalid cursor") from exc
+    if len(parts) != expected_parts:
+        raise ValidationProblem("Invalid cursor")
+    return parts
