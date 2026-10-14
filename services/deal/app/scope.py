@@ -21,28 +21,12 @@ services do.
 
 from __future__ import annotations
 
-from typing import Any
-
 from app.models import Deal
-from platform_core.auth import register_scope_resolver
+from platform_core.auth import column_scope_resolver, register_scope_resolver
 
 PRODUCT = "crm"
 
 
-class DealScopeResolver:
-    """The `ScopeResolver` for pipeline rows. OWN is the owning rep; TEAM/LOCATION are
-    unsupported."""
-
-    def owner_column(self) -> Any:
-        return Deal.owner_id
-
-    def team_column(self) -> Any | None:
-        return None
-
-    def location_column(self) -> Any | None:
-        return None
-
-
 def register() -> None:
     """Register the resolver for the `crm` product. Idempotent — safe to call at import."""
-    register_scope_resolver(PRODUCT, DealScopeResolver)
+    register_scope_resolver(PRODUCT, column_scope_resolver(owner=Deal.owner_id))

@@ -384,6 +384,40 @@ class ScopeResolver(Protocol):
     def location_column(self) -> Any | None: ...
 
 
+class _ColumnScopeResolver:
+    """A `ScopeResolver` that is nothing but its three columns."""
+
+    def __init__(self, owner: Any, team: Any | None, location: Any | None) -> None:
+        self._owner = owner
+        self._team = team
+        self._location = location
+
+    def owner_column(self) -> Any:
+        return self._owner
+
+    def team_column(self) -> Any | None:
+        return self._team
+
+    def location_column(self) -> Any | None:
+        return self._location
+
+
+def column_scope_resolver(
+    *, owner: Any, team: Any | None = None, location: Any | None = None
+) -> Callable[[], ScopeResolver]:
+    """A factory for the common `ScopeResolver`: one owner column, and TEAM / LOCATION either
+    named or (the default) unsupported.
+
+    Pass the result to `register_scope_resolver(product, factory)`. A product whose rows are only
+    ever narrowed by an owner column — which is most of them — needs no resolver class of its own.
+    """
+
+    def factory() -> ScopeResolver:
+        return _ColumnScopeResolver(owner, team, location)
+
+    return factory
+
+
 _resolvers: dict[str, tuple[Callable[[], ScopeResolver], OwnerSubject]] = {}
 
 
@@ -689,6 +723,7 @@ __all__ = [
     "ScopeContext",
     "ScopeResolver",
     "client_ip",
+    "column_scope_resolver",
     "decode_token",
     "get_principal",
     "owner_subject_for",

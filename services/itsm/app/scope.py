@@ -16,27 +16,12 @@ passes its own owner column to `ctx.apply`, which is the actual enforcement poin
 
 from __future__ import annotations
 
-from typing import Any
-
 from app.models import Incident
-from platform_core.auth import register_scope_resolver
+from platform_core.auth import column_scope_resolver, register_scope_resolver
 
 PRODUCT = "itsm"
 
 
-class IncidentScopeResolver:
-    """The `ScopeResolver` for ITSM rows. OWN is the requester; TEAM/LOCATION are unsupported."""
-
-    def owner_column(self) -> Any:
-        return Incident.requester_id
-
-    def team_column(self) -> Any | None:
-        return None
-
-    def location_column(self) -> Any | None:
-        return None
-
-
 def register() -> None:
     """Register the resolver for the `itsm` product. Idempotent — safe to call at import."""
-    register_scope_resolver(PRODUCT, IncidentScopeResolver)
+    register_scope_resolver(PRODUCT, column_scope_resolver(owner=Incident.requester_id))

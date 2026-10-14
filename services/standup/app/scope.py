@@ -14,27 +14,12 @@ scope on a pulseboard resource is refused by `ScopeContext.apply` rather than si
 
 from __future__ import annotations
 
-from typing import Any
-
 from app.models import StandupEntry
-from platform_core.auth import register_scope_resolver
+from platform_core.auth import column_scope_resolver, register_scope_resolver
 
 PRODUCT = "pulseboard"
 
 
-class StandupScopeResolver:
-    """The `ScopeResolver` for standup rows. OWN is the person; TEAM/LOCATION unsupported."""
-
-    def owner_column(self) -> Any:
-        return StandupEntry.person_id
-
-    def team_column(self) -> Any | None:
-        return None
-
-    def location_column(self) -> Any | None:
-        return None
-
-
 def register() -> None:
     """Register the resolver for the `pulseboard` product. Idempotent — safe at import."""
-    register_scope_resolver(PRODUCT, StandupScopeResolver)
+    register_scope_resolver(PRODUCT, column_scope_resolver(owner=StandupEntry.person_id))
