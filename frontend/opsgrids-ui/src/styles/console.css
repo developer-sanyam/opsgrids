@@ -449,6 +449,14 @@ body {
   padding-bottom: calc(var(--shell-bottom-inset) + 3rem);
 }
 
+/* A screen's one primary action, pinned to the foot of the viewport just above the fixed bottom nav
+   (the same clearance `--shell-bottom-inset` gives a toast) so a long form never hides it. */
+.shell-sticky-action {
+  position: sticky;
+  bottom: var(--shell-bottom-inset);
+  z-index: 20;
+}
+
 @media (prefers-reduced-motion: reduce) {
   :root {
     --duration-instant: 0ms;
