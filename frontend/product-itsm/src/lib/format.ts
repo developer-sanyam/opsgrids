@@ -1,3 +1,5 @@
+import { formatInstant } from "@opsgrids/ui";
+
 import type {
   AssetStatus,
   AssetType,
@@ -11,18 +13,14 @@ import type {
 import { now } from "./clock";
 import { currencyDecimals } from "./money";
 
-/** "2026-08-24T09:24:00Z" -> "24 Aug, 9:24 AM". Rendered in UTC so a stored time shows as-is. */
+/**
+ * "2026-08-24T09:24:00Z" -> "24 Aug, 2:54 pm IST". An instant, so it renders in the viewer's own
+ * zone and says which zone that is. A calendar date goes through `formatDate` instead.
+ */
 export function formatDateTime(iso: string | null): string {
   if (!iso) return "—";
-  const d = new Date(iso);
-  return d.toLocaleString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-    timeZone: "UTC",
-  });
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return formatInstant(iso, null, { locations: {}, organizationZone: zone }, "datetime").value;
 }
 
 /** "2021-03-15" -> "15 Mar 2021". */

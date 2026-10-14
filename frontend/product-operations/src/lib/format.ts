@@ -4,7 +4,7 @@
  * These are the only place minor units become a display string.
  */
 
-import { formatMoney as formatMajorMoney, toMajor } from "@opsgrids/ui";
+import { formatInstant, formatMoney as formatMajorMoney, toMajor } from "@opsgrids/ui";
 
 const SYMBOLS: Record<string, string> = {
   INR: "₹",
@@ -74,14 +74,8 @@ export function formatDateRange(from: string | null, to: string | null): string 
  *  happened matters (a sync attempt, a health check), not just which day. */
 export function formatDateTime(iso: string | null): string {
   if (!iso) return "—";
-  const d = new Date(iso);
-  return d.toLocaleString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return formatInstant(iso, null, { locations: {}, organizationZone: zone }, "datetime").value;
 }
 
 

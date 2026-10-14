@@ -1,3 +1,5 @@
+import { formatInstant } from "@opsgrids/ui";
+
 import type { Channel, Priority, TicketStatus } from "@/api/types";
 
 /**
@@ -27,16 +29,14 @@ export function formatDate(iso: string | null): string {
   });
 }
 
-/** "2026-08-24T09:24:00Z" -> "24 Aug, 9:24 AM". */
+/**
+ * "2026-08-24T09:24:00Z" -> "24 Aug, 2:54 pm IST". An instant, so it renders in the viewer's own
+ * zone and says which zone that is.
+ */
 export function formatDateTime(iso: string | null): string {
   if (!iso) return "—";
-  const d = new Date(iso);
-  const date = d.toLocaleDateString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    timeZone: "UTC",
-  });
-  return `${date}, ${formatTime(iso)}`;
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return formatInstant(iso, null, { locations: {}, organizationZone: zone }, "datetime").value;
 }
 
 /** A compact "time ago / from now" against a reference instant. "12m ago" / "in 2h". */
