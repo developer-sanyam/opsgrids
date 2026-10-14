@@ -182,10 +182,37 @@ esac
 
 ssh_box() { ssh -o BatchMode=yes "$host" "$@"; }
 
+# Mirrors `remote.sh`'s own `dotenv_get` parsing exactly (MINOR 4 of the 2026-09-24 SSO
+# review) — quoted value is what is between the quotes, an unquoted value's trailing
+# ` # comment` is dropped, a CR and spaces are stripped — so a value read here for
+# publishing is judged exactly the way the box's own deploy scripts read the same key, not a
+# second, slightly different reading that could disagree with them. `tail -n 1` on the raw
+# `sed` capture at each call site is the other half: the LAST assignment in the file wins,
+# matching `dotenv_get`, not the first.
+_dotenv_value() {
+	local raw="$1"
+	raw=${raw%$'\r'}
+	case "$raw" in
+	\"*)
+		raw=${raw#\"}
+		raw=${raw%%\"*}
+		;;
+	\'*)
+		raw=${raw#\'}
+		raw=${raw%%\'*}
+		;;
+	*)
+		raw=$(printf '%s' "$raw" | sed -e 's/^[[:space:]]\{1,\}#.*$//' -e 's/[[:space:]]\{1,\}#.*$//')
+		;;
+	esac
+	printf '%s' "$raw" | tr -d ' \r'
+}
+
 # The same wrong-box interlock the deploy uses. Changing what people see is a deploy.
 ssh_box "$repo/infrastructure/edge/remote.sh" assert-host "$confirm"
 
-web_root=$(ssh_box "sed -n 's/^EDGE_WEB_ROOT=//p' '$repo/infrastructure/edge/.env' | head -1")
+web_root=$(ssh_box "sed -n 's/^EDGE_WEB_ROOT=//p' '$repo/infrastructure/edge/.env' | tail -n 1")
+web_root=$(_dotenv_value "$web_root")
 web_root="${web_root:-/srv/opsgrids/web}"
 if [ "$app" = "buyer" ]; then
 	app_root="$web_root"
@@ -256,32 +283,6 @@ MISSING
 		echo "  Vite 7 refuses older runtimes. Switch with nvm before publishing." >&2
 		exit 1
 	fi
-
-	# Mirrors `remote.sh`'s own `dotenv_get` parsing exactly (MINOR 4 of the 2026-09-24 SSO
-	# review) — quoted value is what is between the quotes, an unquoted value's trailing
-	# ` # comment` is dropped, a CR and spaces are stripped — so a value read here for
-	# publishing is judged exactly the way the box's own deploy scripts read the same key, not a
-	# second, slightly different reading that could disagree with them. `tail -n 1` on the raw
-	# `sed` capture below is the other half: the LAST assignment in the file wins, matching
-	# `dotenv_get`, not the first.
-	_dotenv_value() {
-		local raw="$1"
-		raw=${raw%$'\r'}
-		case "$raw" in
-		\"*)
-			raw=${raw#\"}
-			raw=${raw%%\"*}
-			;;
-		\'*)
-			raw=${raw#\'}
-			raw=${raw%%\'*}
-			;;
-		*)
-			raw=$(printf '%s' "$raw" | sed -e 's/^[[:space:]]\{1,\}#.*$//' -e 's/[[:space:]]\{1,\}#.*$//')
-			;;
-		esac
-		printf '%s' "$raw" | tr -d ' \r'
-	}
 
 	# The scheme, host and port only — an origin, never a base URL with a path. `APP_BASE_URL`
 	# is documented as one (`.env.example`: "used in emails and links"), so a value with a path
