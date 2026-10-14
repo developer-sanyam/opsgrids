@@ -126,4 +126,13 @@ describe("Pagination", () => {
     await user.selectOptions(screen.getByLabelText("Per page"), "50");
     expect(onSizeChange).toHaveBeenCalledWith(50);
   });
+
+  it("keeps the previous and next controls 44px wide on a phone, however tight the row", () => {
+    renderPaged({ page: 3 });
+    for (const name of ["Previous page", "Next page"]) {
+      const cls = screen.getByRole("button", { name }).className;
+      expect(cls).toContain("size-11");
+      expect(cls).toContain("shrink-0");
+    }
+  });
 });

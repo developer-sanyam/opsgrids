@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 
 import { ApiError, getPlatformHost, PLATFORM_PRODUCTS } from "@opsgrids/client";
 import type { PlatformProductKey } from "@opsgrids/client";
-import { EmptyState, ErrorState, SearchInput, Skeleton } from "@opsgrids/ui";
+import { EmptyState, ErrorState, SearchInput, Skeleton, useToast } from "@opsgrids/ui";
 
 import { listActivations, listPlans, listProducts, listSubscriptions, startTrial } from "@/api";
 import type { Activation, Plan, PlanVersion, Product, Subscription } from "@/api/types";
@@ -94,7 +94,7 @@ type Load =
 export function MarketplacePage() {
   const [load, setLoad] = useState<Load>({ state: "loading" });
   const [busy, setBusy] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const toast = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const query = searchParams.get("q") ?? "";
 
@@ -134,18 +134,19 @@ export function MarketplacePage() {
     const offer = trialOffer(row.plans);
     if (!offer) return;
     setBusy(row.product.key);
-    setNotice(null);
     try {
       const started = await startTrial(row.product.key, offer.id);
-      setNotice(
+      // A toast, not a banner at the top of the page: the card that was pressed is often well below
+      // the fold, and a toast is announced where a banner appearing off-screen is not.
+      toast.success(
         `${shortProductName(row.product.name)} is starting. Your 14-day trial begins now; its roles arrive in a moment. ${trialTerms(started.trial_ends_at)}`,
       );
       await refresh();
     } catch (err) {
       if (err instanceof ApiError) {
-        setNotice(`Couldn't start ${shortProductName(row.product.name)}: ${err.problem?.detail ?? err.message}`);
+        toast.error(`Couldn't start ${shortProductName(row.product.name)}: ${err.problem?.detail ?? err.message}`);
       } else {
-        setNotice(`Couldn't start ${shortProductName(row.product.name)}.`);
+        toast.error(`Couldn't start ${shortProductName(row.product.name)}.`);
       }
     } finally {
       setBusy(null);
@@ -160,39 +161,18 @@ export function MarketplacePage() {
         description="Every product runs on the same account, the same people and the same permissions. Start one on a 14-day trial; add another whenever you like."
       />
 
-      {notice ? (
-        <p role="status" className="rounded-tile bg-surface px-4 py-3 text-sm font-medium text-ink-soft" style={{ boxShadow: "var(--shadow-float)" }}>
-          {notice}
-        </p>
-      ) : null}
-
       {load.state === "loading" ? (
-        <ul className="grid grid-cols-1 list-none gap-4 p-0 sm:grid-cols-2 xl:grid-cols-3" aria-hidden>
-          {[0, 1, 2].map((i) => (
-            <li key={i}>
-              <Skeleton className="h-56 w-full rounded-card" />
-            </li>
-          ))}
-        </ul>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          <Skeleton label="Loading products" className="h-56 w-full rounded-card" />
+          <Skeleton className="h-56 w-full rounded-card max-sm:hidden" />
+          <Skeleton className="h-56 w-full rounded-card max-xl:hidden" />
+        </div>
       ) : null}
       {load.state === "error" ? (
         <ErrorState
           title="Couldn't load the catalogue"
           message={load.message}
           onRetry={() => void refresh()}
-        />
-      ) : null}
-
-      {load.state === "ready" ? (
-        <SearchInput
-          label="Search products"
-          placeholder="Search by name, tagline or category"
-          value={query}
-          onChange={(e) => {
-            const next = e.target.value;
-            setSearchParams(next ? { q: next } : {}, { replace: true });
-          }}
-          containerClassName="max-w-sm"
         />
       ) : null}
 
@@ -206,25 +186,42 @@ export function MarketplacePage() {
                   .some((v) => v.toLowerCase().includes(needle)),
               )
             : load.rows;
-          if (filtered.length === 0) {
-            return (
-              <EmptyState
-                title="No products match that search"
-                description="Try a shorter search term."
-                action={
-                  <Button variant="outline" onClick={() => setSearchParams({}, { replace: true })}>
-                    Clear search
-                  </Button>
-                }
-              />
-            );
-          }
           return (
-            <ul className="grid grid-cols-1 list-none gap-4 p-0 sm:grid-cols-2 xl:grid-cols-3">
-              {filtered.map((row) => (
-                <ProductCard key={row.product.key} row={row} busy={busy === row.product.key} onStart={() => void handleStart(row)} />
-              ))}
-            </ul>
+            <>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                <SearchInput
+                  label="Search products"
+                  placeholder="Search by name, tagline or category"
+                  value={query}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setSearchParams(next ? { q: next } : {}, { replace: true });
+                  }}
+                  containerClassName="w-full sm:max-w-sm"
+                />
+                {/* Announced as the search narrows the list - the count is the result a screen reader hears. */}
+                <p aria-live="polite" className="tnum text-sm text-muted">
+                  {filtered.length} {filtered.length === 1 ? "product" : "products"}
+                </p>
+              </div>
+              {filtered.length === 0 ? (
+                <EmptyState
+                  title="No products match that search"
+                  description="Try a shorter search term."
+                  action={
+                    <Button variant="outline" onClick={() => setSearchParams({}, { replace: true })}>
+                      Clear search
+                    </Button>
+                  }
+                />
+              ) : (
+                <ul className="grid grid-cols-1 list-none gap-4 p-0 sm:grid-cols-2 xl:grid-cols-3">
+                  {filtered.map((row) => (
+                    <ProductCard key={row.product.key} row={row} busy={busy === row.product.key} onStart={() => void handleStart(row)} />
+                  ))}
+                </ul>
+              )}
+            </>
           );
         })()
       ) : null}

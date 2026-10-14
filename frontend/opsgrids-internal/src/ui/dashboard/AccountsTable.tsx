@@ -181,7 +181,7 @@ function MobileAccountSearch({
         type="button"
         onClick={() => onOpenChange(true)}
         aria-label="Search accounts"
-        className="grid size-10 shrink-0 place-items-center rounded-tile border border-field-edge bg-surface text-ink-soft transition-colors hover:bg-ground"
+        className="grid size-11 shrink-0 place-items-center rounded-tile border border-field-edge bg-surface text-ink-soft transition-colors hover:bg-ground"
       >
         <SearchIcon className="size-4.5" />
       </button>
@@ -208,7 +208,7 @@ function MobileAccountSearch({
           onChange("");
         }}
         aria-label="Close search"
-        className="grid size-10 shrink-0 place-items-center rounded-tile text-ink-soft transition-colors hover:bg-ground"
+        className="grid size-11 shrink-0 place-items-center rounded-tile text-ink-soft transition-colors hover:bg-ground"
       >
         <CloseIcon className="size-4.5" />
       </button>

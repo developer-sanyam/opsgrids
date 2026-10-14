@@ -189,11 +189,11 @@ floats lower than the select beside it, a card something spills out of, a wrappe
 its input down, chart ticks that touch, a page with no room under its last line.
 
 It is a developer's tool, **not part of `visual:check` or CI**: it starts a Vite dev server per app
-(ports 5600-5699 only) and takes several minutes.
+(ports 5600-5699 by default) and takes several minutes.
 
 ```bash
 cd frontend
-pnpm --filter @opsgrids/visual run sweep                                   # all 13 apps, the 4 phone widths
+pnpm --filter @opsgrids/visual run sweep                                   # all 14 apps, the 4 phone widths
 SWEEP_APPS=product-engage,product-finance pnpm --filter @opsgrids/visual run sweep
 SWEEP_WIDTHS=768,1280 SWEEP_THEME=dark pnpm --filter @opsgrids/visual run sweep
 SWEEP_ROUTE=/invoices SWEEP_APPS=product-finance pnpm --filter @opsgrids/visual run sweep
@@ -201,7 +201,8 @@ SWEEP_ROUTE=/invoices SWEEP_APPS=product-finance pnpm --filter @opsgrids/visual 
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `SWEEP_APPS` | comma list of package directories | all 13 |
+| `SWEEP_APPS` | comma list of package directories | all 14 |
+| `SWEEP_PORT_START`, `SWEEP_PORT_END` | the dev-server port range `[start, end)`; each app starts at its own offset and wraps | `5600`, `5700` |
 | `SWEEP_WIDTHS` | viewport widths | `320,360,390,414` |
 | `SWEEP_THEME` | `light` or `dark` | `light` |
 | `SWEEP_ROUTE` | only routes whose path contains this | every route |

@@ -724,9 +724,9 @@ function InviteDialog({ roles, onClose, onSaved }: { roles: Role[]; onClose: () 
       </div>
       <TextField
         label="Expires in (days)"
-        type="number"
-        min={1}
-        max={90}
+        inputMode="numeric"
+        pattern="[0-9]*"
+        helper="Between 1 and 90 days."
         value={expiresInDays}
         onChange={(e) => setExpiresInDays(e.target.value)}
         error={save.fieldErrors.expires_in_days}

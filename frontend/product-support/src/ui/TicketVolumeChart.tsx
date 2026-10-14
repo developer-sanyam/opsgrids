@@ -49,7 +49,7 @@ export function TicketVolumeChart({ data }: TicketVolumeChartProps) {
             >
               <div className="relative flex h-full w-full items-end justify-center gap-1">
                 {active ? (
-                  <div className="absolute -top-1 left-1/2 z-10 flex -translate-x-1/2 -translate-y-full gap-2 rounded-tile bg-ink px-2.5 py-1.5 text-[0.7rem] font-semibold text-surface shadow-float">
+                  <div className="absolute -top-1 left-1/2 z-10 flex -translate-x-1/2 -translate-y-full gap-2 rounded-tile bg-ink px-2.5 py-1.5 text-caption font-semibold text-surface shadow-float">
                     <span className="text-accent-strong">
                       <span className="text-surface/60">Opened </span>
                       <span className="tnum">{d.opened}</span>
@@ -77,7 +77,7 @@ export function TicketVolumeChart({ data }: TicketVolumeChartProps) {
               </div>
               <span
                 className={cn(
-                  "text-[0.7rem] font-semibold tnum transition-colors",
+                  "text-caption font-semibold tnum transition-colors",
                   active ? "text-ink" : "text-faint",
                 )}
               >

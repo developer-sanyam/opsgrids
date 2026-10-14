@@ -62,7 +62,7 @@ export function CategoryDonut({ data, total }: CategoryDonutProps) {
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center">
           <span className="display text-2xl font-extrabold tnum leading-none">{total}</span>
-          <span className="text-[0.7rem] font-medium text-muted">Open</span>
+          <span className="text-caption font-medium text-muted">Open</span>
         </div>
       </div>
 

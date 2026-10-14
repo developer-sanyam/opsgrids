@@ -42,6 +42,12 @@ interface FormDialogProps {
    * deleted is asked to discard nothing.
    */
   dirty?: boolean | undefined;
+  /**
+   * The submit does something destructive or irreversible - suspend, delete, remove. Draws the
+   * submit button as `destructive` (semantic red) instead of the accent. The label still says what
+   * it does; colour never carries that alone.
+   */
+  destructive?: boolean | undefined;
   /** The fields. See the note on resetting, below. */
   children: ReactNode;
 }
@@ -85,6 +91,7 @@ export function FormDialog({
   initialFocusRef,
   size = "md",
   dirty = false,
+  destructive = false,
   children,
 }: FormDialogProps) {
   const [confirming, setConfirming] = useState(false);
@@ -145,7 +152,7 @@ export function FormDialog({
           <Button type="button" variant="ghost" onClick={close} disabled={pending}>
             {cancelLabel}
           </Button>
-          <Button type="submit" variant="primary" loading={pending}>
+          <Button type="submit" variant={destructive ? "destructive" : "primary"} loading={pending}>
             {pending ? (pendingLabel ?? submitLabel) : submitLabel}
           </Button>
         </div>

@@ -10,6 +10,7 @@ import {
   ErrorState,
   FormDialog,
   RowActions,
+  SearchInput,
   Select,
   Skeleton,
   Tag,
@@ -261,7 +262,17 @@ function RoleForm({
   const [codeError, setCodeError] = useState<string | undefined>(undefined);
   const nameRef = useRef<HTMLInputElement>(null);
 
-  const grouped = useMemo(() => groupPermissions(permissions), [permissions]);
+  // A catalogue of this size is a long scroll on a phone: the filter narrows what is shown, and
+  // never what is granted - a ticked permission that is filtered out stays in `grants`.
+  const [filter, setFilter] = useState("");
+  const shown = useMemo(() => {
+    const needle = filter.trim().toLowerCase();
+    if (needle === "") return permissions;
+    return permissions.filter((perm) =>
+      [perm.code, perm.resource, perm.action, perm.description ?? ""].some((v) => v.toLowerCase().includes(needle)),
+    );
+  }, [permissions, filter]);
+  const grouped = useMemo(() => groupPermissions(shown), [shown]);
 
   // A read-only system role can't be edited, so it's never "dirty" — closing it never discards
   // anything. Otherwise compared against the same seed the fields above initialised from.
@@ -364,6 +375,21 @@ function RoleForm({
         </>
       )}
 
+      <SearchInput
+        label="Filter permissions"
+        placeholder="Filter permissions"
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+        // Enter in a search field inside the form would submit the role.
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.preventDefault();
+        }}
+      />
+      {shown.length === 0 ? (
+        <p role="status" className="text-sm text-muted">
+          No permissions match that filter.
+        </p>
+      ) : null}
       <div className="flex flex-col gap-4">
         {Array.from(grouped.entries()).map(([product, modules]) => (
           <div key={product} className="flex flex-col gap-2">

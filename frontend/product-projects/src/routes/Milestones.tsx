@@ -65,10 +65,10 @@ function MilestoneRow({
         {d ? (
           <>
             <span className="text-base font-extrabold tnum">{day}</span>
-            <span className="text-[0.6rem] font-bold uppercase tracking-wide">{month}</span>
+            <span className="text-caption font-bold uppercase tracking-wide">{month}</span>
           </>
         ) : (
-          <span className="text-[0.65rem] font-bold uppercase tracking-wide text-faint">No date</span>
+          <span className="text-caption font-bold uppercase tracking-wide text-faint">No date</span>
         )}
       </div>
 
@@ -96,14 +96,14 @@ function MilestoneRow({
         <Avatar name={milestone.owner.name} size="sm" />
         <div className="flex flex-col leading-tight">
           <span className="text-xs font-semibold text-ink">{milestone.owner.name}</span>
-          <span className="text-[0.7rem] text-muted">{milestone.owner.role}</span>
+          <span className="text-caption text-muted">{milestone.owner.role}</span>
         </div>
       </div>
 
       <div className="flex shrink-0 items-center justify-between gap-2 sm:flex-col sm:items-end">
         <div className="flex flex-col items-start gap-1 sm:items-end">
           <MilestoneStatusPill status={milestone.status} />
-          <span className="text-[0.7rem] font-medium text-faint tnum">
+          <span className="text-caption font-medium text-faint tnum">
             {formatDate(milestone.due_date)} · {relativeDue(milestone.due_date, today())}
           </span>
         </div>
@@ -210,7 +210,7 @@ export function MilestonesPage() {
       />
 
       <Card className="p-4 sm:p-5 flex flex-col gap-4">
-        <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
+        <div role="group" aria-label="Filter milestones" className="flex items-center gap-1.5 overflow-x-auto -mx-1 -my-1 px-1 py-1">
           {FILTERS.map((f) => (
             <Pill key={f.value} active={filter === f.value} onClick={() => setFilter(f.value)}>
               {f.label}

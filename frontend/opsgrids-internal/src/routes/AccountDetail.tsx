@@ -49,7 +49,7 @@ function SubscriptionsCard({ orgId, reloadKey }: { orgId: string; reloadKey: num
       header: "Plan version",
       cellClassName: "hidden sm:table-cell",
       headerClassName: "hidden sm:table-cell",
-      render: (s) => <span className="mono truncate text-xs text-faint">{s.plan_version_id ?? "—"}</span>,
+      render: (s) => <span className="mono break-all text-xs text-faint">{s.plan_version_id ?? "—"}</span>,
     },
     {
       key: "amount",
@@ -167,7 +167,7 @@ function LedgerCard({ orgId, reloadKey }: { orgId: string; reloadKey: number }) 
       ) : ledger.data.items.length === 0 ? (
         <p className="py-4 text-sm text-muted">No credit or comp grants on this account.</p>
       ) : (
-        <DataTable columns={columns} rows={ledger.data.items} rowKey={(e) => e.id} caption="Credit ledger" dense />
+        <DataTable columns={columns} rows={ledger.data.items} rowKey={(e) => e.id} caption="Credit ledger" />
       )}
     </Card>
   );
@@ -253,7 +253,7 @@ export function AccountDetailPage() {
       <div className="flex flex-col gap-4">
         <Link
           to="/accounts"
-          className="inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors"
+          className="hit-44 relative inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors"
         >
           <ArrowLeftIcon className="size-4" />
           All accounts

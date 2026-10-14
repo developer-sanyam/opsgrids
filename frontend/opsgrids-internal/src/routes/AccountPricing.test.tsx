@@ -311,7 +311,9 @@ describe("the Set price dialog", () => {
     await openDialog();
     const amount = screen.getByLabelText("Amount (₹)");
     await userEvent.type(amount, "12.999");
-    await userEvent.tab();
+    // Leaving the field by clicking the next one: jsdom has no layout, so the dialog's Tab trap sees
+    // a single focusable control and keeps focus on it; a real browser tabs on.
+    await userEvent.click(screen.getByLabelText("Reason (required)"));
     expect(screen.getByText("Enter at most 2 decimal places.")).toBeTruthy();
     expect(amount.getAttribute("aria-invalid")).toBe("true");
     expect(amount.getAttribute("aria-describedby")).toBeTruthy();

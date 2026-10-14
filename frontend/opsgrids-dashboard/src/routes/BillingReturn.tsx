@@ -76,7 +76,7 @@ export function BillingReturnPage() {
           title="There is no payment to check here"
           description="This link is missing its payment reference. Open Invoices to see what is still due."
           action={
-            <Link to="/invoices" className="font-semibold text-accent-ink underline underline-offset-2 hover:no-underline">
+            <Link to="/invoices" className="hit-44 relative font-semibold text-accent-ink underline underline-offset-2 hover:no-underline">
               Go to Invoices
             </Link>
           }

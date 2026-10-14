@@ -12,12 +12,12 @@ export function HelpPage() {
         </p>
         <ul className="flex list-none flex-col gap-1 p-0 text-sm">
           <li>
-            <a href="tel:+919019527568" className="font-semibold text-ink underline-offset-2 hover:underline">
+            <a href="tel:+919019527568" className="hit-44 relative font-semibold text-ink underline-offset-2 hover:underline">
               +91 90195 27568
             </a>
           </li>
           <li>
-            <a href="tel:+918949263849" className="font-semibold text-ink underline-offset-2 hover:underline">
+            <a href="tel:+918949263849" className="hit-44 relative font-semibold text-ink underline-offset-2 hover:underline">
               +91 89492 63849
             </a>
           </li>

@@ -21,9 +21,9 @@ const CAN_WRITE = "itsm.service.request.write";
 
 function PropertyRow({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-3 py-2.5">
+    <div className="flex flex-col items-start gap-1 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
       <span className="text-sm text-muted">{label}</span>
-      <span className="text-sm font-semibold text-ink text-right">{children}</span>
+      <span className="w-full text-sm font-semibold text-ink sm:w-auto sm:text-right">{children}</span>
     </div>
   );
 }
@@ -55,7 +55,7 @@ function AssigneeControl({
 
   return (
     <form
-      className="flex w-44 flex-col items-end gap-1.5"
+      className="flex w-full flex-col gap-1.5 sm:w-44 sm:items-end"
       onSubmit={(e) => {
         e.preventDefault();
         if (value.trim() !== (request.assignee ?? "")) void change.mutate(value.trim());
@@ -123,7 +123,7 @@ export function RequestDetailPage() {
       <button
         type="button"
         onClick={() => navigate("/requests")}
-        className="inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors"
+        className="hit-44 relative inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors"
       >
         <ArrowLeftIcon className="size-4" />
         Back to requests
@@ -131,7 +131,7 @@ export function RequestDetailPage() {
 
       {state.status === "loading" && !request ? (
         <Card className="p-6">
-          <Skeleton className="h-8 w-2/3" />
+          <Skeleton label="Loading request" className="h-8 w-2/3" />
           <Skeleton className="mt-4 h-40 w-full rounded-tile" />
         </Card>
       ) : null}

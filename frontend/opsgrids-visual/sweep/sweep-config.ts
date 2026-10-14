@@ -19,6 +19,7 @@ export interface SweepApp {
 
 export const APPS: Record<string, SweepApp> = {
   "opsgrids-dashboard": { dir: "opsgrids-dashboard", slot: "dashboard", mode: "harness" },
+  "opsgrids-internal": { dir: "opsgrids-internal", slot: "internal", mode: "fixtures" },
   "product-crm": { dir: "product-crm", slot: "crm", mode: "fixtures" },
   "product-engage": { dir: "product-engage", slot: "engage", mode: "fixtures" },
   "product-finance": { dir: "product-finance", slot: "finance", mode: "fixtures" },
@@ -46,4 +47,13 @@ export function sweepOut(): string {
   const out = process.env["SWEEP_OUT"] ?? join(FRONTEND_ROOT, "opsgrids-visual", "test-results", "sweep");
   mkdirSync(out, { recursive: true });
   return out;
+}
+
+/** The ports the sweep's dev servers may use: `[start, end)`. Defaults to the sweep's own 5600-5699;
+ *  a session that was given a different range sets `SWEEP_PORT_START` and `SWEEP_PORT_END`. */
+export function sweepPorts(): { start: number; end: number } {
+  return {
+    start: Number(process.env["SWEEP_PORT_START"] ?? 5600),
+    end: Number(process.env["SWEEP_PORT_END"] ?? 5700),
+  };
 }

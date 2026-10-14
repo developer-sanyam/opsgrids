@@ -51,7 +51,7 @@ export function ProjectHealth({ buckets, activeTotal, deliveredCount }: ProjectH
           </svg>
           <div className="absolute inset-0 flex flex-col items-center justify-center">
             <span className="display text-2xl font-extrabold tnum leading-none">{activeTotal}</span>
-            <span className="text-[0.7rem] font-medium text-muted">Active</span>
+            <span className="text-caption font-medium text-muted">Active</span>
           </div>
         </div>
 

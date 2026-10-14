@@ -55,7 +55,7 @@ export function SubscriptionsPage() {
       render: (s) => (
         <Link
           to={`/accounts/${s.organization_id}`}
-          className="block truncate hover:text-accent transition-colors"
+          className="block truncate py-1 hover:text-accent transition-colors md:py-0"
           onClick={(e) => e.stopPropagation()}
         >
           <OrgIdentity name={s.name} slug={s.slug} organizationId={s.organization_id} />
@@ -112,7 +112,7 @@ export function SubscriptionsPage() {
             onChange={(e) => setSearch(e.target.value)}
             containerClassName="lg:max-w-sm"
           />
-          <div className="-mx-1 flex items-center gap-1.5 overflow-x-auto px-1">
+          <div role="group" aria-label="Filter by state" className="-mx-1 flex items-center gap-1.5 overflow-x-auto px-1">
             <Pill active={state === "all"} onClick={() => setState("all")}>
               All
             </Pill>
@@ -140,7 +140,6 @@ export function SubscriptionsPage() {
             rows={rows}
             rowKey={(s) => `${s.organization_id}:${s.product_key}`}
             caption="Subscriptions across all tenants"
-            dense
             onRowClick={(s) => navigate(`/accounts/${s.organization_id}`)}
             emptyState={
               <EmptyState

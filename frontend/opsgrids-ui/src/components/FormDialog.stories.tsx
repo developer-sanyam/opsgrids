@@ -52,6 +52,9 @@ type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {};
 
+/** Suspend, delete, remove: the submit is red and still names the act. */
+export const Destructive: Story = { args: { destructive: true, title: "Suspend account", submitLabel: "Suspend account" } };
+
 export const Saving: Story = { args: { pending: true, pendingLabel: "Creating…" } };
 
 /** A 422 lands on the field that caused it — never as a banner. */

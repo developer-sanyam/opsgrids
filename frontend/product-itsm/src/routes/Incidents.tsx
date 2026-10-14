@@ -254,7 +254,7 @@ export function IncidentsPage() {
             }}
             containerClassName="lg:max-w-sm"
           />
-          <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
+          <div role="group" aria-label="Filter by priority" className="flex items-center gap-1.5 overflow-x-auto -mx-1 -my-1 px-1 py-1">
             <span className="pr-1 text-xs font-semibold uppercase tracking-wide text-faint shrink-0">
               Priority
             </span>
@@ -288,7 +288,7 @@ export function IncidentsPage() {
           </label>
         </div>
 
-        <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1 border-t border-line pt-4">
+        <div role="group" aria-label="Filter by status" className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1 border-t border-line pt-4 pb-1">
           <span className="pr-1 text-xs font-semibold uppercase tracking-wide text-faint shrink-0">
             Status
           </span>
@@ -310,11 +310,7 @@ export function IncidentsPage() {
       {/* Table */}
       <Card className="p-2 sm:p-4">
         {state.status === "loading" ? (
-          <div className="flex flex-col gap-3 p-3">
-            {Array.from({ length: 8 }).map((_, i) => (
-              <Skeleton key={i} className="h-12 w-full rounded-tile" />
-            ))}
-          </div>
+          <Skeleton label="Loading incidents" className="m-3 h-96 rounded-tile" />
         ) : null}
         {state.status === "error" ? (
           <ErrorState

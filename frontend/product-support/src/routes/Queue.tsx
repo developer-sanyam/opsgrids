@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { listTickets, listAgents } from "@/api/client";
@@ -17,14 +16,13 @@ import {
   ErrorState,
   PageHeader,
   PriorityPill,
-  SearchInput,
   Skeleton,
   SlaPill,
   TicketStatusPill,
 } from "@/ui";
 import type { Column } from "@/ui";
-import { Button, DownloadIcon, InboxIcon, Pagination, PlusIcon } from "@opsgrids/ui";
-import type { TableSelection } from "@opsgrids/ui";
+import { Button, DownloadIcon, FilterBar, InboxIcon, Pagination, PlusIcon, Select } from "@opsgrids/ui";
+import type { FilterSelect, TableSelection } from "@opsgrids/ui";
 import { NewTicketDialog } from "@/ui/NewTicketDialog";
 import { downloadCsv, toCsv } from "@/lib/exportCsv";
 
@@ -32,8 +30,7 @@ type StatusFilter = TicketStatus | "all";
 type PriorityFilter = Priority | "all";
 type AssigneeFilter = string | "all" | "unassigned";
 
-const STATUS_OPTIONS: { value: StatusFilter; label: string }[] = [
-  { value: "all", label: "All statuses" },
+const STATUS_OPTIONS: { value: TicketStatus; label: string }[] = [
   { value: "new", label: "New" },
   { value: "open", label: "Open" },
   { value: "pending", label: "Pending" },
@@ -41,8 +38,7 @@ const STATUS_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: "solved", label: "Solved" },
 ];
 
-const PRIORITY_OPTIONS: { value: PriorityFilter; label: string }[] = [
-  { value: "all", label: "All priorities" },
+const PRIORITY_OPTIONS: { value: Priority; label: string }[] = [
   { value: "urgent", label: "Urgent" },
   { value: "high", label: "High" },
   { value: "normal", label: "Normal" },
@@ -57,37 +53,6 @@ const SORT_OPTIONS: { value: TicketSort; label: string }[] = [
   { value: "created", label: "Recently created" },
   { value: "number", label: "Ticket number" },
 ];
-
-/** A labelled native select styled to match the pill controls. */
-function FilterSelect<T extends string>({
-  label,
-  value,
-  onChange,
-  children,
-}: {
-  label: string;
-  value: T;
-  onChange: (value: T) => void;
-  children: ReactNode;
-}) {
-  return (
-    <label
-      className={
-        "inline-flex h-11 items-center rounded-full border border-line bg-surface pl-3 pr-1.5 " +
-        "focus-within:outline focus-within:outline-2 focus-within:outline-accent focus-within:outline-offset-2"
-      }
-    >
-      <span className="sr-only">{label}</span>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value as T)}
-        className="h-full cursor-pointer rounded-full bg-transparent pr-2 text-sm font-semibold text-ink focus:outline-none"
-      >
-        {children}
-      </select>
-    </label>
-  );
-}
 
 function AssigneeCell({ agent }: { agent: Agent | null }) {
   if (!agent) {
@@ -139,6 +104,41 @@ export function QueuePage() {
 
   const hasFilter =
     search.trim() !== "" || status !== "all" || priority !== "all" || assignee !== "all";
+
+  /** `FilterBar` uses "" for "not filtered"; the queue's own state says "all". */
+  const filters: FilterSelect[] = [
+    {
+      key: "status",
+      label: "Status",
+      allLabel: "All statuses",
+      options: STATUS_OPTIONS,
+      value: status === "all" ? "" : status,
+      onChange: (v) => setStatus(v === "" ? "all" : (v as TicketStatus)),
+    },
+    {
+      key: "priority",
+      label: "Priority",
+      allLabel: "All priorities",
+      options: PRIORITY_OPTIONS,
+      value: priority === "all" ? "" : priority,
+      onChange: (v) => setPriority(v === "" ? "all" : (v as Priority)),
+    },
+    {
+      key: "assignee",
+      label: "Assignee",
+      allLabel: "All assignees",
+      options: [{ value: "unassigned", label: "Unassigned" }, ...agents.map((a) => ({ value: a.id, label: a.name }))],
+      value: assignee === "all" ? "" : assignee,
+      onChange: (v) => setAssignee(v === "" ? "all" : v),
+    },
+  ];
+
+  function clearFilters() {
+    setSearch("");
+    setStatus("all");
+    setPriority("all");
+    setAssignee("all");
+  }
 
   const columns: Column<Ticket>[] = useMemo(
     () => [
@@ -253,57 +253,35 @@ export function QueuePage() {
         }
       />
 
-      {/* Controls */}
-      <Card className="flex flex-col gap-3 p-4 sm:p-5 lg:flex-row lg:items-center">
-        <SearchInput
-          label="Search tickets"
-          placeholder="Search subject, ID, requester or company…"
-          value={search}
-          onDebouncedChange={setSearch}
-          containerClassName="lg:max-w-sm"
+      {/* Controls: search and filters in the shared FilterBar - the filters sit in a sheet on a phone. */}
+      <Card className="p-4 sm:p-5">
+        <FilterBar
+          label="Filter tickets"
+          search={{
+            label: "Search tickets",
+            placeholder: "Search subject, ID, requester or company…",
+            value: search,
+            onChange: setSearch,
+          }}
+          filters={filters}
+          onClearAll={clearFilters}
+          actions={
+            <Select
+              label="Sort by"
+              hideLabel
+              value={sort}
+              onChange={(e) => setSort(e.target.value as TicketSort)}
+              options={SORT_OPTIONS}
+              containerClassName="min-w-40"
+            />
+          }
         />
-        <div className="flex flex-wrap items-center gap-2 lg:ml-auto">
-          <FilterSelect label="Filter by status" value={status} onChange={setStatus}>
-            {STATUS_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </FilterSelect>
-          <FilterSelect label="Filter by priority" value={priority} onChange={setPriority}>
-            {PRIORITY_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </FilterSelect>
-          <FilterSelect label="Filter by assignee" value={assignee} onChange={setAssignee}>
-            <option value="all">All assignees</option>
-            <option value="unassigned">Unassigned</option>
-            {agents.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
-          </FilterSelect>
-          <FilterSelect label="Sort by" value={sort} onChange={setSort}>
-            {SORT_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </FilterSelect>
-        </div>
       </Card>
 
       {/* Table */}
       <Card className="p-2 sm:p-4">
         {ticketsState.status === "loading" ? (
-          <div className="flex flex-col gap-2 p-2">
-            {Array.from({ length: 8 }).map((_, i) => (
-              <Skeleton key={i} className="h-14 w-full rounded-tile" />
-            ))}
-          </div>
+          <Skeleton label="Loading tickets" className="m-2 h-96 rounded-tile" />
         ) : null}
         {ticketsState.status === "error" ? (
           <ErrorState
@@ -344,12 +322,7 @@ export function QueuePage() {
                     hasFilter ? (
                       <Button
                         variant="outline"
-                        onClick={() => {
-                          setSearch("");
-                          setStatus("all");
-                          setPriority("all");
-                          setAssignee("all");
-                        }}
+                        onClick={clearFilters}
                       >
                         Clear filters
                       </Button>

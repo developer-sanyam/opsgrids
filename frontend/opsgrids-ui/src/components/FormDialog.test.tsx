@@ -273,3 +273,20 @@ describe("FormDialog dirty", () => {
     expect(event.defaultPrevented).toBe(true);
   });
 });
+
+describe("FormDialog destructive", () => {
+  it("draws the submit in the destructive colour only when asked", () => {
+    const { rerender } = render(
+      <FormDialog open onClose={vi.fn()} onSubmit={vi.fn()} title="Suspend" submitLabel="Suspend account">
+        <p>Are you sure</p>
+      </FormDialog>,
+    );
+    expect(screen.getByRole("button", { name: "Suspend account" }).className).not.toContain("bg-negative");
+    rerender(
+      <FormDialog open destructive onClose={vi.fn()} onSubmit={vi.fn()} title="Suspend" submitLabel="Suspend account">
+        <p>Are you sure</p>
+      </FormDialog>,
+    );
+    expect(screen.getByRole("button", { name: "Suspend account" }).className).toContain("bg-negative");
+  });
+});

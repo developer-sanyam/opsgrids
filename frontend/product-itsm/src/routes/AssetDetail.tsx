@@ -54,7 +54,7 @@ export function AssetDetailPage() {
       <button
         type="button"
         onClick={() => navigate("/assets")}
-        className="inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors"
+        className="hit-44 relative inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors"
       >
         <ArrowLeftIcon className="size-4" />
         Back to assets
@@ -148,7 +148,7 @@ export function AssetDetailPage() {
                         <PropertyRow label="Warranty">
                           <span className="inline-flex items-center gap-2">
                             {warrantyExpired ? (
-                              <span className="rounded-full bg-danger-soft px-2 py-0.5 text-[0.7rem] font-bold text-danger">
+                              <span className="rounded-full bg-danger-soft px-2 py-0.5 text-caption font-bold text-danger">
                                 Expired
                               </span>
                             ) : null}
@@ -185,7 +185,7 @@ export function AssetDetailPage() {
                             <button
                               type="button"
                               onClick={() => navigate(`/incidents/${number}`)}
-                              className="group flex w-full items-center gap-3 rounded-tile px-3 py-2.5 text-left transition-colors hover:bg-ground focus-visible:bg-ground"
+                              className="group flex min-h-11 w-full items-center gap-3 rounded-tile px-3 py-2.5 text-left transition-colors hover:bg-ground focus-visible:bg-ground"
                             >
                               <span className="tnum text-sm font-semibold text-ink">{number}</span>
                               <span className="ml-auto text-xs text-muted">View incident →</span>

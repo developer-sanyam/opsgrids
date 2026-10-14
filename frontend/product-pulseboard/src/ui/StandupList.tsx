@@ -7,7 +7,7 @@ import { AlertTriangleIcon, Avatar, CheckCircleIcon, RowActions, cn } from "@ops
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1">
-      <span className="text-[0.65rem] font-bold uppercase tracking-wider text-faint">{label}</span>
+      <span className="text-caption font-bold uppercase tracking-wider text-faint">{label}</span>
       <p className="text-sm text-ink-soft leading-snug">{children}</p>
     </div>
   );
@@ -62,7 +62,7 @@ function StandupCard({
           {blocked ? <AlertTriangleIcon className="size-4" /> : <CheckCircleIcon className="size-4" />}
         </span>
         <div className="flex flex-col gap-0.5">
-          <span className="text-[0.65rem] font-bold uppercase tracking-wider text-faint">Blockers</span>
+          <span className="text-caption font-bold uppercase tracking-wider text-faint">Blockers</span>
           <p className={cn("text-sm leading-snug", blocked ? "text-ink-soft" : "text-muted")}>
             {entry.blockers ?? "No blockers — clear to keep moving."}
           </p>
