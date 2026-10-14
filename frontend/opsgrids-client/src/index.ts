@@ -70,6 +70,8 @@ export type { RefreshResult } from "./auth/refresh";
 export { PLATFORM_APP_HOSTS, isAllowedRedirectTarget } from "./sso/platformHosts";
 
 export { csvCell, guardCsvCell } from "./csv";
+export { downloadCsv, downloadCsvFile, downloadCsvGrid, toCsv, toCsvGrid } from "./csvExport";
+export type { CsvColumn } from "./csvExport";
 export { API_BASE, ApiError, apiRequest } from "./http";
 export type { ProblemJson, RequestOptions } from "./http";
 
