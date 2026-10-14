@@ -10,7 +10,7 @@ rather than in a `finance-cron` container of its own: no new container, no chang
 budget, the same fold `subscription`, `account` and `approval` made (ADR-0013's memory-budget
 erratum).
 
-The two loops are supervised (`app/supervise.py`): either one returning or raising ends the
+The two loops are supervised (`platform_core.supervise`): either one returning or raising ends the
 process non-zero so the orchestrator restarts it, and the sweep's own per-tick guard
 (`FilingReclaimSweep.run`) means a failing tick backs off instead of ending anything — so a bad
 pass never takes the consumer down with it.
@@ -27,7 +27,6 @@ import asyncio
 from app import consumers
 from app.config import settings
 from app.cron import FilingReclaimSweep
-from app.supervise import run_supervised
 from platform_core.db import (
     assert_app_role,
     assert_outbox_role,
@@ -38,6 +37,7 @@ from platform_core.db import (
     session_scope,
 )
 from platform_core.logging import get_logger
+from platform_core.supervise import run_supervised
 
 log = get_logger("finance.worker")
 
