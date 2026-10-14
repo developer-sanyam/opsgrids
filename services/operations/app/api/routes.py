@@ -48,6 +48,7 @@ from app.models import (
     CountSession,
     LayoutVersion,
     Order,
+    Package,
     PurchaseOrderLine,
     WarehouseFloor,
 )
@@ -2411,9 +2412,12 @@ async def _task_out(session: AsyncSession, ctx: ScopeContext, task) -> PickTaskO
     items = await order_selectors.items_for_lines(
         session, ctx.organization_id, [line.inventory_item_id for line in lines]
     )
+    display = await fulfilment_selectors.task_display_for(session, ctx, [task], {task.id: lines})
     line_outs = [
         fulfilment_selectors.pick_task_line_out(
-            line, sku=items[line.inventory_item_id].sku if line.inventory_item_id in items else ""
+            line,
+            sku=items[line.inventory_item_id].sku if line.inventory_item_id in items else "",
+            display=display.line_fields(task, line),
         )
         for line in lines
     ]
@@ -2426,6 +2430,7 @@ async def _task_out(session: AsyncSession, ctx: ScopeContext, task) -> PickTaskO
         lines=line_outs,
         offers=[fulfilment_selectors.assignment_offer_out(o) for o in offers],
         exceptions=[fulfilment_selectors.pick_exception_out(e) for e in exceptions],
+        order_number=display.order_number(task),
     )
 
 
@@ -2442,9 +2447,27 @@ async def list_tasks(
     task_status: Annotated[str | None, Query(alias="status")] = None,
     warehouse_id: Annotated[uuid.UUID | None, Query()] = None,
     order_id: Annotated[uuid.UUID | None, Query()] = None,
+    assigned_to_me: Annotated[
+        bool,
+        Query(
+            description=(
+                "Only tasks the caller holds a live (`OFFERED`/`ACCEPTED`) offer on, through the "
+                "worker row linked to their membership. A caller with no worker row gets an "
+                "empty page. This narrows the list; it never widens what `task.read` allows."
+            )
+        ),
+    ] = False,
 ) -> Page[PickTaskOut]:
+    mine: uuid.UUID | None = None
+    if assigned_to_me:
+        # No `subject_ref` means no worker row can match: an empty page, not the whole board.
+        mine = ctx.principal.subject_ref or uuid.UUID(int=0)
     stmt = fulfilment_selectors.pick_tasks_stmt(
-        ctx.organization_id, status=task_status, warehouse_id=warehouse_id, order_id=order_id
+        ctx.organization_id,
+        status=task_status,
+        warehouse_id=warehouse_id,
+        order_id=order_id,
+        assigned_to_employee_id=mine,
     )
     # N3 (security review): `ctx.apply` is the enforcement point, applied here rather than
     # inside `pick_tasks_stmt` itself — that selector is also called from
@@ -2468,6 +2491,7 @@ async def list_tasks(
     exceptions_map = await fulfilment_selectors.exceptions_map_for_tasks(
         session, ctx.organization_id, task_ids
     )
+    display = await fulfilment_selectors.task_display_for(session, ctx, rows, lines_map)
     out = [
         fulfilment_selectors.pick_task_out(
             task,
@@ -2477,6 +2501,7 @@ async def list_tasks(
                     sku=items[line.inventory_item_id].sku
                     if line.inventory_item_id in items
                     else "",
+                    display=display.line_fields(task, line),
                 )
                 for line in lines_map.get(task.id, [])
             ],
@@ -2486,6 +2511,7 @@ async def list_tasks(
             exceptions=[
                 fulfilment_selectors.pick_exception_out(e) for e in exceptions_map.get(task.id, [])
             ],
+            order_number=display.order_number(task),
         )
         for task in rows
     ]
@@ -2775,21 +2801,46 @@ async def create_packaging_material(
     return fulfilment_selectors.packaging_material_out(material)
 
 
-async def _package_out(session: AsyncSession, ctx: ScopeContext, package) -> PackageOut:  # type: ignore[no-untyped-def]
-    lines = await fulfilment_selectors.lines_for_package(session, ctx.organization_id, package.id)
+async def _packages_out(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    packages: list[Package],
+) -> list[PackageOut]:
+    """Packages with their lines, batched for the whole page (N+1 avoidance). Item name/unit ride
+    along only where `package_item_display_for` says the caller may see them."""
+    lines_map = await fulfilment_selectors.lines_map_for_packages(
+        session, ctx.organization_id, [p.id for p in packages]
+    )
     items = await order_selectors.items_for_lines(
-        session, ctx.organization_id, [line.inventory_item_id for line in lines]
+        session,
+        ctx.organization_id,
+        [line.inventory_item_id for lines in lines_map.values() for line in lines],
     )
-    return fulfilment_selectors.package_out(
-        package,
-        lines=[
-            fulfilment_selectors.package_line_out(
-                line,
-                sku=items[line.inventory_item_id].sku if line.inventory_item_id in items else "",
-            )
-            for line in lines
-        ],
+    visible_orders, named = await fulfilment_selectors.package_item_display_for(
+        session, ctx, packages, lines_map
     )
+    return [
+        fulfilment_selectors.package_out(
+            package,
+            lines=[
+                fulfilment_selectors.package_line_out(
+                    line,
+                    sku=items[line.inventory_item_id].sku
+                    if line.inventory_item_id in items
+                    else "",
+                    item=named.get(line.inventory_item_id)
+                    if package.order_id in visible_orders
+                    else None,
+                )
+                for line in lines_map.get(package.id, [])
+            ],
+        )
+        for package in packages
+    ]
+
+
+async def _package_out(session: AsyncSession, ctx: ScopeContext, package: Package) -> PackageOut:
+    return (await _packages_out(session, ctx, [package]))[0]
 
 
 @router.get(
@@ -2806,7 +2857,7 @@ async def list_packages(
 ) -> Page[PackageOut]:
     stmt = fulfilment_selectors.packages_stmt(ctx, order_id=order_id)
     rows, total = await paginate(session, stmt, params)
-    out = [await _package_out(session, ctx, p) for p in rows]
+    out = await _packages_out(session, ctx, list(rows))
     return Page.build(out, total=total, params=params)
 
 

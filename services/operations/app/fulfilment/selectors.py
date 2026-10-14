@@ -24,7 +24,8 @@ query filter.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -34,8 +35,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.inventory.quantity import format_qty
 from app.models import (
     AssignmentOffer,
+    InventoryItem,
     InventoryReservation,
     Location,
+    Order,
     Package,
     PackageLine,
     PackagingMaterial,
@@ -57,7 +60,7 @@ from app.schemas import (
     PickTaskOut,
     WorkerOut,
 )
-from platform_core.auth import ScopeContext
+from platform_core.auth import Scope, ScopeContext
 
 # ------------------------------------------------------------------ workers
 
@@ -366,6 +369,7 @@ def pick_tasks_stmt(
     status: str | None = None,
     warehouse_id: uuid.UUID | None = None,
     order_id: uuid.UUID | None = None,
+    assigned_to_employee_id: uuid.UUID | None = None,
 ) -> Select[Any]:
     """Org-scoped only — deliberately takes a plain `org_id`, not a `ScopeContext`. Unlike
     `workers_stmt`/`packages_stmt`/`packaging_materials_stmt` (list-route selectors only), this
@@ -385,7 +389,30 @@ def pick_tasks_stmt(
         stmt = stmt.where(PickTask.warehouse_id == warehouse_id)
     if order_id:
         stmt = stmt.where(PickTask.order_id == order_id)
+    if assigned_to_employee_id is not None:
+        stmt = stmt.where(PickTask.id.in_(_live_offer_task_ids(org_id, assigned_to_employee_id)))
     return stmt.order_by(PickTask.created_at.desc())
+
+
+#: An offer is "live" while it is waiting on the worker (`OFFERED`) or is theirs to work
+#: (`ACCEPTED`) — the same pair `uq_assignment_offers_org_task_live` indexes.
+LIVE_OFFER_STATES = ("OFFERED", "ACCEPTED")
+
+
+def _live_offer_task_ids(org_id: uuid.UUID, employee_id: uuid.UUID) -> Select[Any]:
+    """The tasks a worker (resolved from the caller's `subject_ref`, i.e. `Worker.employee_id`)
+    holds a live offer on, as a subquery. Org-filtered on both tables."""
+    return (
+        select(AssignmentOffer.task_id)
+        .join(Worker, Worker.id == AssignmentOffer.worker_id)
+        .where(
+            AssignmentOffer.organization_id == org_id,
+            Worker.organization_id == org_id,
+            Worker.employee_id == employee_id,
+            Worker.deleted_at.is_(None),
+            AssignmentOffer.state.in_(LIVE_OFFER_STATES),
+        )
+    )
 
 
 async def get_pick_task(
@@ -592,6 +619,21 @@ async def lines_for_package(
     return list((await session.execute(stmt)).scalars().all())
 
 
+async def lines_map_for_packages(
+    session: AsyncSession, org_id: uuid.UUID, package_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, list[PackageLine]]:
+    """Every line for a set of packages, grouped by package id — one query for a list page."""
+    if not package_ids:
+        return {}
+    stmt = select(PackageLine).where(
+        PackageLine.organization_id == org_id, PackageLine.package_id.in_(package_ids)
+    )
+    out: dict[uuid.UUID, list[PackageLine]] = {}
+    for line in (await session.execute(stmt)).scalars().all():
+        out.setdefault(line.package_id, []).append(line)
+    return out
+
+
 async def packaged_milli_for_task_lines(
     session: AsyncSession, org_id: uuid.UUID, task_line_ids: Sequence[uuid.UUID]
 ) -> dict[uuid.UUID, int]:
@@ -697,7 +739,9 @@ def pick_exception_out(exc: PickException) -> PickExceptionOut:
     )
 
 
-def pick_task_line_out(line: PickTaskLine, *, sku: str) -> PickTaskLineOut:
+def pick_task_line_out(
+    line: PickTaskLine, *, sku: str, display: Mapping[str, str | None] | None = None
+) -> PickTaskLineOut:
     settled = line.picked_milli + line.short_milli >= line.quantity_milli
     if line.short_milli > 0:
         line_status = "short" if settled else "partial"
@@ -717,6 +761,7 @@ def pick_task_line_out(line: PickTaskLine, *, sku: str) -> PickTaskLineOut:
         short=format_qty(line.short_milli),
         sequence=line.sequence,
         status=line_status,
+        **(display or {}),
     )
 
 
@@ -726,10 +771,12 @@ def pick_task_out(
     lines: Sequence[PickTaskLineOut] = (),
     offers: Sequence[AssignmentOfferOut] = (),
     exceptions: Sequence[PickExceptionOut] = (),
+    order_number: str | None = None,
 ) -> PickTaskOut:
     return PickTaskOut(
         id=str(task.id),
         order_id=str(task.order_id),
+        order_number=order_number,
         warehouse_id=str(task.warehouse_id),
         zone_location_id=str(task.zone_location_id) if task.zone_location_id else None,
         status=task.status,
@@ -744,8 +791,12 @@ def pick_task_out(
     )
 
 
-def package_line_out(line: PackageLine, *, sku: str) -> PackageLineOut:
+def package_line_out(
+    line: PackageLine, *, sku: str, item: InventoryItem | None = None
+) -> PackageLineOut:
     return PackageLineOut(
+        item_name=item.name if item else None,
+        item_unit=(item.uom or None) if item else None,
         id=str(line.id),
         pick_task_line_id=str(line.pick_task_line_id),
         inventory_item_id=str(line.inventory_item_id),
@@ -781,3 +832,167 @@ def packaging_material_out(material: PackagingMaterial) -> PackagingMaterialOut:
         tare_weight_grams=material.tare_weight_grams,
         is_active=material.is_active,
     )
+
+
+# ------------------------------------------------------------------ worker-facing display fields
+#
+# A picker needs the order number, the bin's code and the item's name on the task they are holding,
+# but the `OPERATIONS_WORKER` role holds neither `orders.order.read`, `inventory.location.read` nor
+# `inventory.item.read` — and must not (they would open every order and every item to a warehouse
+# login). So these are resolved *here*, inside `operations`, and attached to the task payload the
+# worker is already allowed to read, under one rule per field group: the caller either holds the
+# matching read at ORG (a dispatcher or manager — nothing widened, they could fetch it anyway) or
+# the task is assigned to them (a live offer to the worker row whose `employee_id` is their
+# `subject_ref`). Anything else is `null`, never an error: the task itself stays readable under
+# `task.read` exactly as before.
+
+_ORDER_READ = "operations.orders.order.read"
+_ITEM_READ = "operations.inventory.item.read"
+_LOCATION_READ = "operations.inventory.location.read"
+
+
+def _holds_org_wide(ctx: ScopeContext, permission: str) -> bool:
+    return ctx.principal.scope_for(permission) == Scope.ORG
+
+
+async def assigned_task_ids(
+    session: AsyncSession, ctx: ScopeContext, task_ids: Sequence[uuid.UUID]
+) -> set[uuid.UUID]:
+    """Which of `task_ids` the caller holds a live offer on — one query for the whole page. A
+    caller with no `subject_ref` (so no worker row) is assigned nothing."""
+    employee_id = ctx.principal.subject_ref
+    if employee_id is None or not task_ids:
+        return set()
+    stmt = _live_offer_task_ids(ctx.organization_id, employee_id).where(
+        AssignmentOffer.task_id.in_(set(task_ids))
+    )
+    return set((await session.execute(stmt)).scalars().all())
+
+
+@dataclass(frozen=True)
+class TaskDisplay:
+    """The resolved display fields for a page of tasks, plus who may see which. Built by
+    `task_display_for`; the route layer only asks it per task / per line."""
+
+    order_numbers: Mapping[uuid.UUID, str] = field(default_factory=dict)
+    items: Mapping[uuid.UUID, InventoryItem] = field(default_factory=dict)
+    locations: Mapping[uuid.UUID, Location] = field(default_factory=dict)
+    orders_visible: frozenset[uuid.UUID] = frozenset()
+    items_visible: frozenset[uuid.UUID] = frozenset()
+    locations_visible: frozenset[uuid.UUID] = frozenset()
+
+    def order_number(self, task: PickTask) -> str | None:
+        if task.id not in self.orders_visible:
+            return None
+        return self.order_numbers.get(task.order_id)
+
+    def line_fields(self, task: PickTask, line: PickTaskLine) -> dict[str, str | None]:
+        item = self.items.get(line.inventory_item_id) if task.id in self.items_visible else None
+        see_locations = task.id in self.locations_visible
+        src = self.locations.get(line.source_location_id) if see_locations else None
+        dst = self.locations.get(line.destination_location_id) if see_locations else None
+        return {
+            "item_name": item.name if item else None,
+            "item_unit": (item.uom or None) if item else None,
+            "source_location_code": src.code if src else None,
+            "source_location_name": (src.name or None) if src else None,
+            "destination_location_code": dst.code if dst else None,
+        }
+
+
+async def task_display_for(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    tasks: Sequence[PickTask],
+    lines_map: Mapping[uuid.UUID, Sequence[PickTaskLine]],
+) -> TaskDisplay:
+    """Resolve `TaskDisplay` for `tasks` in at most four queries, whatever the page size (N+1
+    avoidance): the caller's assigned set, then orders, items and locations — and each of those
+    only for the tasks the caller may see them on, so nothing is loaded just to be dropped."""
+    assigned = await assigned_task_ids(session, ctx, [t.id for t in tasks])
+    all_ids = {t.id for t in tasks}
+    orders_visible = all_ids if _holds_org_wide(ctx, _ORDER_READ) else assigned
+    items_visible = all_ids if _holds_org_wide(ctx, _ITEM_READ) else assigned
+    locations_visible = all_ids if _holds_org_wide(ctx, _LOCATION_READ) else assigned
+    by_id = {t.id: t for t in tasks}
+
+    order_ids = {by_id[tid].order_id for tid in orders_visible if tid in by_id}
+    order_numbers: dict[uuid.UUID, str] = {}
+    if order_ids:
+        stmt = select(Order.id, Order.number).where(
+            Order.organization_id == ctx.organization_id, Order.id.in_(order_ids)
+        )
+        order_numbers = dict((await session.execute(stmt)).tuples().all())
+
+    item_ids = {line.inventory_item_id for tid in items_visible for line in lines_map.get(tid, ())}
+    items: dict[uuid.UUID, InventoryItem] = {}
+    if item_ids:
+        stmt_i = select(InventoryItem).where(
+            InventoryItem.organization_id == ctx.organization_id, InventoryItem.id.in_(item_ids)
+        )
+        items = {i.id: i for i in (await session.execute(stmt_i)).scalars().all()}
+
+    location_ids = {
+        loc_id
+        for tid in locations_visible
+        for line in lines_map.get(tid, ())
+        for loc_id in (line.source_location_id, line.destination_location_id)
+    }
+    locations: dict[uuid.UUID, Location] = {}
+    if location_ids:
+        stmt_l = select(Location).where(
+            Location.organization_id == ctx.organization_id, Location.id.in_(location_ids)
+        )
+        locations = {loc.id: loc for loc in (await session.execute(stmt_l)).scalars().all()}
+
+    return TaskDisplay(
+        order_numbers=order_numbers,
+        items=items,
+        locations=locations,
+        orders_visible=frozenset(orders_visible),
+        items_visible=frozenset(items_visible),
+        locations_visible=frozenset(locations_visible),
+    )
+
+
+async def package_item_display_for(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    packages: Sequence[Package],
+    lines_map: Mapping[uuid.UUID, Sequence[PackageLine]],
+) -> tuple[set[uuid.UUID], dict[uuid.UUID, InventoryItem]]:
+    """`(visible order ids, items)`: a package's lines may carry the item name/unit when its order
+    is in the first set — every order if the caller holds `inventory.item.read` at ORG, otherwise
+    only orders they hold a live pick-task offer on. Two queries at most for the whole page."""
+    if not packages:
+        return set(), {}
+    visible_orders: set[uuid.UUID]
+    if _holds_org_wide(ctx, _ITEM_READ):
+        visible_orders = {p.order_id for p in packages}
+    elif ctx.principal.subject_ref is None:
+        return set(), {}
+    else:
+        stmt = (
+            select(PickTask.order_id)
+            .where(
+                PickTask.organization_id == ctx.organization_id,
+                PickTask.order_id.in_({p.order_id for p in packages}),
+                PickTask.id.in_(
+                    _live_offer_task_ids(ctx.organization_id, ctx.principal.subject_ref)
+                ),
+            )
+            .distinct()
+        )
+        visible_orders = set((await session.execute(stmt)).scalars().all())
+    item_ids = {
+        line.inventory_item_id
+        for p in packages
+        if p.order_id in visible_orders
+        for line in lines_map.get(p.id, ())
+    }
+    if not item_ids:
+        return visible_orders, {}
+    stmt_i = select(InventoryItem).where(
+        InventoryItem.organization_id == ctx.organization_id, InventoryItem.id.in_(item_ids)
+    )
+    return visible_orders, {i.id: i for i in (await session.execute(stmt_i)).scalars().all()}

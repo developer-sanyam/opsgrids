@@ -342,6 +342,26 @@ the likely route if native becomes necessary, but it is not decided here.
 driving, BLE) becomes an MVP requirement. Either supersedes this amendment for the worker surface
 only.
 
+### Addendum (2026-10-14) — task-scoped display fields for the worker
+
+The `OPERATIONS_WORKER` role holds `task.read` but, by design, none of `orders.order.read`,
+`inventory.item.read` or `inventory.location.read`, so the worker app could show a picker only
+UUID fragments. The platform owner approved giving workers a **task-scoped** read of the order
+number, the bin's code/name and the item's name/SKU/unit, never a general read. It is done without
+a new permission and without widening any role: the fulfilment task and package payloads carry
+denormalised display fields (`PickTaskOut.order_number`, `PickTaskLineOut.item_name`/`item_unit`/
+`source_location_code`/`source_location_name`/`destination_location_code`,
+`PackageLineOut.item_name`/`item_unit`), resolved inside `operations` (same schema, no
+cross-service call).
+
+A field is populated only when the caller either holds the matching org-wide read (so nothing is
+exposed that they could not already fetch) or **holds a live offer (`OFFERED`/`ACCEPTED`) on that
+task** — for a package line, on a task of that package's order. Otherwise it is `null`; the task
+itself stays readable under `task.read` exactly as before. A released, declined or reassigned task
+therefore stops resolving for that worker. `GET /fulfilment/tasks?assigned_to_me=true` narrows the
+list to the caller's own live offers and never widens it. No role, scope or permission code
+changed, so there is no edge reconcile step.
+
 ## 8. Tenant payment collection lives in `payment`, as `app/collections/` — A4, signed off
 
 **What `payment` does today.** Its model docstring: "mandates, charges, refunds, and the webhook
