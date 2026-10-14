@@ -21,10 +21,11 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+from _per_service import run_one
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVICES = ROOT / "services"
@@ -38,11 +39,7 @@ def services() -> list[Path]:
 
 def export_one(service: Path, target: Path) -> None:
     """Build `service`'s app in a fresh interpreter and write its document to `target`."""
-    subprocess.run(  # noqa: S603 - this interpreter, this file, a path we chose
-        [sys.executable, __file__, "--one", str(target)],
-        cwd=service,
-        check=True,
-    )
+    run_one(__file__, service, target)
 
 
 def write_document(target: Path) -> None:
