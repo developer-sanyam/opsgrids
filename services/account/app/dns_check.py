@@ -23,6 +23,7 @@ import dns.asyncresolver
 import dns.exception
 import dns.resolver
 
+from platform_core.dns import answer_text
 from platform_core.logging import get_logger
 
 log = get_logger("account.dns_check")
@@ -110,21 +111,7 @@ class DnsPythonResolver:
         except _RESOLVER_ERROR as exc:
             log.warning("dns.resolver_error", host=host, rtype=rtype, reason=type(exc).__name__)
             raise DnsLookupError(str(exc)) from exc
-        return [_answer_text(rdata) for rdata in answer]
-
-
-def _answer_text(rdata: Any) -> str:
-    """One published value as the organization pasted it.
-
-    A TXT rdata carries `strings` because DNS caps a single character-string at 255 bytes; a
-    longer value is published in chunks and the value is their concatenation. `to_text()`
-    instead would hand back the quoted, space-separated chunks, which matches nothing anyone
-    was shown to publish.
-    """
-    strings: tuple[bytes, ...] | None = getattr(rdata, "strings", None)
-    if strings is not None:
-        return b"".join(strings).decode("utf-8", "replace")
-    return str(rdata.to_text())
+        return [answer_text(rdata) for rdata in answer]
 
 
 def _default_resolver() -> Resolver:
