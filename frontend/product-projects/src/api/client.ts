@@ -12,7 +12,7 @@
  * typechecking here, not three components away.
  */
 
-import { ApiError, apiRequest, settle } from "@opsgrids/client";
+import { ApiError, apiRequest, buildQuery as qs, settle } from "@opsgrids/client";
 import { MEMBERS, MILESTONES, PROJECTS, TASKS } from "./fixtures";
 import type {
   MemberIn,
@@ -53,16 +53,6 @@ export const DEFAULT_PAGE_SIZE = 25;
  * `{items,total,page,size,pages}` instead of assuming everything fits on one request.
  */
 const ROLLUP_PAGE = 200;
-
-function qs(params: Record<string, string | number | boolean | undefined>): string {
-  const search = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value === undefined || value === "") continue;
-    search.set(key, String(value));
-  }
-  const s = search.toString();
-  return s ? `?${s}` : "";
-}
 
 /** A fixture-mode page envelope over an already-filtered, already-sorted array. */
 function pageOf<T>(all: T[], page: number, size: number): Page<T> {

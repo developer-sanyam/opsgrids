@@ -132,7 +132,7 @@ describe("AssetFormDialog: refusing a cost", () => {
 
     expect(
       await screen.findByText(
-        "Enter a whole-currency amount, like 24000 or 24000.50. No more than two decimal places.",
+        "Enter an amount in digits, like 24000 or 24000.50, with no currency sign or words and no more than two decimal places.",
       ),
     ).toBeTruthy();
     expect(client.createAsset).not.toHaveBeenCalled();
@@ -144,7 +144,7 @@ describe("AssetFormDialog: refusing a cost", () => {
     await user.click(screen.getByRole("button", { name: "Add asset" }));
 
     expect(
-      await screen.findByText("Enter a whole-currency amount, like 24000. JPY has no decimal places."),
+      await screen.findByText("Enter a whole amount in digits, like 24000. JPY has no decimal places."),
     ).toBeTruthy();
     expect(client.createAsset).not.toHaveBeenCalled();
   });
@@ -156,7 +156,7 @@ describe("AssetFormDialog: refusing a cost", () => {
 
     expect(
       await screen.findByText(
-        "Enter a whole-currency amount, like 24000 or 24000.500. No more than three decimal places.",
+        "Enter an amount in digits, like 24000 or 24000.500, with no currency sign or words and no more than three decimal places.",
       ),
     ).toBeTruthy();
     expect(client.createAsset).not.toHaveBeenCalled();

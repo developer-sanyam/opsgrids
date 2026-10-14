@@ -19,6 +19,7 @@ import {
   apiRequest,
   getAccessToken,
   notifyUnauthorized,
+  settle,
   type ProblemJson,
 } from "@opsgrids/client";
 
@@ -58,11 +59,6 @@ export { LIVE, USE_FIXTURES } from "./mode";
 /** A generous page size — one request returns the whole (small) catalogue for the theme
  *  renderer's own preview. The dedicated Products/Categories screens page for real. */
 const FULL_PAGE = 200;
-
-/** Small artificial delay so loading states are exercised in fixtures mode. */
-function settle<T>(value: T, ms = 240): Promise<T> {
-  return new Promise((resolve) => setTimeout(() => resolve(value), ms));
-}
 
 /* --------------------------------- themes -------------------------------- */
 

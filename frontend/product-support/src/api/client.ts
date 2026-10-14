@@ -12,7 +12,7 @@
  * response field is read that the route does not return.
  */
 
-import { ApiError, apiRequest, settle } from "@opsgrids/client";
+import { ApiError, apiRequest, paginateFixture as paginate, settle } from "@opsgrids/client";
 
 import { buildFixtureOverview } from "./fixtureOverview";
 import {
@@ -75,17 +75,6 @@ function sortFixtureTickets(rows: Ticket[], sort: TicketSort): Ticket[] {
   return out.sort((a, b) => a.id.localeCompare(b.id));
 }
 
-function paginate<T>(items: T[], page: number, size: number): Page<T> {
-  const start = (page - 1) * size;
-  const total = items.length;
-  return {
-    items: items.slice(start, start + size),
-    total,
-    page,
-    size,
-    pages: total === 0 ? 0 : Math.max(1, Math.ceil(total / size)),
-  };
-}
 
 export interface ListTicketsParams {
   search?: string;

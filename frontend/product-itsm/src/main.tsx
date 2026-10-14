@@ -2,12 +2,11 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
-import { RedirectToCentralLogin, configureAuthOrigin, configureSession } from "@opsgrids/client";
-import { ThemeProvider, Toaster } from "@opsgrids/ui";
+import { RedirectToCentralLogin, RequireAuth, configureAuthOrigin, configureSession } from "@opsgrids/client";
+import { ComingSoonPage, ThemeProvider, Toaster } from "@opsgrids/ui";
 import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
-import { RequireAuth } from "./auth/RequireAuth";
 import { OverviewPage } from "./routes/Overview";
 import { IncidentsPage } from "./routes/Incidents";
 import { IncidentDetailPage } from "./routes/IncidentDetail";
@@ -16,7 +15,6 @@ import { RequestDetailPage } from "./routes/RequestDetail";
 import { AssetsPage } from "./routes/Assets";
 import { AssetDetailPage } from "./routes/AssetDetail";
 import { LoginPage } from "./routes/Login";
-import { ComingSoonPage } from "./routes/ComingSoon";
 import { LogoMark } from "./ui/LogoMark";
 
 // ADR-0003 addendum: sign-in only ever happens on the dashboard, the one host the refresh

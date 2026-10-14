@@ -201,6 +201,22 @@ describe("sign-in with a second factor", () => {
     expect(verify?.body).toEqual({ pre_auth_token: PRE_AUTH, code: "123456" });
   });
 
+  it("takes a recovery code as well as an authenticator code: no numeric keypad, no capitals, focus on the new heading", async () => {
+    const user = userEvent.setup();
+    routes = { "/api/v1/auth/login": () => json({ status: "mfa_required", pre_auth_token: PRE_AUTH }) };
+    renderPage();
+
+    await signIn(user);
+
+    const heading = await screen.findByRole("heading", { name: "Enter your code" });
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+    const code = screen.getByLabelText("Code");
+    expect(code.getAttribute("inputmode")).toBeNull();
+    expect(code.getAttribute("autocapitalize")).toBe("none");
+    expect(code.getAttribute("spellcheck")).toBe("false");
+    expect(code.getAttribute("autocomplete")).toBe("one-time-code");
+  });
+
   it("shows the server's sentence for a wrong code and lets the next attempt through", async () => {
     const user = userEvent.setup();
     let attempt = 0;

@@ -4,7 +4,14 @@
  * These are the only place minor units become a display string.
  */
 
-import { formatInstant, formatMoney as formatMajorMoney, toMajor } from "@opsgrids/ui";
+import {
+  formatCalendarDate as formatDate,
+  formatInstant,
+  formatMoney as formatMajorMoney,
+  toMajor,
+} from "@opsgrids/ui";
+
+export { formatDate };
 
 const SYMBOLS: Record<string, string> = {
   INR: "₹",
@@ -53,16 +60,6 @@ export function formatNumber(n: number): string {
 }
 
 /** "2026-08-24" -> "24 Aug 2026". Returns "—" for a missing date. */
-export function formatDate(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return d.toLocaleDateString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "UTC",
-  });
-}
 
 /** "24 Aug 2026 to open-ended", "Always" when neither end is set — an effective-date window. */
 export function formatDateRange(from: string | null, to: string | null): string {

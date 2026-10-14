@@ -17,7 +17,7 @@
 const APP = "(product-[^/]+|opsgrids-dashboard|opsgrids-internal|worker-app)";
 
 /** The only files of the shared packages an app may land on: their `exports` entries. */
-const UI_EXPORTS = "^opsgrids-ui/src/(index\\.ts|icons\\.tsx|styles/console\\.css)$";
+const UI_EXPORTS = "^opsgrids-ui/src/(index\\.ts|icons\\.tsx|test-media\\.ts|styles/console\\.css)$";
 const CLIENT_EXPORTS = "^opsgrids-client/src/index\\.ts$";
 
 /** @type {import('dependency-cruiser').IConfiguration} */
@@ -83,7 +83,8 @@ module.exports = {
       comment: "No import cycles, anywhere — they make module initialisation order a runtime bug.",
       severity: "error",
       from: {},
-      to: { circular: true },
+      // A cycle closed only by `import type` is erased at compile time: no runtime initialisation order.
+      to: { circular: true, dependencyTypesNot: ["type-only"] },
     },
     {
       name: "not-to-unresolvable",

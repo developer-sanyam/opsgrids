@@ -16,6 +16,10 @@ export { AuthProvider } from "./auth/AuthProvider";
 export { AuthContext, useAuth } from "./auth/context";
 export type { AuthContextValue, AuthStatus } from "./auth/context";
 export { RequireAuth } from "./auth/RequireAuth";
+export { ProductAuthProvider } from "./auth/ProductAuthProvider";
+export { DEMO_PASSWORD, useProductLogin } from "./auth/useProductLogin";
+export type { ProductLogin } from "./auth/useProductLogin";
+export type { ProductFixture } from "./auth/ProductAuthProvider";
 export { RedirectToCentralLogin } from "./auth/RedirectToCentralLogin";
 export type { RedirectToCentralLoginProps } from "./auth/RedirectToCentralLogin";
 export * as authApi from "./auth/api";
@@ -70,6 +74,8 @@ export type { RefreshResult } from "./auth/refresh";
 export { PLATFORM_APP_HOSTS, isAllowedRedirectTarget } from "./sso/platformHosts";
 
 export { csvCell, guardCsvCell } from "./csv";
+export { downloadCsv, downloadCsvFile, downloadCsvGrid, toCsv, toCsvGrid } from "./csvExport";
+export type { CsvColumn } from "./csvExport";
 export { API_BASE, ApiError, apiRequest } from "./http";
 export type { ProblemJson, RequestOptions } from "./http";
 
@@ -115,6 +121,8 @@ export type { PlatformProduct, PlatformProductKey } from "./platform/catalogue";
 export { usePlatformModules } from "./platform/usePlatformModules";
 export type { PlatformModule } from "./platform/usePlatformModules";
 export { useCurrentUser } from "./platform/useCurrentUser";
+export { useProductShell } from "./platform/useProductShell";
+export type { ProductShellData } from "./platform/useProductShell";
 export type { CurrentUser } from "./platform/useCurrentUser";
 export { useOrgProfile } from "./platform/useOrgProfile";
 export type { OrgProfile } from "./platform/useOrgProfile";
@@ -147,7 +155,10 @@ export type {
 } from "./notifications/useNotifications";
 export { NotificationsBell } from "./notifications/NotificationsBell";
 
-export { settle } from "./fixtures";
+export { paginateFixture, settle } from "./fixtures";
+export type { FixturePage, PaginateFixtureOptions } from "./fixtures";
+export { buildQuery } from "./query";
+export type { BuildQueryOptions, QueryValue } from "./query";
 export { useAsync } from "./useAsync";
 export type { AsyncControls, AsyncState } from "./useAsync";
 export { useMutation } from "./useMutation";
@@ -179,6 +190,20 @@ export {
   planUpdate,
   unacceptedLookupValue,
   useImportExport,
+  columnOf,
+  labelOfOption,
+  lookupField,
+  numberOf,
+  optionOf,
+  refuseUnlistedReferences,
+  requiredTextOf,
+  resolveLookup,
+  resolveReference,
+  sameLines,
+  storedReference,
+  storedText,
+  textOf,
+  upperCased,
 } from "./dataexchange";
 export type {
   BaselineUse,

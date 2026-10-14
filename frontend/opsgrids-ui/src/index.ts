@@ -90,8 +90,13 @@ export { MobileDataCard } from "./components/MobileDataCard";
 export { MobileHeader } from "./components/MobileHeader";
 export type { MobileCardSelection, MobileCardWiring, MobileDataField } from "./components/MobileDataCard";
 export { PageHeader } from "./components/PageHeader";
+export { PasswordField } from "./components/PasswordField";
 export { Pagination } from "./components/Pagination";
 export { Pill } from "./components/Pill";
+export { GrantsStatusBanner, ProductShell } from "./components/ProductShell";
+export type { ProductBannerCopy, ProductQuickAction, ProductShellModule } from "./components/ProductShell";
+export { ProductLoginScreen } from "./components/ProductLoginScreen";
+export type { LoginOrganization } from "./components/ProductLoginScreen";
 export { QrCode } from "./components/QrCode";
 export { RadioGroup } from "./components/RadioGroup";
 export type { RadioOption } from "./components/RadioGroup";
@@ -109,6 +114,7 @@ export { KanbanBoard } from "./components/KanbanBoard";
 export type { KanbanBoardProps, KanbanCardState, KanbanColumn, KanbanMoveResult } from "./components/KanbanBoard";
 export { SampleChip } from "./components/SampleChip";
 export { SearchInput } from "./components/SearchInput";
+export { ComingSoonPage, NotFoundScreen, PermissionDenied, RouteFallback } from "./components/RouteScreens";
 export { Select } from "./components/Select";
 export type { SelectOption } from "./components/Select";
 export { Sidebar } from "./components/Sidebar";
@@ -148,6 +154,7 @@ export { UnsavedChangesGuard } from "./components/UnsavedChangesGuard";
 export { useAnnounce } from "./lib/announcer";
 export type { Announce } from "./lib/announcer";
 export { cn } from "./lib/cn";
+export { fieldSkin } from "./lib/field";
 export {
   formatDuration,
   formatInstant,
@@ -164,7 +171,7 @@ export type {
   ZoneLookup,
   ZoneResolution,
 } from "./lib/datetime";
-export { currencyExponent, formatDelta, formatMoney, initials, minorToInput, parseMinor, toMajor } from "./lib/format";
+export { currencyExponent, formatCalendarDate, formatDelta, formatMoney, initials, minorToInput, parseMinor, toMajor } from "./lib/format";
 export type { MoneyOptions, MoneyParse } from "./lib/format";
 export { moduleIcon } from "./lib/moduleIcons";
 export { encodeQr, qrPathData } from "./lib/qr";
@@ -173,6 +180,7 @@ export { useTheme } from "./lib/theme";
 export type { Theme, ThemeControls } from "./lib/theme";
 export { useToast } from "./lib/toast";
 export type { ToastControls, ToastOptions, ToastTone } from "./lib/toast";
+export { lazyRoute } from "./lib/lazyRoute";
 export { ICON_TILE } from "./lib/tones";
 export type { Tone } from "./lib/tones";
 export { useDebouncedValue } from "./lib/useDebouncedValue";

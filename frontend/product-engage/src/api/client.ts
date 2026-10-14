@@ -13,7 +13,7 @@
  * else — a masked secret is still a secret with a hint attached.
  */
 
-import { ApiError, apiRequest } from "@opsgrids/client";
+import { ApiError, apiRequest, settle } from "@opsgrids/client";
 
 import {
   CAMPAIGNS,
@@ -96,9 +96,7 @@ export const LIVE = !USE_FIXTURES;
 export const FULL_PAGE = 200;
 
 /** Small artificial delay so loading states are exercised in fixture mode. */
-export function settle<T>(value: T, ms = 240): Promise<T> {
-  return new Promise((resolve) => setTimeout(() => resolve(value), ms));
-}
+export { settle };
 
 /** Wrap fixture rows in the envelope `platform_core.pagination.Page` puts on the wire, so a
  *  screen reads the same shape either side of the flag. */

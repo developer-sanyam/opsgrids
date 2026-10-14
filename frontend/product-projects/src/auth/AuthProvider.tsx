@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
 
-import { AuthProvider as BaseAuthProvider, PermissionProvider } from "@opsgrids/client";
+import { ProductAuthProvider } from "@opsgrids/client";
 import type { MeOut } from "@opsgrids/client";
 
 import { USE_FIXTURES } from "@/api/client";
+import { LogoMark } from "@/ui/LogoMark";
 
 /**
  * A stand-in identity for fixture mode, so the whole app renders with no gateway and no login —
@@ -50,10 +51,12 @@ const FIXTURE_GRANTS = [
  *  inside it (CLAUDE.md: "make sure PermissionProvider is mounted inside the auth provider"). */
 export function AuthProvider({ children }: { children: ReactNode }) {
   return (
-    <BaseAuthProvider fixtureUser={USE_FIXTURES ? FIXTURE_USER : null}>
-      <PermissionProvider grants={USE_FIXTURES ? FIXTURE_GRANTS : null}>
-        {children}
-      </PermissionProvider>
-    </BaseAuthProvider>
+    <ProductAuthProvider
+      fixture={USE_FIXTURES ? { user: FIXTURE_USER, grants: FIXTURE_GRANTS } : null}
+      mark={<LogoMark className="size-11 animate-pulse" />}
+      bootMessage="Opening your workspace…"
+    >
+      {children}
+    </ProductAuthProvider>
   );
 }

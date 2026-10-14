@@ -1,42 +1,31 @@
-import { getAuthOrigin, NotificationsBell, useAdminLinks, useAuth, useCurrentUser, usePlatformModules } from "@opsgrids/client";
-import { AppShell as Shell, moduleIcon } from "@opsgrids/ui";
+import { useProductShell } from "@opsgrids/client";
+import { ProductShell } from "@opsgrids/ui";
 import { USE_FIXTURES } from "./api/client";
 import { useNavGroups } from "./ui";
 import { LogoMark } from "./ui/LogoMark";
 
-const DASHBOARD_ORIGIN_FALLBACK = "https://app.opsgrids.com";
-
 /**
  * The app shell — the sidebar, the rail, the mobile header/bottom nav and the routed main column —
- * is `@opsgrids/ui`'s `AppShell`. This file supplies everything that is this product's: its mark,
- * its own nav, and the cross-product modules and admin links from `@opsgrids/client`'s hooks.
+ * is `@opsgrids/ui`'s `ProductShell`, fed by `useProductShell` from `@opsgrids/client`. This file
+ * supplies only what is this product's: its mark, its own nav, its search and its words.
  *
  * No grants banner: this is the only app whose screens gate themselves individually
- * (`RequireGrant`) rather than failing an entire shell closed on one fetch.
+ * (`RequireGrant`) rather than failing an entire shell closed on one fetch. The bell is left out
+ * in sample-data mode: the feed is a gateway read with no sample answer.
  */
 export function AppShell() {
-  const { logout } = useAuth();
-  const currentUser = useCurrentUser();
+  const shell = useProductShell({ notifications: !USE_FIXTURES });
   const { groups, pinned } = useNavGroups();
-  const modules = usePlatformModules();
-  const adminLinks = useAdminLinks();
-  const adminOrigin = getAuthOrigin() ?? DASHBOARD_ORIGIN_FALLBACK;
-
-  if (!currentUser) return null;
 
   return (
-    <Shell
+    <ProductShell
+      {...shell}
       product={{ name: "OpsGrids Engage", mark: <LogoMark className="size-7" /> }}
       nav={groups}
       pinned={pinned}
-      modules={modules.map((m) => ({ key: m.key, label: m.label, href: m.href, icon: moduleIcon(m.iconKey) }))}
-      adminLinks={adminLinks.map((l) => ({ key: l.key, label: l.label, href: `${adminOrigin}${l.href}` }))}
-      user={{ name: currentUser.name, email: currentUser.email, roleLabel: currentUser.roleDisplay }}
-      onSignOut={() => void logout()}
-      search={{ placeholder: "Search contacts", fallback: { label: "Search contacts for", to: "/contacts" } }}
-      // The feed is a gateway read with no sample-data answer, and the bell hides itself on a failed
-      // read, so in sample mode it is left out rather than left to fail in the console.
-      notifications={USE_FIXTURES ? undefined : <NotificationsBell />}
+      searchPlaceholder="Search contacts"
+      searchFallback={{ label: "Search contacts for", to: "/contacts" }}
+      bottomNavExtra={["/inbox", "/campaigns"]}
     />
   );
 }

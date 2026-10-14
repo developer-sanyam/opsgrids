@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
 
-import { AuthProvider as BaseAuthProvider, PermissionProvider } from "@opsgrids/client";
+import { ProductAuthProvider } from "@opsgrids/client";
 import type { MeOut } from "@opsgrids/client";
 
 import { USE_FIXTURES } from "@/api/client";
+import { LogoMark } from "@/ui/LogoMark";
 
 /**
  * A stand-in identity for fixture mode, so the whole app renders with no gateway and no login —
@@ -48,10 +49,12 @@ const FIXTURE_GRANTS = [
 /** The session, wired to this product's fixture identity. The logic lives in `@opsgrids/client`. */
 export function AuthProvider({ children }: { children: ReactNode }) {
   return (
-    <BaseAuthProvider fixtureUser={USE_FIXTURES ? FIXTURE_USER : null}>
-      <PermissionProvider grants={USE_FIXTURES ? FIXTURE_GRANTS : null}>
-        {children}
-      </PermissionProvider>
-    </BaseAuthProvider>
+    <ProductAuthProvider
+      fixture={USE_FIXTURES ? { user: FIXTURE_USER, grants: FIXTURE_GRANTS } : null}
+      mark={<LogoMark className="size-11 animate-pulse" />}
+      bootMessage="Opening the service desk…"
+    >
+      {children}
+    </ProductAuthProvider>
   );
 }

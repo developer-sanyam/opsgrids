@@ -13,16 +13,7 @@ export function today(date: Date = new Date()): string {
 
 /** "2026-03-15" -> "15 Mar 2026". `null` (an undated milestone, a task with no due date) reads
  *  as an em dash rather than "Invalid Date". */
-export function formatDate(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return d.toLocaleDateString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "UTC",
-  });
-}
+export { formatCalendarDate as formatDate } from "@opsgrids/ui";
 
 /** "2026-03-15" -> "15 Mar". */
 export function formatDateShort(iso: string | null): string {

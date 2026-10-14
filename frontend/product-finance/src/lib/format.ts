@@ -6,16 +6,7 @@
 import { formatInstant } from "@opsgrids/ui";
 
 /** "2026-08-24" -> "24 Aug 2026". Rendered in UTC so a stored date shows as-is. */
-export function formatDate(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return d.toLocaleDateString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "UTC",
-  });
-}
+export { formatCalendarDate as formatDate } from "@opsgrids/ui";
 
 /** "2026-08-24" -> "24 Aug". A compact date for dense rows where the year is implied. */
 export function formatDateShort(iso: string | null): string {

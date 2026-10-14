@@ -19,7 +19,7 @@
  * ship in a production build.
  */
 
-import { ApiError, apiRequest, revealRequest } from "@opsgrids/client";
+import { ApiError, apiRequest, paginateFixture, revealRequest, settle } from "@opsgrids/client";
 import type { RevealHeaders } from "@opsgrids/client";
 import {
   activityFromWire,
@@ -111,19 +111,6 @@ const conflict = (detail: string): ApiError => refusal(409, "Conflict", detail);
 /** The 404 the server answers for an id that is not in this organization (or was deleted). */
 const notFound = (thing: string): ApiError =>
   refusal(404, "Not found", `That ${thing} is not part of this organization`);
-
-/** Small artificial delay so loading states are exercised in fixtures mode. */
-function settle<T>(value: T, ms = 240): Promise<T> {
-  return new Promise((resolve) => setTimeout(() => resolve(value), ms));
-}
-
-/** Slice an in-memory fixture list into a `Page<T>` the same shape the gateway returns. */
-function paginateFixture<T>(items: T[], page: number, size: number): Page<T> {
-  const total = items.length;
-  const pages = total === 0 ? 0 : Math.ceil(total / size);
-  const start = (page - 1) * size;
-  return { items: items.slice(start, start + size), total, page, size, pages };
-}
 
 /** A phone number with its country code, once spaces, hyphens, dots and brackets are stripped. */
 const E164 = /^\+[1-9]\d{7,14}$/;

@@ -3,13 +3,12 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
-import { configureSession, RequirePermission } from "@opsgrids/client";
+import { configureSession, RequireAuth, RequirePermission } from "@opsgrids/client";
 import { Skeleton, ThemeProvider, Toaster } from "@opsgrids/ui";
 
 import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
-import { RequireAuth } from "./auth/RequireAuth";
 import { AcceptInvitationPage } from "./routes/AcceptInvitation";
 import { ForgotPasswordPage } from "./routes/ForgotPassword";
 import { HelpPage } from "./routes/Help";

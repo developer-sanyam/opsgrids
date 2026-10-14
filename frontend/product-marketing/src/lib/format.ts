@@ -79,16 +79,7 @@ export function formatNumber(n: number): string {
 }
 
 /** "2026-03-15" -> "15 Mar 2026". Returns "—" for a null date (open-ended flight). */
-export function formatDate(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return d.toLocaleDateString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "UTC",
-  });
-}
+export { formatCalendarDate as formatDate } from "@opsgrids/ui";
 
 
 const CHANNEL_LABELS: Record<Channel, string> = {

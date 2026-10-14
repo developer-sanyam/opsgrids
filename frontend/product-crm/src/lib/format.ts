@@ -3,7 +3,11 @@
  * `@opsgrids/ui`, the one place minor units become a human string.
  */
 
+import { formatCalendarDate as formatDate, initials } from "@opsgrids/ui";
+
 import { USE_FIXTURES } from "@/api/client";
+
+export { formatDate, initials };
 
 /** Fixtures are dated around this fixed instant so relative times read sensibly offline — never
  *  reached live, where `nowIso()` returns the real clock instead. */
@@ -21,15 +25,6 @@ export function nowIso(): string {
 }
 
 /** "2026-09-30" -> "30 Sep 2026". Returns "—" for a missing date. */
-export function formatDate(iso: string | null): string {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleDateString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "UTC",
-  });
-}
 
 /**
  * A relative timestamp against `now` (default the app's fixed NOW): "just now", "3 hr ago",
@@ -50,10 +45,3 @@ export function formatRelative(iso: string | null, now: string = nowIso()): stri
   return formatDate(iso);
 }
 
-/** Initials for an avatar fallback: "Sofia Marchetti" -> "SM". */
-export function initials(name: string): string {
-  const parts = name.trim().split(/\s+/);
-  const first = parts[0]?.[0] ?? "";
-  const last = parts.length > 1 ? (parts[parts.length - 1]?.[0] ?? "") : "";
-  return (first + last).toUpperCase();
-}

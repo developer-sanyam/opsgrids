@@ -13,7 +13,7 @@
  * column is a join against `GET /employees`, done here rather than by the screen.
  */
 
-import { ApiError, apiRequest } from "@opsgrids/client";
+import { ApiError, apiRequest, buildQuery as qs, settle } from "@opsgrids/client";
 import type { RevealRequestOptions } from "@opsgrids/client";
 
 import {
@@ -67,20 +67,6 @@ export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXT
 
 /** True when the app is talking to the real gateway. */
 export const LIVE = !USE_FIXTURES;
-
-/** Small artificial delay so loading states are exercised in fixture mode. */
-function settle<T>(value: T, ms = 220): Promise<T> {
-  return new Promise((resolve) => setTimeout(() => resolve(value), ms));
-}
-
-function qs(params: Record<string, string | number | undefined>): string {
-  const search = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined && value !== "") search.set(key, String(value));
-  }
-  const s = search.toString();
-  return s ? `?${s}` : "";
-}
 
 /* --------------------------------------------------------------------------------- employees */
 

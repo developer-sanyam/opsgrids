@@ -1,19 +1,16 @@
-import { lazy, StrictMode, Suspense } from "react";
-import type { ReactNode } from "react";
+import { lazy, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
-import { RedirectToCentralLogin, configureAuthOrigin, configureSession } from "@opsgrids/client";
-import { BuildingIcon, MapPinIcon, ThemeProvider, UserPlusIcon } from "@opsgrids/ui";
+import { RedirectToCentralLogin, RequireAuth, configureAuthOrigin, configureSession } from "@opsgrids/client";
+import { BuildingIcon, MapPinIcon, ThemeProvider, UserPlusIcon, lazyRoute } from "@opsgrids/ui";
 import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
-import { RequireAuth } from "./auth/RequireAuth";
 import { DashboardPage } from "./routes/Dashboard";
 import { LoginPage } from "./routes/Login";
 import { LinkOutPage } from "./routes/LinkOut";
 import { NotFoundPage } from "./routes/NotFound";
-import { RouteFallback } from "./routes/RouteFallback";
 import { LogoMark } from "./ui/LogoMark";
 
 // The dashboard (the landing screen after sign-in) and login stay on the critical path.
@@ -50,9 +47,6 @@ const ApprovalSettingsPage = lazy(() =>
   import("./routes/ApprovalSettings").then((m) => ({ default: m.ApprovalSettingsPage })),
 );
 
-function lazyRoute(path: string, element: ReactNode) {
-  return { path, element: <Suspense fallback={<RouteFallback />}>{element}</Suspense> };
-}
 
 // ADR-0003 addendum: sign-in only ever happens on the dashboard, the one host the refresh
 // cookie lives on. Set in production builds only (`publish-web.sh`); unset in dev, where this

@@ -9,7 +9,7 @@
  * `/api/v1/operations/...` prefix (Vite proxies it to the gateway in dev, `vite.config.ts`).
  */
 
-import { apiRequest } from "@opsgrids/client";
+import { apiRequest, buildQuery } from "@opsgrids/client";
 
 import type {
   AssignmentOfferOut,
@@ -42,16 +42,6 @@ const DEFAULT_PAGE_SIZE = 25;
 /** The whole (small) working set — used where a screen genuinely needs it: resolving "which
  *  worker am I" from the roster, and gathering every task/package an order has across zones. */
 export const FULL_PAGE = 200;
-
-function buildQuery(params: Record<string, string | number | boolean | undefined>): string {
-  const query = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value === undefined || value === "") continue;
-    query.set(key, String(value));
-  }
-  const s = query.toString();
-  return s ? `?${s}` : "";
-}
 
 /* ---------------------------------- workers ---------------------------------- */
 
