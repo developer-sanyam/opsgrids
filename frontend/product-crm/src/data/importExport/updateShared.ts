@@ -26,12 +26,7 @@ export function loadEvery<Item extends { id: string }>(
   });
 }
 
-/** A column of an entity by key, so a spec cannot name a header it does not have. */
-export function columnOf(columns: readonly ImportColumn[], key: string): ImportColumn {
-  const found = columns.find((column) => column.key === key);
-  if (found === undefined) throw new Error(`The entity has no column "${key}"`);
-  return found;
-}
+export { columnOf } from "@opsgrids/client";
 
 /** A stored empty text, which is how the CRM services keep "none", as the `null` an update field
  *  reports for an empty value. */
