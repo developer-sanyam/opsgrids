@@ -14,7 +14,7 @@ export function NotFoundPage() {
           action={
             <Link
               to="/"
-              className="inline-flex h-9 items-center rounded-full bg-ink px-4 text-sm font-semibold text-white transition-colors hover:bg-ink-soft focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
+              className="relative hit-44 inline-flex h-9 items-center rounded-full bg-ink px-4 text-sm font-semibold text-white transition-colors hover:bg-ink-soft focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
             >
               Back to the overview
             </Link>

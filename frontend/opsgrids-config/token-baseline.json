@@ -83,14 +83,8 @@
     "spacing": 5,
     "radius": 1
   },
-  "opsgrids-internal/src/ui/Avatar.tsx": {
-    "colour": 1
-  },
   "opsgrids-internal/src/ui/BreakdownBar.tsx": {
     "spacing": 2
-  },
-  "opsgrids-internal/src/ui/Card.tsx": {
-    "colour": 1
   },
   "opsgrids-internal/src/ui/DeltaPill.tsx": {
     "spacing": 2
@@ -102,18 +96,8 @@
     "arbitrary": 1,
     "spacing": 2
   },
-  "opsgrids-internal/src/ui/PageHeader.tsx": {
-    "arbitrary": 1
-  },
-  "opsgrids-internal/src/ui/States.tsx": {
-    "colour": 1,
-    "spacing": 1
-  },
   "opsgrids-internal/src/ui/StatusPill.tsx": {
     "spacing": 2
-  },
-  "opsgrids-internal/src/ui/Tag.tsx": {
-    "spacing": 1
   },
   "opsgrids-internal/src/ui/icons.tsx": {
     "colour": 1

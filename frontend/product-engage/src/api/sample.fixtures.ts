@@ -9,7 +9,7 @@
  * ever changed by the browser.
  */
 
-import type { AutomationDetailOut, Graph, RunOut, TemplateOption } from "./automations";
+import type { AutomationDetailOut, Graph, RunOut, TemplateOption } from "./automations.types";
 import {
   AUTOMATION_ACTIVE,
   AUTOMATION_DRAFT,
@@ -19,9 +19,9 @@ import {
   RUN_WAITING,
   detail,
 } from "./automations.fixtures";
-import type { EmailTemplateOut } from "./email";
-import type { SignupConfig, WhatsAppHealth, WhatsAppNumbersOut } from "./whatsappSignup";
-import type { WhatsAppTemplate, WhatsAppTemplateDetail } from "./whatsappTemplates";
+import type { EmailTemplateOut } from "./email.types";
+import type { SignupConfig, WhatsAppHealth, WhatsAppNumbersOut } from "./whatsappSignup.types";
+import type { WhatsAppTemplate, WhatsAppTemplateDetail } from "./whatsappTemplates.types";
 
 /* ------------------------------- whatsapp connect ------------------------------- */
 

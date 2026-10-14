@@ -21,6 +21,7 @@ export {
   SampleChip,
   SectionHeader,
   Skeleton,
+  StickyActionBar,
   Tag,
 } from "@opsgrids/ui";
 export type { TagTone } from "@opsgrids/ui";
@@ -29,7 +30,6 @@ export { useNavGroups } from "./useNavGroups";
 export { LogoMark } from "./LogoMark";
 export { DeviceToggle } from "./DeviceToggle";
 export { LinkButton } from "./LinkButton";
-export { StickyActionBar } from "./StickyActionBar";
 export { useCoarsePointer } from "./useCoarsePointer";
 export { DEVICE_WIDTHS } from "./deviceWidths";
 export type { DeviceKey } from "./deviceWidths";

@@ -36,7 +36,7 @@ import {
   Tag,
 } from "@/ui";
 import type { Column, StockLevel } from "@/ui";
-import { ImportExportButton, LayersIcon, PlusIcon, useDebouncedValue, useToast } from "@opsgrids/ui";
+import { ImportExportButton, LayersIcon, PlusIcon, SM_QUERY, useDebouncedValue, useMediaQuery, useToast } from "@opsgrids/ui";
 import { InventoryItemFormDialog } from "@/forms/InventoryItemFormDialog";
 import { StockAdjustmentDialog } from "@/forms/StockAdjustmentDialog";
 
@@ -111,6 +111,10 @@ export function InventoryPage() {
   // `state.reload` keeps one identity for the life of the screen. The dialog stays open on its
   // result, so the rows it just created appear behind it as soon as the run ends.
   const dx = useImportExport(inventoryImport, { filters, onImported: state.reload });
+  // From 640px Import / Export is its own button; below it, an item in the header's "More actions"
+  // menu that opens the same dialog.
+  const roomy = useMediaQuery(SM_QUERY, true);
+  const [ioOpen, setIoOpen] = useState(false);
 
   const remove = useMutation((item: InventoryItemOut) => deleteInventoryItem(item.id), {
     onSuccess: (_result, item) => {
@@ -236,6 +240,9 @@ export function InventoryPage() {
         secondaryActions={[
           { label: "Labels", onSelect: () => navigate("/inventory/labels/item") },
           { label: "Scan", onSelect: () => navigate("/inventory/scan"), hidden: !canReadStock },
+          ...(roomy
+            ? []
+            : [{ label: "Import / Export", onSelect: () => setIoOpen(true), hidden: !(canWrite || dx.meta.canExport) }]),
         ]}
         actions={
           <>
@@ -245,6 +252,9 @@ export function InventoryPage() {
               actions={dx.actions}
               canImport={canWrite}
               canExport
+              open={ioOpen}
+              onOpenChange={setIoOpen}
+              hideTrigger={!roomy}
             />
             <Can permission="operations.inventory.item.write" scope="ORG">
               <Button onClick={() => setCreating(true)} leadingIcon={<PlusIcon className="size-4" />}>

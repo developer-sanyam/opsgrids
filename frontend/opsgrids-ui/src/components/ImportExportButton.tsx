@@ -41,8 +41,23 @@ export type {
  * presentation and not security: every request it makes is checked by the server, which refuses
  * a row this person may not create whatever the button showed.
  */
-export function ImportExportButton({ meta, state, actions, canImport, canExport }: ImportExportButtonProps) {
-  const [open, setOpen] = useState(false);
+export function ImportExportButton({
+  meta,
+  state,
+  actions,
+  canImport,
+  canExport,
+  open: controlledOpen,
+  onOpenChange,
+  hideTrigger = false,
+}: ImportExportButtonProps) {
+  const [ownOpen, setOwnOpen] = useState(false);
+  const controlled = controlledOpen !== undefined;
+  const open = controlled ? controlledOpen : ownOpen;
+  const setOpen = (next: boolean) => {
+    if (!controlled) setOwnOpen(next);
+    onOpenChange?.(next);
+  };
   const triggerRef = useRef<HTMLButtonElement>(null);
   const mayExport = canExport && meta.canExport;
 
@@ -58,15 +73,17 @@ export function ImportExportButton({ meta, state, actions, canImport, canExport 
 
   return (
     <>
-      <Button
-        ref={triggerRef}
-        variant="secondary"
-        aria-haspopup="dialog"
-        leadingIcon={<FileTextIcon className="size-4" />}
-        onClick={() => setOpen(true)}
-      >
-        Import / Export
-      </Button>
+      {hideTrigger ? null : (
+        <Button
+          ref={triggerRef}
+          variant="secondary"
+          aria-haspopup="dialog"
+          leadingIcon={<FileTextIcon className="size-4" />}
+          onClick={() => setOpen(true)}
+        >
+          Import / Export
+        </Button>
+      )}
       {open ? (
         <ImportExportDialog
           onClose={() => setOpen(false)}

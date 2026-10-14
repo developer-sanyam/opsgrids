@@ -162,6 +162,7 @@ describe("AccountsPage", () => {
   it("shows a contained error state rather than throwing when the list call fails", async () => {
     vi.spyOn(client, "listOrganizations").mockRejectedValue(new Error("Request failed with 503"));
     renderAccounts();
-    await waitFor(() => expect(screen.getByText("Request failed with 503")).toBeTruthy());
+    // The shared error state says it in words, not as the HTTP client does.
+    await waitFor(() => expect(screen.getByText("Something went wrong on our side. Try again in a moment.")).toBeTruthy());
   });
 });

@@ -4,7 +4,6 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { listCountLines, submitCount } from "@/api/client";
 import { ScanCamera } from "@/ui/ScanCamera";
 import { ScanInput } from "@/ui/ScanInput";
-import { StickyAction } from "@/ui/StickyAction";
 import { problemMessage, useAsync, useMutation } from "@opsgrids/client";
 import {
   ArrowRightIcon,
@@ -14,6 +13,7 @@ import {
   InlineAlert,
   PageHeader,
   Skeleton,
+  StickyActionBar,
   TextField,
   useToast,
 } from "@opsgrids/ui";
@@ -142,11 +142,11 @@ export function CountLineEntryPage() {
         />
       </Card>
 
-      <StickyAction>
+      <StickyActionBar always bleed={false}>
         <Button className="min-h-12 w-full" loading={submit.pending} onClick={handleSubmit}>
           Submit count
         </Button>
-      </StickyAction>
+      </StickyActionBar>
     </div>
   );
 }

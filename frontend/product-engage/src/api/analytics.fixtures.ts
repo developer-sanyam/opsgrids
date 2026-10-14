@@ -16,7 +16,7 @@ import type {
   HubOverview,
   WhatsAppOverview,
   WhatsAppSeriesPoint,
-} from "./analytics";
+} from "./analytics.types";
 
 const MAX_DAYS = 366;
 

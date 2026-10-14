@@ -28,7 +28,9 @@ import {
   MapPinIcon,
   PlusIcon,
   Select,
+  SM_QUERY,
   UsersIcon,
+  useMediaQuery,
   useToast,
   ChipRow,
 } from "@opsgrids/ui";
@@ -122,6 +124,10 @@ export function EmployeesPage() {
   }, [reloadList]);
   const dx = useImportExport(employeesEntity, { filters: exportFilters, onImported: reloadAfterImport });
   const canImport = useCan("hrms.people.employee.write", "ORG");
+  // From 640px Import / Export is its own button; below it, an item in the header's "More actions"
+  // menu that opens the same dialog.
+  const roomy = useMediaQuery(SM_QUERY, true);
+  const [ioOpen, setIoOpen] = useState(false);
 
   // Server paging, appended — `LoadMore`'s own contract. A filter change resets the window. Keyed
   // on the loaded page itself (`useAsync` returns a new object every render, and `page` moves a
@@ -151,6 +157,9 @@ export function EmployeesPage() {
             <span className="tnum font-semibold text-ink">{total}</span> people
           </span>
         }
+        secondaryActions={
+          roomy ? undefined : [{ label: "Import / Export", onSelect: () => setIoOpen(true), hidden: !(canImport || dx.meta.canExport) }]
+        }
         actions={
           <div className="flex flex-wrap items-center gap-2 [&_button]:whitespace-nowrap">
             <ImportExportButton
@@ -159,6 +168,9 @@ export function EmployeesPage() {
               actions={dx.actions}
               canImport={canImport}
               canExport
+              open={ioOpen}
+              onOpenChange={setIoOpen}
+              hideTrigger={!roomy}
             />
             <Can permission="hrms.people.employee.write" scope="ORG">
               <Button onClick={() => setCreating(true)} leadingIcon={<PlusIcon className="size-4" />}>

@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 import { cn } from "../lib/cn";
-import { useMediaQuery } from "../lib/useMediaQuery";
+import { SM_QUERY, useMediaQuery } from "../lib/useMediaQuery";
 import { Button } from "./Button";
 import { Menu } from "./Menu";
 import type { MenuItem } from "./Menu";
@@ -35,8 +35,6 @@ interface PageHeaderProps {
    */
   secondaryActions?: MenuItem[] | undefined;
 }
-
-const SM_QUERY = "(min-width: 640px)";
 
 /**
  * A screen's title block: a quiet eyebrow, the page heading (the `page` type step — 28px, 22px on

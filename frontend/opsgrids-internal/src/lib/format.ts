@@ -70,14 +70,6 @@ export function formatDelta(pct: number): string {
   return `${sign}${Math.abs(pct).toFixed(1)}%`;
 }
 
-/** Initials for an avatar fallback: "Northwind Metals" -> "NM". */
-export function initials(name: string): string {
-  const parts = name.trim().split(/\s+/);
-  const first = parts[0]?.[0] ?? "";
-  const last = parts.length > 1 ? (parts[parts.length - 1]?.[0] ?? "") : "";
-  return (first + last).toUpperCase();
-}
-
 /** "1,284" — plain grouped integer for seat counts and event tallies. */
 export function formatInt(value: number): string {
   return new Intl.NumberFormat("en-IN").format(value);

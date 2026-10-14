@@ -100,9 +100,9 @@ describe("PurchaseOrderDetailPage receiving", () => {
 
       const button = await screen.findByRole("button", { name: "Receive goods" });
       expect(screen.getAllByRole("button", { name: "Receive goods" })).toHaveLength(1);
-      const bar = button.closest("div.sticky");
+      const bar = button.closest("[data-action-bar]");
       expect(bar).not.toBeNull();
-      expect((bar as HTMLElement).style.bottom).toBe("var(--shell-bottom-inset)");
+      expect((bar as HTMLElement).classList.contains("shell-sticky-action")).toBe(true);
     } finally {
       vi.unstubAllGlobals();
     }

@@ -12,7 +12,7 @@ import type {
   StatsOut,
   TemplateOption,
   TriggerOut,
-} from "./automations";
+} from "./automations.types";
 import type { Page } from "./types";
 
 export function page<T>(items: T[]): Page<T> {
