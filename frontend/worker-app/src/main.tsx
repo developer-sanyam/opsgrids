@@ -2,12 +2,11 @@ import { Suspense, lazy, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
-import { RedirectToCentralLogin, configureAuthOrigin, configureSession } from "@opsgrids/client";
+import { RedirectToCentralLogin, RequireAuth, configureAuthOrigin, configureSession } from "@opsgrids/client";
 import { NotFoundScreen, RouteFallback, ThemeProvider, Toaster } from "@opsgrids/ui";
 import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
-import { RequireAuth } from "./auth/RequireAuth";
 import { HomePage } from "./routes/Home";
 import { LoginPage } from "./routes/Login";
 import { lazyScreen } from "./routes/lazyScreen";

@@ -3,11 +3,14 @@ import { Navigate, useLocation } from "react-router-dom";
 
 import { ConnectionErrorScreen } from "./ConnectionErrorScreen";
 import { useAuth } from "./context";
+import { useProductChrome } from "./productChrome";
 
 interface RequireAuthProps {
-  /** The product's mark, pulsing while the session boots. */
-  logo: ReactNode;
-  /** What the hold screen says — "Signing you in…", "Opening the service desk…". */
+  /** The product's mark, pulsing while the session boots. Defaults to the one the app's
+   *  `ProductAuthProvider` declared, so an app does not wrap this just to pass its logo. */
+  logo?: ReactNode;
+  /** What the hold screen says — "Signing you in…", "Opening the service desk…". Defaults to the
+   *  `ProductAuthProvider`'s, then to "Signing you in…". */
   message?: string | undefined;
   children: ReactNode;
 }
@@ -35,9 +38,12 @@ function BootScreen({ logo, message }: { logo: ReactNode; message: string }) {
  * `/login` reads it back to return here after sign-in, whether that is this app's own form or,
  * once redirected further, the dashboard's (`RedirectToCentralLogin`, ADR-0003 addendum).
  */
-export function RequireAuth({ logo, message = "Signing you in…", children }: RequireAuthProps) {
+export function RequireAuth({ logo: ownLogo, message: ownMessage, children }: RequireAuthProps) {
   const { status } = useAuth();
+  const chrome = useProductChrome();
   const location = useLocation();
+  const logo = ownLogo ?? chrome.mark;
+  const message = ownMessage ?? chrome.bootMessage ?? "Signing you in…";
 
   if (status === "loading") return <BootScreen logo={logo} message={message} />;
   if (status === "error") {

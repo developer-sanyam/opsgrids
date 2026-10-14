@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
 
-import { AuthProvider as BaseAuthProvider, PermissionProvider } from "@opsgrids/client";
+import { ProductAuthProvider } from "@opsgrids/client";
+
+import { LogoMark } from "@/ui/LogoMark";
 
 /**
  * The session. The logic lives in `@opsgrids/client`; this app has no fixture identity because
@@ -13,8 +15,8 @@ import { AuthProvider as BaseAuthProvider, PermissionProvider } from "@opsgrids/
  */
 export function AuthProvider({ children }: { children: ReactNode }) {
   return (
-    <BaseAuthProvider fixtureUser={null}>
-      <PermissionProvider>{children}</PermissionProvider>
-    </BaseAuthProvider>
+    <ProductAuthProvider mark={<LogoMark className="size-11 animate-pulse" />}>
+      {children}
+    </ProductAuthProvider>
   );
 }

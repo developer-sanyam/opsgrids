@@ -16,6 +16,8 @@ export { AuthProvider } from "./auth/AuthProvider";
 export { AuthContext, useAuth } from "./auth/context";
 export type { AuthContextValue, AuthStatus } from "./auth/context";
 export { RequireAuth } from "./auth/RequireAuth";
+export { ProductAuthProvider } from "./auth/ProductAuthProvider";
+export type { ProductFixture } from "./auth/ProductAuthProvider";
 export { RedirectToCentralLogin } from "./auth/RedirectToCentralLogin";
 export type { RedirectToCentralLoginProps } from "./auth/RedirectToCentralLogin";
 export * as authApi from "./auth/api";

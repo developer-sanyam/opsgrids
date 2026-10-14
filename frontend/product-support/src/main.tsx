@@ -2,12 +2,11 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
-import { RedirectToCentralLogin, configureAuthOrigin, configureSession } from "@opsgrids/client";
+import { RedirectToCentralLogin, RequireAuth, configureAuthOrigin, configureSession } from "@opsgrids/client";
 import { NotFoundScreen, ThemeProvider, Toaster } from "@opsgrids/ui";
 import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
-import { RequireAuth } from "./auth/RequireAuth";
 import { OverviewPage } from "./routes/Overview";
 import { QueuePage } from "./routes/Queue";
 import { TicketDetailPage } from "./routes/TicketDetail";
