@@ -465,7 +465,9 @@ hygiene: ## No skipped tests, debugger calls, print(), or bare noqa / type: igno
 boundaries: ## import-linter: the service layering and no import cycles
 	@set -e; for s in $(SERVICES); do \
 	  echo "→ $$s"; \
-	  (cd services/$$s && PYTHONPATH=. uv run lint-imports --config ../../.importlinter --no-cache); \
+	  cfg=../../.importlinter; \
+	  if [ -f ".importlinter.$$s" ]; then cfg=../../.importlinter.$$s; fi; \
+	  (cd services/$$s && PYTHONPATH=. uv run lint-imports --config $$cfg --no-cache); \
 	done
 
 # The permission manifests ride with the OpenAPI targets rather than owning their own gate

@@ -290,5 +290,5 @@ def test_merchant_domains_get_the_buyer_policy_and_no_platform_headers() -> None
     }
     assert 'X-Content-Type-Options "nosniff"' in block
     assert 'Referrer-Policy "strict-origin-when-cross-origin"' in block
-    assert "Strict-Transport-Security \"" not in block
-    assert "X-Frame-Options \"" not in block
+    assert 'Strict-Transport-Security "' not in block
+    assert 'X-Frame-Options "' not in block
