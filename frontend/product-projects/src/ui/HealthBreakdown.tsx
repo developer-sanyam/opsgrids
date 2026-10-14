@@ -68,7 +68,7 @@ export function HealthBreakdown({ slices, total }: HealthBreakdownProps) {
                 style={{ backgroundColor: healthColor(slice.key) }}
                 aria-hidden
               />
-              <span className="whitespace-nowrap text-ink-soft">{slice.label}</span>
+              <span className="min-w-0 flex-1 truncate text-ink-soft">{slice.label}</span>
               <span className="ml-auto tnum font-semibold text-ink">{slice.count}</span>
               <span className="w-10 text-right tnum text-muted">{slice.pct}%</span>
             </li>

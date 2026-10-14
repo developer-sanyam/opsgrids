@@ -4,11 +4,12 @@
  * `DonutChart`, never these.
  */
 
+import { useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { cn } from "../lib/cn";
 import type { Scale } from "../lib/chart";
-import { yOf } from "../lib/chart";
+import { strideThatFits, yOf } from "../lib/chart";
 import { SERIES_TONE } from "../lib/tones";
 import type { Tone } from "../lib/tones";
 
@@ -95,7 +96,10 @@ export function ValueAxis({ scale, format }: { scale: Scale; format: (value: num
   );
 }
 
-/** Category labels under the plot, thinned to every `stride`th so they never overlap. */
+/**
+ * Category labels under the plot, thinned to every `stride`th so they never overlap — and thinned
+ * further, from the measured widths, when the card is too narrow for even that.
+ */
 export function CategoryAxis({
   categories,
   stride,
@@ -107,10 +111,58 @@ export function CategoryAxis({
   position: (index: number) => number;
 }) {
   const last = categories.length - 1;
-  // Every `stride`th label, and always the last — dropping a thinned one that would crowd it.
-  const shown = (index: number) => index === last || (index % stride === 0 && last - index >= stride);
+  const row = useRef<HTMLDivElement>(null);
+  // `stride` is the floor the chart asked for; the measured stride only ever thins further.
+  const [measured, setMeasured] = useState(stride);
+  const effective = Math.max(stride, measured);
+  const key = categories.join("|");
+
+  useLayoutEffect(() => {
+    const node = row.current;
+    if (node === null) return undefined;
+    const fit = () => {
+      // The thinned labels are not in the DOM, so measure each category in a throwaway span that
+      // carries the labels' own classes. A renderer with no layout (a test) measures 0 and keeps
+      // `stride`.
+      const probe = node.firstElementChild;
+      if (probe === null) return;
+      const ruler = document.createElement("span");
+      ruler.className = probe.className;
+      ruler.style.visibility = "hidden";
+      node.appendChild(ruler);
+      const widths = categories.map((category) => {
+        ruler.textContent = category;
+        return ruler.getBoundingClientRect().width;
+      });
+      ruler.remove();
+      const positions = categories.map((_, index) => position(index));
+      setMeasured(strideThatFits(widths, positions, node.clientWidth, stride));
+    };
+    fit();
+    // The webfont changes every width: measure again once it has loaded.
+    let live = true;
+    void document.fonts?.ready.then(() => {
+      if (live) fit();
+    });
+    if (typeof ResizeObserver === "undefined") {
+      return () => {
+        live = false;
+      };
+    }
+    const observer = new ResizeObserver(fit);
+    observer.observe(node);
+    return () => {
+      live = false;
+      observer.disconnect();
+    };
+    // `position` is a fresh closure every render and only ever a function of the category count.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, stride]);
+
+  // Every `effective`th label, and always the last — dropping a thinned one that would crowd it.
+  const shown = (index: number) => index === last || (index % effective === 0 && last - index >= effective);
   return (
-    <div aria-hidden className="relative mt-2 h-4">
+    <div ref={row} aria-hidden className="relative mt-2 h-4">
       {categories.map((category, index) =>
         shown(index) ? (
           <span

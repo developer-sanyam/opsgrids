@@ -74,7 +74,7 @@ export function JobWorkChallanPrintPage() {
               </dl>
             </header>
 
-            <section className="grid gap-6 sm:grid-cols-2" aria-label="Parties">
+            <section className="grid grid-cols-1 gap-6 sm:grid-cols-2" aria-label="Parties">
               <div>
                 <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">From</h2>
                 <p className="text-ink">{organizationName || "—"}</p>
@@ -133,7 +133,7 @@ export function JobWorkChallanPrintPage() {
               </tfoot>
             </table>
 
-            <section className="grid gap-4 text-sm sm:grid-cols-3" aria-label="Transport">
+            <section className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-3" aria-label="Transport">
               <div>
                 <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">Vehicle</h2>
                 <p className="tnum text-ink">{state.data.vehicle_no || "—"}</p>

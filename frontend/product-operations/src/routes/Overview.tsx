@@ -242,7 +242,7 @@ export function OverviewPage() {
         }
       />
 
-      <section aria-label="Key metrics" className="grid grid-cols-2 gap-4 md:grid-cols-4">
+      <section aria-label="Key metrics" className="grid grid-cols-2 gap-4 xl:grid-cols-4">
         {kpis.map((kpi) => (
           <KpiTile key={kpi.key} kpi={kpi} />
         ))}

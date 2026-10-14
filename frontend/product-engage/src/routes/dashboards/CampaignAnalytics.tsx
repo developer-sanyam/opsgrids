@@ -349,7 +349,7 @@ function Content({ data, campaign }: { data: CampaignAnalytics | null; campaign:
         </ChartCard>
       ) : null}
 
-      <div className="grid gap-4 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <ChartCard title="Opens by device" loading={loading} skeleton="donut">
           {data !== null ? <OpensByDevice data={data} /> : null}
         </ChartCard>
@@ -361,7 +361,7 @@ function Content({ data, campaign }: { data: CampaignAnalytics | null; campaign:
         </ChartCard>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <ChartCard title="Deliverability" loading={loading} skeleton="bar">
           {data !== null ? <Deliverability data={data} /> : null}
         </ChartCard>

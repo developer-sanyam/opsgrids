@@ -52,6 +52,11 @@ const RADIUS = 46;
 const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 
 const RING: Record<"md" | "sm", string> = { md: "size-36", sm: "size-24" };
+/** When the legend sits beside the ring. The regular ring answers to its card's width; the compact one is for a narrow card on purpose and keeps following the viewport. */
+const ROW: Record<"md" | "sm", { figure: string; legend: string }> = {
+  md: { figure: "@sm:flex-row", legend: "@sm:max-w-sm" },
+  sm: { figure: "sm:flex-row", legend: "sm:max-w-sm" },
+};
 const CENTER_VALUE: Record<"md" | "sm", string> = { md: "text-xl", sm: "text-base" };
 
 /**
@@ -80,56 +85,61 @@ export function DonutChart({
   const tones = slices.map((slice, index) => seriesTone(index, slice.tone));
 
   return (
-    <figure className={cn("m-0 flex flex-col items-center gap-6", layout === "row" && "sm:flex-row", className)}>
-      <div aria-hidden className={cn("relative shrink-0", RING[size])}>
-        <svg viewBox="0 0 120 120" className="size-full -rotate-90">
-          <circle cx="60" cy="60" r={RADIUS} fill="none" strokeWidth="14" className="stroke-ground" />
-          {ring.map((arc, index) =>
-            arc.share > 0 ? (
-              <circle
-                key={slices[index]?.key ?? index}
-                cx="60"
-                cy="60"
-                r={RADIUS}
-                fill="none"
-                strokeWidth="14"
-                strokeDasharray={`${arc.share * CIRCUMFERENCE} ${CIRCUMFERENCE}`}
-                strokeDashoffset={-arc.start * CIRCUMFERENCE}
-                className={SERIES_TONE[tones[index] ?? "accent"].stroke}
-              />
-            ) : null,
-          )}
-        </svg>
-        <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className={cn("tnum font-bold leading-tight text-ink", CENTER_VALUE[size])}>{centerValue ?? formatValue(total)}</span>
-          <span className="text-xs text-muted">{centerLabel}</span>
+    // The row layout answers to the card's own width, not the window's: the same donut sits in a
+    // third-width card at 1280px and a full-width one at 390px, and only the card knows if the
+    // legend still fits beside the ring.
+    <div className={cn("@container", className)}>
+      <figure className={cn("m-0 flex flex-col items-center gap-6", layout === "row" && ROW[size].figure)}>
+        <div aria-hidden className={cn("relative shrink-0", RING[size])}>
+          <svg viewBox="0 0 120 120" className="size-full -rotate-90">
+            <circle cx="60" cy="60" r={RADIUS} fill="none" strokeWidth="14" className="stroke-ground" />
+            {ring.map((arc, index) =>
+              arc.share > 0 ? (
+                <circle
+                  key={slices[index]?.key ?? index}
+                  cx="60"
+                  cy="60"
+                  r={RADIUS}
+                  fill="none"
+                  strokeWidth="14"
+                  strokeDasharray={`${arc.share * CIRCUMFERENCE} ${CIRCUMFERENCE}`}
+                  strokeDashoffset={-arc.start * CIRCUMFERENCE}
+                  className={SERIES_TONE[tones[index] ?? "accent"].stroke}
+                />
+              ) : null,
+            )}
+          </svg>
+          <div className="absolute inset-0 flex flex-col items-center justify-center">
+            <span className={cn("tnum font-bold leading-tight text-ink", CENTER_VALUE[size])}>{centerValue ?? formatValue(total)}</span>
+            <span className="text-xs text-muted">{centerLabel}</span>
+          </div>
         </div>
-      </div>
-      <ul
-        aria-hidden
-        className={cn("flex w-full min-w-0 flex-1 flex-col gap-3", layout === "row" && "sm:max-w-sm")}
-      >
-        {slices.map((slice, index) => (
-          <li
-            key={slice.key}
-            className="flex items-center gap-2 text-sm"
-            title={showValue ? undefined : formatValue(slice.value)}
-          >
-            <span className={cn("size-2.5 shrink-0 rounded-full", SERIES_TONE[tones[index] ?? "accent"].swatch)} />
-            <span className="min-w-0 flex-1 truncate text-ink-soft">{slice.label}</span>
-            {showValue ? <span className="tnum font-semibold text-ink">{formatValue(slice.value)}</span> : null}
-            <span className="tnum w-10 shrink-0 text-right text-muted">{shares[index]}%</span>
-          </li>
-        ))}
-      </ul>
-      <ChartDataTable
-        caption={`${label}. ${centerLabel}: ${centerValue ?? formatValue(total)}`}
-        headers={["Item", "Value", "Share"]}
-        rows={slices.map((slice, index) => ({
-          key: slice.key,
-          cells: [slice.label, formatValue(slice.value), `${shares[index]}%`],
-        }))}
-      />
-    </figure>
+        <ul
+          aria-hidden
+          className={cn("flex w-full min-w-0 flex-1 flex-col gap-3", layout === "row" && ROW[size].legend)}
+        >
+          {slices.map((slice, index) => (
+            <li
+              key={slice.key}
+              className="flex items-center gap-2 text-sm"
+              title={showValue ? undefined : formatValue(slice.value)}
+            >
+              <span className={cn("size-2.5 shrink-0 rounded-full", SERIES_TONE[tones[index] ?? "accent"].swatch)} />
+              <span className="min-w-0 flex-1 truncate text-ink-soft">{slice.label}</span>
+              {showValue ? <span className="tnum font-semibold text-ink">{formatValue(slice.value)}</span> : null}
+              <span className="tnum w-10 shrink-0 text-right text-muted">{shares[index]}%</span>
+            </li>
+          ))}
+        </ul>
+        <ChartDataTable
+          caption={`${label}. ${centerLabel}: ${centerValue ?? formatValue(total)}`}
+          headers={["Item", "Value", "Share"]}
+          rows={slices.map((slice, index) => ({
+            key: slice.key,
+            cells: [slice.label, formatValue(slice.value), `${shares[index]}%`],
+          }))}
+        />
+      </figure>
+    </div>
   );
 }

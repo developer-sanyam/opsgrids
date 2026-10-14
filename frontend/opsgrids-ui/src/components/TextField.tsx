@@ -1,4 +1,4 @@
-import type { InputHTMLAttributes, Ref } from "react";
+import type { InputHTMLAttributes, ReactNode, Ref } from "react";
 
 import { fieldSkin } from "../lib/field";
 import { FormField } from "./FormField";
@@ -20,6 +20,12 @@ interface TextFieldProps extends NativeInput {
   hideLabel?: boolean | undefined;
   containerClassName?: string | undefined;
   /**
+   * A control that belongs to the input and sits beside it — a colour swatch, a unit. It shares the
+   * input's row, so helper and error text below the field can grow without pulling it out of line
+   * with the input (which is what laying it beside the whole field does).
+   */
+  trailing?: ReactNode | undefined;
+  /**
    * The input itself — for moving focus to the field a server error landed on, and for a form
    * dialog's `initialFocusRef`. Without it a screen has to reach its own control by
    * `querySelector`, which is a position in the DOM standing in for an identity.
@@ -38,6 +44,7 @@ export function TextField({
   optional = false,
   hideLabel = false,
   containerClassName,
+  trailing,
   className,
   type = "text",
   required,
@@ -54,18 +61,28 @@ export function TextField({
       hideLabel={hideLabel}
       {...(containerClassName !== undefined ? { className: containerClassName } : {})}
     >
-      {({ id, describedBy, invalid }) => (
-        <input
-          ref={ref}
-          id={id}
-          type={type}
-          required={required}
-          aria-describedby={describedBy}
-          aria-invalid={invalid || undefined}
-          className={fieldSkin(invalid, `h-11 ${className ?? ""}`)}
-          {...props}
-        />
-      )}
+      {({ id, describedBy, invalid }) => {
+        const input = (
+          <input
+            ref={ref}
+            id={id}
+            type={type}
+            required={required}
+            aria-describedby={describedBy}
+            aria-invalid={invalid || undefined}
+            className={fieldSkin(invalid, `h-11 ${className ?? ""}`)}
+            {...props}
+          />
+        );
+        return trailing === undefined ? (
+          input
+        ) : (
+          <div className="flex items-center gap-2 [&>input]:min-w-0 [&>input]:flex-1">
+            {input}
+            {trailing}
+          </div>
+        );
+      }}
     </FormField>
   );
 }

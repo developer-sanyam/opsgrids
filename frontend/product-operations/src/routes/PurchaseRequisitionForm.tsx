@@ -37,7 +37,7 @@ import {
   UnsavedChangesGuard,
 } from "@/ui";
 import type { ComboboxOption } from "@/ui";
-import { ArrowRightIcon, MinusCircleIcon, PlusIcon, useToast } from "@opsgrids/ui";
+import { ArrowRightIcon, FieldGrid, MinusCircleIcon, PlusIcon, useToast } from "@opsgrids/ui";
 
 let rowSeq = 0;
 function nextRowKey(): string {
@@ -292,7 +292,7 @@ function RequisitionFormBody({ requisition }: { requisition: RequisitionOut | nu
                     }}
                     {...(itemError !== undefined ? { error: itemError } : {})}
                   />
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <FieldGrid className="sm:grid-cols-3">
                     <TextField
                       label="Quantity"
                       inputMode="decimal"
@@ -319,7 +319,7 @@ function RequisitionFormBody({ requisition }: { requisition: RequisitionOut | nu
                       maxLength={300}
                       {...(serverLine(index, "note") !== undefined ? { error: serverLine(index, "note") } : {})}
                     />
-                  </div>
+                  </FieldGrid>
                 </div>
               );
             })}

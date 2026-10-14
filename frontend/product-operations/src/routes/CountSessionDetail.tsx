@@ -200,7 +200,7 @@ export function CountSessionDetailPage() {
         title={session.label || (warehouseState.status === "success" && warehouseState.data ? warehouseState.data.name : session.warehouse_id)}
         description={`${session.scope_kind} · opened ${formatDate(session.created_at)}`}
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <CountSessionStatusPill status={session.status} />
             {canManage && session.status === "ACTIVE" ? (
               <Button variant="secondary" loading={startReview.pending} onClick={() => startReview.mutate(undefined)}>

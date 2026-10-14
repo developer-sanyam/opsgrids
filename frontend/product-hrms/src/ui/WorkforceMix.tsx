@@ -84,7 +84,7 @@ export function WorkforceMix({ slices, total, stats }: WorkforceMixProps) {
                 style={{ backgroundColor: PALETTE[i % PALETTE.length] }}
                 aria-hidden
               />
-              <span className="whitespace-nowrap text-ink-soft">{slice.label}</span>
+              <span className="min-w-0 flex-1 truncate text-ink-soft">{slice.label}</span>
               <span className="ml-auto tnum font-semibold text-ink">{slice.pct}%</span>
               <span className="w-6 text-right tnum text-muted">{slice.count}</span>
             </li>

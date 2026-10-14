@@ -53,7 +53,7 @@ function Fact({ label, children }: { label: string; children: ReactNode }) {
 
 function Configuration({ account }: { account: EmailAccount }) {
   return (
-    <dl className="grid gap-4 pt-4 sm:grid-cols-2">
+    <dl className="grid grid-cols-1 gap-4 pt-4 sm:grid-cols-2">
       <Fact label="Provider">{connectionKindLabel(account.kind)}</Fact>
       <Fact label="Username">{account.username}</Fact>
       <Fact label="Host">{account.host}</Fact>
@@ -68,7 +68,7 @@ function Configuration({ account }: { account: EmailAccount }) {
 function Limits({ account }: { account: EmailAccount }) {
   return (
     <div className="flex flex-col gap-3 pt-4">
-      <dl className="grid gap-4 sm:grid-cols-2">
+      <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Fact label="Daily limit">{formatNumber(account.daily_cap)} emails</Fact>
       </dl>
       <p className="text-sm text-muted">

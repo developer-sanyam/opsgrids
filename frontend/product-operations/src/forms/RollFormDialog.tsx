@@ -171,7 +171,7 @@ export function RollFormDialog({ item: initialItem, onClose, onSaved }: RollForm
         helper="In the item's own unit, up to 3 decimals."
         error={err("primary_qty")}
       />
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           label="Measured weight"
           inputMode="decimal"
@@ -190,7 +190,7 @@ export function RollFormDialog({ item: initialItem, onClose, onSaved }: RollForm
           error={err("secondary_uom")}
         />
       </div>
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           label="Width (mm)"
           inputMode="numeric"

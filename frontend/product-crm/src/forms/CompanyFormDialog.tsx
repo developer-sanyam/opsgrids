@@ -140,7 +140,7 @@ export function CompanyFormDialog({
         {...maybe("error", ownerError ?? save.fieldErrors.owner_id)}
       />
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           label="Domain"
           value={domain}
@@ -158,7 +158,7 @@ export function CompanyFormDialog({
         />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Select
           label="Headcount"
           value={sizeBand}
@@ -176,7 +176,7 @@ export function CompanyFormDialog({
         />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           label="City"
           value={city}
@@ -193,7 +193,7 @@ export function CompanyFormDialog({
         />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           label="Annual revenue"
           inputMode="decimal"

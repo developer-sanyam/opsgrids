@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { arcs, areaPath, labelStride, linePath, niceStep, percentages, scaleFor, smoothAreaPath, smoothLinePath, xOf, yOf } from "./chart";
+import { arcs, areaPath, labelStride, linePath, niceStep, percentages, scaleFor, smoothAreaPath, smoothLinePath, strideThatFits, xOf, yOf } from "./chart";
 
 describe("niceStep", () => {
   it("rounds a step up to 1, 2, 2.5 or 5 times a power of ten", () => {
@@ -140,5 +140,26 @@ describe("labelStride", () => {
     expect(labelStride(5)).toBe(1);
     expect(labelStride(12)).toBe(2);
     expect(labelStride(31)).toBe(6);
+  });
+});
+
+describe("strideThatFits", () => {
+  const even = (count: number) => Array.from({ length: count }, (_, i) => (i / (count - 1)) * 100);
+
+  it("keeps the requested stride when nothing was measured", () => {
+    expect(strideThatFits([0, 0, 0, 0], even(4), 0, 2)).toBe(2);
+    expect(strideThatFits([0, 0, 0, 0], even(4), 400, 2)).toBe(2);
+  });
+
+  it("thins until neighbouring labels keep a gap", () => {
+    // Twelve 90px labels on a 700px axis: every second one leaves ~55px between centres, touching.
+    const widths = Array.from({ length: 12 }, () => 90);
+    expect(strideThatFits(widths, even(12), 700, 2)).toBeGreaterThan(2);
+    // The same labels on a wide axis need no extra thinning.
+    expect(strideThatFits(widths, even(12), 1600, 2)).toBe(2);
+  });
+
+  it("never returns less than the stride the chart asked for", () => {
+    expect(strideThatFits([10, 10, 10, 10, 10, 10], even(6), 2000, 3)).toBe(3);
   });
 });

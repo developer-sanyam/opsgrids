@@ -21,7 +21,7 @@ import type { ChannelKey, HubChannel, HubOverview } from "@/api/analytics";
 import { formatNumber } from "@/lib/format";
 import { ActionLink, LoadingStatus, TextLink } from "./DashboardParts";
 import { DashboardFailure } from "./DashboardFailure";
-import { DateRangeControl } from "./DateRangeControl";
+import { DateRangeControl, DateRangeSummary } from "./DateRangeControl";
 import { SectionTabs } from "./SectionTabs";
 import { formatMoney } from "./format";
 import { useDateRange } from "./useDateRange";
@@ -118,8 +118,8 @@ function ChannelSkeleton() {
 
 function Figure({ label, value }: { label: string; value: number }) {
   return (
-    <div className="flex flex-col gap-1">
-      <dt className="text-xs font-bold uppercase tracking-wider text-faint">{label}</dt>
+    <div className="flex min-w-0 flex-col gap-1">
+      <dt className="break-words text-xs font-bold uppercase tracking-wider text-faint">{label}</dt>
       <dd className="tnum text-xl font-bold text-ink">{formatNumber(value)}</dd>
     </div>
   );
@@ -175,7 +175,7 @@ function Performance({ data }: { data: HubOverview }) {
   }
 
   return (
-    <div className="grid gap-4 lg:grid-cols-2">
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
       {whatsapp !== null ? (
         <ChannelSummary
           name="WhatsApp"
@@ -236,6 +236,7 @@ export function CommunicationHubPage() {
         eyebrow="Engage"
         title="Communication"
         description="Which channels are connected, and how WhatsApp and email are doing."
+        meta={<DateRangeSummary controls={dates} />}
         actions={<DateRangeControl controls={dates} />}
       />
       <SectionTabs section="hub" />

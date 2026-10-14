@@ -156,7 +156,7 @@ export function ProjectFormDialog({
       {...withOptional("error", nonFieldError)}
       {...withOptional("reference", (save.error as ApiError | null)?.problem?.request_id)}
     >
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         {!editing ? (
           <TextField
             ref={codeRef}
@@ -181,7 +181,7 @@ export function ProjectFormDialog({
         />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           label="Client"
           value={client}
@@ -198,7 +198,7 @@ export function ProjectFormDialog({
         />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <TextField
           label="Progress (%)"
           inputMode="numeric"
@@ -223,7 +223,7 @@ export function ProjectFormDialog({
         />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           label="Currency"
           value={currency}
@@ -240,7 +240,7 @@ export function ProjectFormDialog({
         />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           label="Start date"
           type="date"

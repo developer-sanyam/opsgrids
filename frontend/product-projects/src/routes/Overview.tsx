@@ -294,7 +294,7 @@ export function OverviewPage() {
       <OverviewHeader onNewProject={goToNewProject} />
 
       {/* Row 1 — KPI cards. No delta on any of the four: none has a real comparison period. */}
-      <section aria-label="Key metrics" className="grid grid-cols-2 gap-4 md:grid-cols-4">
+      <section aria-label="Key metrics" className="grid grid-cols-2 gap-4 xl:grid-cols-4">
         <KpiSlot status={projectsState.status} label="Active projects" error={projectsState.error} onRetry={projectsState.reload}>
           <MetricCard label="Active projects" value={COUNT.format(active)} icon={<BriefcaseIcon className="size-5" />} tone="accent" />
         </KpiSlot>

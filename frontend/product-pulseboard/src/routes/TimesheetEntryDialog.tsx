@@ -136,7 +136,7 @@ export function TimesheetEntryDialog({
     >
       <div className="flex flex-col gap-4">
         {days.map((day, index) => (
-          <div key={day.date} className="grid gap-3 rounded-tile border border-line p-3 sm:grid-cols-4">
+          <div key={day.date} className="grid grid-cols-1 gap-3 rounded-tile border border-line p-3 sm:grid-cols-4">
             <div className="flex flex-col justify-center sm:col-span-1">
               <span className="text-sm font-semibold text-ink">{weekdayLabel(day.date)}</span>
               <span className="text-xs text-faint tnum">{formatDayMonth(day.date)}</span>

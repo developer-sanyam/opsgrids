@@ -209,7 +209,7 @@ function RollSplitForm({ roll, buckets, onClose, onSaved }: RollSplitFormProps) 
         <legend className="mb-1 text-body-sm font-semibold text-ink-soft">Children</legend>
         <ul className="flex flex-col gap-3">
           {rows.map((row, index) => (
-            <li key={row.key} className="grid items-start gap-3 sm:grid-cols-2">
+            <li key={row.key} className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2">
               <TextField
                 {...(index === 0 ? { ref: firstFieldRef } : {})}
                 label={`Child ${index + 1} quantity (${roll.uom})`}

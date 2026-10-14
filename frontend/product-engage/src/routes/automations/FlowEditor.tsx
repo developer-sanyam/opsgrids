@@ -184,7 +184,7 @@ function StepItem({ step, props }: { step: FlowStep; props: FlowEditorProps }) {
     <li className="flex flex-col gap-3">
       <StepCard node={node} props={props} />
       {branches !== undefined ? (
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Branch label="yes" slot={branches.yes} props={props} parent={node.id} />
           <Branch label="no" slot={branches.no} props={props} parent={node.id} />
         </div>

@@ -62,7 +62,7 @@ export function ChallanEwayDialog({ challan, onClose, onRequested }: ChallanEway
         required
         {...(distanceError !== undefined ? { error: distanceError } : {})}
       />
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           label="Vehicle number"
           value={vehicleNo}

@@ -125,7 +125,7 @@ export function RaiseIncidentDialog({ onClose, onCreated }: RaiseIncidentDialogP
         maxLength={8000}
         error={save.fieldErrors.description}
       />
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Select
           label="Priority"
           value={priority}
@@ -141,7 +141,7 @@ export function RaiseIncidentDialog({ onClose, onCreated }: RaiseIncidentDialogP
           error={save.fieldErrors.category}
         />
       </div>
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           label="Requester"
           value={requester}

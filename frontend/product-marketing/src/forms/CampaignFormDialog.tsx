@@ -265,7 +265,7 @@ export function CampaignFormDialog({ campaign, onClose, onSaved }: CampaignFormD
           error={nameError ?? namedFieldErrors.name}
         />
 
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <Select
             label="Channel"
             value={channel}
@@ -314,7 +314,7 @@ export function CampaignFormDialog({ campaign, onClose, onSaved }: CampaignFormD
           ) : null}
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <TextField
             label="Budget"
             inputMode="decimal"
@@ -347,7 +347,7 @@ export function CampaignFormDialog({ campaign, onClose, onSaved }: CampaignFormD
           )}
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <TextField
             label="Start date"
             type="date"
@@ -367,7 +367,7 @@ export function CampaignFormDialog({ campaign, onClose, onSaved }: CampaignFormD
           />
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <TextField
             label="Goal"
             value={goal}
@@ -393,7 +393,7 @@ export function CampaignFormDialog({ campaign, onClose, onSaved }: CampaignFormD
             <p className="text-sm text-muted">
               There is no automatic ingestion yet — this is the only way these figures change.
             </p>
-            <div className="grid gap-4 sm:grid-cols-3">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
               <TextField
                 label="Spent"
                 inputMode="decimal"
@@ -416,7 +416,7 @@ export function CampaignFormDialog({ campaign, onClose, onSaved }: CampaignFormD
                 error={pipelineError ?? namedFieldErrors.pipeline_minor}
               />
             </div>
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <TextField
                 label="Leads"
                 inputMode="numeric"

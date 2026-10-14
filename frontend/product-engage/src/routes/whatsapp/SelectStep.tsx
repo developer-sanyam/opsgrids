@@ -56,7 +56,7 @@ function NumberCard({
           <span className="text-section font-bold text-ink tnum">{number.display_phone_number}</span>
           <StatusBadge tone={status.tone} label={status.label} />
         </span>
-        <span className="grid gap-3 text-body-sm text-ink-soft sm:grid-cols-3">
+        <span className="grid grid-cols-1 gap-3 text-body-sm text-ink-soft sm:grid-cols-3">
           <span>
             <span className="block text-caption text-muted">Display name</span>
             {displayNameLabel(number)}

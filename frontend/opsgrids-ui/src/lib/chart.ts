@@ -152,5 +152,50 @@ export function labelStride(count: number, room = 6): number {
   return Math.max(1, Math.ceil(count / room));
 }
 
+/**
+ * The smallest stride (every nth label, and always the last) at which no two printed category
+ * labels come closer than `gap` px, given each label's measured width and where it sits.
+ *
+ * `labelStride` guesses from the count alone, which is right for "Mon Tue Wed" and wrong for
+ * "September 2025" on a wide card, where six labels of that length still touch. This takes the
+ * widths the browser actually laid out. The first label sits flush left, the last flush right and
+ * every other one is centred on its point — the same alignment `CategoryAxis` draws.
+ *
+ * With no measurements (a width of 0, as in a test renderer) it returns `from`, so nothing moves.
+ */
+export function strideThatFits(
+  widths: readonly number[],
+  positions: readonly number[],
+  containerWidth: number,
+  from: number,
+  gap = 8,
+): number {
+  const count = widths.length;
+  if (count < 2 || containerWidth <= 0) return from;
+  const last = count - 1;
+  const extent = (index: number): [number, number] => {
+    const width = widths[index] ?? 0;
+    const at = positions[index] ?? 0;
+    const x = (at / 100) * containerWidth;
+    if (at <= 0) return [x, x + width];
+    if (at >= 100) return [x - width, x];
+    return [x - width / 2, x + width / 2];
+  };
+  for (let stride = Math.max(1, from); stride <= count; stride += 1) {
+    const shown: number[] = [];
+    for (let index = 0; index < count; index += 1) {
+      if (index === last || (index % stride === 0 && last - index >= stride)) shown.push(index);
+    }
+    let fits = true;
+    for (let i = 1; i < shown.length && fits; i += 1) {
+      const [, previousEnd] = extent(shown[i - 1] ?? 0);
+      const [nextStart] = extent(shown[i] ?? 0);
+      fits = nextStart - previousEnd >= gap;
+    }
+    if (fits) return stride;
+  }
+  return count;
+}
+
 /** The default number format: grouped, at most one decimal. Charts of money pass their own. */
 export const defaultFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format;

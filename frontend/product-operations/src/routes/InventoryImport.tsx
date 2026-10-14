@@ -218,7 +218,7 @@ export function InventoryImportPage() {
       {canImport && entities.length > 0 ? (
         <Card className="flex flex-col gap-4 p-6">
           <h2 className="text-lg font-semibold">Import</h2>
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Select
               label="What are you importing?"
               value={entity}

@@ -2,6 +2,7 @@ import { useId } from "react";
 import type { ReactNode } from "react";
 
 import { cn } from "../lib/cn";
+import { FIELD_GRID } from "../lib/field";
 
 interface FormSectionProps {
   /** "Basic information", "Pricing & stock". */
@@ -56,7 +57,7 @@ export function FormSection({
         </Heading>
         {description ? <p className="text-sm text-muted">{description}</p> : null}
       </div>
-      <div className={cn("grid gap-4", GRID[columns])}>{children}</div>
+      <div className={cn(FIELD_GRID, GRID[columns])}>{children}</div>
     </section>
   );
 }

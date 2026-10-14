@@ -362,7 +362,7 @@ function BuilderView({ automation, initial }: { automation: AutomationDetailOut 
         <RunList automationId={automationId} published={status !== "draft"} />
       ) : (
         <>
-          <Card className="grid gap-4 p-4 sm:grid-cols-2 sm:p-6">
+          <Card className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 sm:p-6">
             <TextField
               ref={nameRef}
               label="Name"
@@ -385,7 +385,7 @@ function BuilderView({ automation, initial }: { automation: AutomationDetailOut 
             />
           </Card>
 
-          <div className="grid items-start gap-6 lg:grid-cols-3">
+          <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-3">
             <Card className="flex flex-col gap-4 p-4 sm:p-6 lg:col-span-2">
               <FlowEditor
                 flow={flow}

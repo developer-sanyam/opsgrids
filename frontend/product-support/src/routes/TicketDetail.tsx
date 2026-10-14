@@ -356,7 +356,7 @@ function ReplyBox({
         {...errorProp(bodyError)}
         disabled={authorName === null || send.pending}
       />
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex flex-wrap items-start gap-3">
         <Switch
           checked={internal}
           onChange={setInternal}

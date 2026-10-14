@@ -129,7 +129,7 @@ export function TaskFormDialog({
       {...withOptional("error", nonFieldError)}
       {...withOptional("reference", (save.error as ApiError | null)?.problem?.request_id)}
     >
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           ref={keyRef}
           label="Key"
@@ -158,7 +158,7 @@ export function TaskFormDialog({
         {...withOptional("error", errors.title ?? save.fieldErrors.title)}
       />
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Select
           label="Column"
           value={status}
@@ -175,7 +175,7 @@ export function TaskFormDialog({
         />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <TextField
           label="Estimate (hours)"
           inputMode="numeric"

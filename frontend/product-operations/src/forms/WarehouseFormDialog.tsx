@@ -192,7 +192,7 @@ export function WarehouseFormDialog({ warehouse, onClose, onSaved }: WarehouseFo
       ) : null}
       <fieldset className="flex flex-col gap-3">
         <legend className="mb-1 text-sm font-semibold text-ink">Site position</legend>
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <TextField
             label="Latitude"
             value={latText}

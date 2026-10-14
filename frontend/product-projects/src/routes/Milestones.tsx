@@ -196,7 +196,7 @@ export function MilestonesPage() {
         eyebrow="Delivery"
         title="Milestones"
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
               <FlagIcon className="size-4 text-muted" />
               <span className="tnum">{attentionCount}</span>
