@@ -259,16 +259,6 @@ class CostGroup:
     priced_by_meta: int
 
 
-async def sent_by_category(
-    session: AsyncSession, org: uuid.UUID, window: DateWindow
-) -> dict[str, int]:
-    """Messages in the `sent` set per billing category."""
-    counts = dict.fromkeys(CATEGORIES, 0)
-    for group in await cost_groups(session, org, window):
-        counts[group.category] += group.messages
-    return counts
-
-
 async def cost_groups(session: AsyncSession, org: uuid.UUID, window: DateWindow) -> list[CostGroup]:
     """The `sent` set grouped by billing category and number prefix, with how many of each are
     billable and how many Meta itself priced. One grouped query, one left join."""
@@ -658,14 +648,6 @@ def pick_rates(
         for (code, category), r in pick_market_rates(rows, org, as_of).items()
         if code == ""
     }
-
-
-def rate_for(
-    picked: dict[tuple[str, str], MessagingRateCard], number: str, category: str
-) -> MessagingRateCard | None:
-    """The rate a message to `number` (or a prefix of it) in `category` is priced at."""
-    codes = {code for code, cat in picked if cat == category}
-    return picked.get((m1_cost.market_code(number, codes), category))
 
 
 def _rate_card_ref(picked: Any, org: uuid.UUID) -> RateCardRef:

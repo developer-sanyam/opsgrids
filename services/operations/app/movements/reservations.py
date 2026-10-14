@@ -22,7 +22,6 @@ from starlette.requests import Request
 from app.inventory import ledger, stock_ops
 from app.models import InventoryReservation
 from app.movements import common
-from app.movements import selectors as sel
 from app.movements.schemas import ReservationIn
 from platform_core.auth import ScopeContext
 from platform_core.errors import ProblemError
@@ -156,9 +155,3 @@ async def expire_due(
             continue
         result.expired += 1
     return result
-
-
-async def reservation_detail(
-    session: AsyncSession, ctx: ScopeContext, reservation_id: uuid.UUID
-) -> InventoryReservation | None:
-    return await sel.get_reservation(session, ctx.organization_id, reservation_id)

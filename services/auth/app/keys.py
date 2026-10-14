@@ -102,16 +102,6 @@ def generate_keypair() -> KeyPair:
     return KeyPair(kid=_thumbprint(public), private=private, public=public)
 
 
-def private_pem(pair: KeyPair) -> bytes:
-    if pair.private is None:  # pragma: no cover - defensive
-        raise SigningKeyUnavailable("No private half to export")
-    return pair.private.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    )
-
-
 def _resolve(path: str) -> str:
     """Make a relative key path work from any working directory.
 

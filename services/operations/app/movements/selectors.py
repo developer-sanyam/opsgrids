@@ -117,19 +117,6 @@ async def get_transfer(
     ).scalar_one_or_none()
 
 
-async def get_transfer_by_approval_request(
-    session: AsyncSession, org_id: uuid.UUID, approval_request_id: uuid.UUID
-) -> StockTransfer | None:
-    return (
-        await session.execute(
-            select(StockTransfer).where(
-                StockTransfer.organization_id == org_id,
-                StockTransfer.approval_request_id == approval_request_id,
-            )
-        )
-    ).scalar_one_or_none()
-
-
 async def transfer_lines(
     session: AsyncSession,
     org_id: uuid.UUID,

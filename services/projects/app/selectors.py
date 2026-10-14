@@ -249,21 +249,6 @@ async def get_milestone(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-async def milestones_for_project(
-    session: AsyncSession, org_id: uuid.UUID, project_id: uuid.UUID
-) -> list[Milestone]:
-    stmt = (
-        select(Milestone)
-        .where(
-            Milestone.organization_id == org_id,
-            Milestone.project_id == project_id,
-            Milestone.deleted_at.is_(None),
-        )
-        .order_by(Milestone.due_date.asc())
-    )
-    return list((await session.execute(stmt)).scalars().all())
-
-
 # ------------------------------------------------------------------ tasks
 
 

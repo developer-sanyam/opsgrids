@@ -192,13 +192,6 @@ async def get_asset(session: AsyncSession, org_id: uuid.UUID, tag: str) -> Asset
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-async def get_asset_by_tag_for_write(
-    session: AsyncSession, org_id: uuid.UUID, tag: str
-) -> Asset | None:
-    """Same as `get_asset` — named for the write path that resolves an affected asset."""
-    return await get_asset(session, org_id, tag)
-
-
 async def all_assets(session: AsyncSession, ctx: ScopeContext) -> list[Asset]:
     return list((await session.execute(assets_stmt(ctx))).scalars().all())
 

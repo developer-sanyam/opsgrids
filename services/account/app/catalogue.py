@@ -332,11 +332,6 @@ class ProductManifest:
     #: contacts and not deals.
     admin_role_codes: tuple[str, ...]
 
-    @property
-    def admin_role_code(self) -> str | None:
-        """The first admin template, for callers that want a single representative code."""
-        return self.admin_role_codes[0] if self.admin_role_codes else None
-
 
 def registration_from_manifest(data: dict[str, Any]) -> ProductManifest:
     """Parse one manifest into the shape `install_registration` installs.

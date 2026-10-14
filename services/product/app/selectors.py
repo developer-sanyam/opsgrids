@@ -84,18 +84,6 @@ async def entitlements_for(session: AsyncSession, org_id: uuid.UUID) -> list[str
 # ------------------------------------------------------------------ activation sources
 
 
-async def get_source(
-    session: AsyncSession, org_id: uuid.UUID, product_key: str, source_product_key: str
-) -> ActivationSource | None:
-    """One source of one activation — `source_product_key == product_key` is its own."""
-    stmt = select(ActivationSource).where(
-        ActivationSource.organization_id == org_id,
-        ActivationSource.product_key == product_key,
-        ActivationSource.source_product_key == source_product_key,
-    )
-    return (await session.execute(stmt)).scalar_one_or_none()
-
-
 async def sources_for(
     session: AsyncSession, org_id: uuid.UUID, product_key: str, *, fresh: bool = False
 ) -> list[ActivationSource]:

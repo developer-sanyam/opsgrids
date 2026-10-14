@@ -108,10 +108,6 @@ class Money:
     def is_zero(self) -> bool:
         return self.minor == 0
 
-    @property
-    def is_negative(self) -> bool:
-        return self.minor < 0
-
     # ---------------------------------------------------------------- rates
     @classmethod
     def rate(cls, unit_price_micros: int, quantity: Decimal | int, currency: str) -> Self:

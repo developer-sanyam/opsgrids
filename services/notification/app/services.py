@@ -5975,13 +5975,6 @@ async def _fold_campaign_counts(session: AsyncSession, campaign: Campaign) -> di
     return counts
 
 
-def unsubscribe_url(organization_id: uuid.UUID, email: str) -> str:
-    """The v1 unsubscribe link for `email`. See `unsubscribe_token` — nothing that mails a real
-    recipient calls this; `unsubscribe_url_for_recipient` is what a campaign send uses."""
-    base = settings().engage_public_api_base.rstrip("/")
-    return f"{base}/engage/unsubscribe/{unsubscribe_token(organization_id, email)}"
-
-
 def unsubscribe_url_for_recipient(organization_id: uuid.UUID, recipient_id: uuid.UUID) -> str:
     """The unsubscribe link for one campaign delivery — opaque, carrying no address."""
     base = settings().engage_public_api_base.rstrip("/")

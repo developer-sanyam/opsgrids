@@ -68,17 +68,6 @@ async def get_shipment(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
-async def get_shipment_for_order(
-    session: AsyncSession, org_id: uuid.UUID, order_id: uuid.UUID
-) -> Shipment | None:
-    stmt = select(Shipment).where(
-        Shipment.organization_id == org_id,
-        Shipment.order_id == order_id,
-        Shipment.deleted_at.is_(None),
-    )
-    return (await session.execute(stmt)).scalar_one_or_none()
-
-
 # ------------------------------------------------------------------ carrier-only fulfilment
 # coverage check (ADR-0024 §6; security review B1/M1) — whether a carrier is being handed a
 # genuinely completed pick (and, if packing was started at all, a completed pack).

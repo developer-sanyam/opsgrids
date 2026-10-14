@@ -21,7 +21,7 @@ from app.models import (
     ThemeDocument,
     ZonePostalCode,
 )
-from platform_core.auth import Principal, Scope, ScopeContext
+from platform_core.auth import Principal
 
 STORE_READ = "storefront.store.settings.read"
 STORE_WRITE = "storefront.store.settings.write"
@@ -75,12 +75,6 @@ def all_perms(org_id: uuid.UUID) -> Principal:
     """Every permission, ORG scope, **and the `otp` step-up** — so this principal can also
     reach `storefront.sales.enquiry.unmask`, which `require()` guards with `amr={"otp"}`."""
     return principal_for(org_id, [f"{code}:ORG" for code in ALL_PERMISSIONS], amr=["otp"])
-
-
-def ctx_for(org_id: uuid.UUID, permission: str, scope: Scope = Scope.ORG) -> ScopeContext:
-    """A scope context as `require(...)` would have built it."""
-    principal = principal_for(org_id, [f"{permission}:{scope.value}"])
-    return ScopeContext(principal=principal, scope=scope, permission=permission)
 
 
 # --------------------------------------------------------------------- seeding

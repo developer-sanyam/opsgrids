@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -282,8 +282,3 @@ def trigger_catalogue() -> tuple[dict[str, Any], ...]:
             }
         )
     return tuple(items)
-
-
-def default_window(now: datetime | None = None) -> tuple[datetime, datetime]:
-    now = now or datetime.now(UTC)
-    return now - timedelta(days=WINDOW_DAYS), now + timedelta(seconds=1)

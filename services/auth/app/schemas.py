@@ -158,17 +158,6 @@ class PasswordResetIn(BaseModel):
     new_password: Password
 
 
-class SessionOut(BaseModel):
-    id: uuid.UUID
-    active_org_id: uuid.UUID | None
-    amr: list[str]
-    idp: str
-    device_label: str | None
-    ip: str | None
-    created_at: str
-    last_seen_at: str
-
-
 class MeOut(BaseModel):
     user_id: uuid.UUID
     email: str
