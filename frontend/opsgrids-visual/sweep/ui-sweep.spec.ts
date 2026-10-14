@@ -23,7 +23,7 @@ import { mockApi } from "../lib/api";
 import { DASHBOARD_ROUTES } from "../fixtures/api/routes";
 import { unsignedToken } from "../lib/session";
 import { detect, detectMobile, detectOverlay, focusObscured, installHelpers, measureBottomGap } from "./detector.mjs";
-import { APPS, FRONTEND_ROOT, selectedApps, sweepOut, sweepWidths } from "./sweep-config";
+import { APPS, FRONTEND_ROOT, selectedApps, sweepOut, sweepPorts, sweepWidths } from "./sweep-config";
 
 interface Owner {
   shared: boolean;
@@ -76,12 +76,16 @@ function portFree(port: number): Promise<boolean> {
   });
 }
 
-async function freePort(start: number): Promise<number> {
-  for (let p = start; p < 5700; p += 1) {
-    // The sweep owns 5600-5699; every other range belongs to other sessions.
+async function freePort(offset: number): Promise<number> {
+  const { start, end } = sweepPorts();
+  // The sweep owns 5600-5699 unless told otherwise; every other range belongs to other sessions.
+  const span = end - start;
+  for (let i = 0; i < span; i += 1) {
+    // Wraps, so a narrow range still serves every app.
+    const p = start + ((offset + i) % span);
     if (await portFree(p)) return p;
   }
-  throw new Error("no free port in 5600-5699");
+  throw new Error(`no free port in ${start}-${end - 1}`);
 }
 
 async function waitUp(url: string, child: ChildProcess): Promise<void> {
@@ -224,7 +228,7 @@ async function sweepApp(appName: string): Promise<void> {
   mkdirSync(shots, { recursive: true });
   const widths = sweepWidths();
   const index = Object.keys(APPS).indexOf(appName);
-  const port = await freePort(5600 + index * 4);
+  const port = await freePort(index * 4);
   const origin = `http://127.0.0.1:${port}`;
 
   const server = spawn("pnpm", ["exec", "vite", "--port", String(port), "--strictPort", "--host", "127.0.0.1"], {
