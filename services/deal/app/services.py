@@ -51,7 +51,7 @@ from platform_core.errors import (
     NotFoundProblem,
     ValidationProblem,
 )
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 from platform_core.models import utcnow
 
 # Event names. `crm.*` because these are the product's own, not the platform's.
@@ -156,14 +156,6 @@ async def materialise_default_pipeline(
         after={"pipeline_id": str(pipeline.id), "stages": len(DEFAULT_PIPELINE.stages)},
     )
     return await selectors.load_pipeline_spec(session, organization_id)
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 # ------------------------------------------------------------------ event payloads
@@ -422,7 +414,7 @@ async def create_deal(
         aggregate_type="deal",
         aggregate_id=deal.id,
         payload=_created_payload(deal, target.outcome),
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return deal
 
@@ -487,7 +479,7 @@ async def update_deal(
         aggregate_type="deal",
         aggregate_id=deal.id,
         payload=_updated_payload(deal, spec.outcome_of(deal.stage), sorted(changes)),
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return deal
 
@@ -534,7 +526,7 @@ async def delete_deal(
         aggregate_type="deal",
         aggregate_id=deal.id,
         payload={"organization_id": str(ctx.organization_id), "deal_id": str(deal.id)},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -608,7 +600,7 @@ async def move_stage(
         payload=_stage_changed_payload(
             deal, before=before, from_outcome=from_outcome, target=target
         ),
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return deal
 
@@ -705,6 +697,6 @@ async def log_activity(
             "contact_id": str(contact_id) if contact_id else None,
             "occurred_at": at.isoformat(),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return activity

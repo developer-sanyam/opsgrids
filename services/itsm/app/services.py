@@ -51,7 +51,7 @@ from app.schemas import (
 from platform_core.audit import record_audit
 from platform_core.auth import Scope, ScopeContext
 from platform_core.errors import ConflictProblem, ForbiddenProblem, NotFoundProblem
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 
 # Event names. `itsm.*` because these are the product's own, not the platform's.
 EVT_INCIDENT_RAISED = "itsm.service.incident.raised"
@@ -75,14 +75,6 @@ _SYSTEM_AUTHOR = "System"
 
 #: SLA target hours by priority — used to stamp `sla_due_at` when an incident is raised.
 _SLA_TARGET_HOURS = {"P1": 2, "P2": 4, "P3": 8, "P4": 24}
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 # ------------------------------------------------------------------ incidents
@@ -186,7 +178,7 @@ async def create_incident(
             "status": status,
             "category": category,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return incident
 
@@ -318,7 +310,7 @@ async def add_worklog(
             "number": incident.number,
             "kind": payload.kind,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return entry
 
@@ -478,7 +470,7 @@ async def update_incident(
             "number": incident.number,
             "changed": sorted(changes),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return incident
 
@@ -546,7 +538,7 @@ async def transition_incident_status(
             "from": before_status,
             "to": incident.status,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return incident
 
@@ -590,7 +582,7 @@ async def delete_incident(
             "incident_id": str(incident.id),
             "number": incident.number,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -662,7 +654,7 @@ async def create_asset(
             "tag": tag,
             "type": asset_type,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return asset
 
@@ -745,7 +737,7 @@ async def update_asset(
             "tag": asset.tag,
             "changed": sorted(changes),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return asset
 
@@ -797,7 +789,7 @@ async def delete_asset(
             "asset_id": str(asset.id),
             "tag": asset.tag,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -981,7 +973,7 @@ async def create_request(
             "catalog_item_code": catalog_item_code,
             "status": status,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return req
 
@@ -1082,7 +1074,7 @@ async def decide_request(
             "decision": payload.decision,
             "status": req.status,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return req
 
@@ -1133,7 +1125,7 @@ async def fulfil_request(
             "request_id": str(req.id),
             "number": req.number,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return req
 
@@ -1183,7 +1175,7 @@ async def update_request(
             "number": req.number,
             "changed": sorted(changes),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return req
 
@@ -1225,5 +1217,5 @@ async def delete_request(
             "request_id": str(req.id),
             "number": req.number,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )

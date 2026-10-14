@@ -74,7 +74,7 @@ from platform_core.errors import (
     ProblemError,
     ValidationProblem,
 )
-from platform_core.events import publish_event, schedule_event
+from platform_core.events import actor_for, publish_event, schedule_event
 
 EVT_TASK_OFFERED = "operations.fulfilment.task.offered"
 EVT_TASK_ACCEPTED = "operations.fulfilment.task.accepted"
@@ -96,14 +96,6 @@ EVT_OFFER_EXPIRE_REQUESTED = "operations.fulfilment.offer.expire_requested"
 #: `release_hold_order` needs the exact same reading without importing this module (ADR-0024 §1).
 _OPEN_TASK_STATUSES = domain.PICK_TASK_OPEN_STATUSES
 _SETTLED_TASK_STATUSES = domain.PICK_TASK_SETTLED_STATUSES
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 #: The scope context an automated (consumer-driven) fulfilment write runs under — the offer
@@ -552,7 +544,7 @@ async def _maybe_ready_order(
             "order_id": str(order.id),
             "number": order.number,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     await order_services.handle_order_ready(session, ctx, order, request=request)
 
@@ -672,7 +664,7 @@ async def offer_task(
         target_aggregate_type="assignment_offer",
         target_aggregate_id=offer.id,
         target_payload={"offer_id": str(offer.id), "task_id": str(task.id)},
-        target_actor=_actor(ctx),
+        target_actor=actor_for(ctx),
     )
     record_audit(
         session,
@@ -714,7 +706,7 @@ async def offer_task(
             "kind": offer.score_breakdown.get("kind"),
             "overridden_worker_id": str(previous_worker_id) if previous_worker_id else None,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return offer
 
@@ -934,7 +926,7 @@ async def _fail_round(
         aggregate_type="pick_task",
         aggregate_id=task.id,
         payload={"organization_id": str(org_id), "task_id": str(task.id), "round": task.round},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     if exhausted:
         record_audit(
@@ -968,7 +960,7 @@ async def _fail_round(
                 "warehouse_id": str(task.warehouse_id),
                 "alert_contact": domain.alert_contact(escalation_settings),
             },
-            actor=_actor(ctx),
+            actor=actor_for(ctx),
         )
     elif task.status == "CREATED":
         # Auto-assignment's own re-offering hook (this build's scope item 1: "given a newly
@@ -1082,7 +1074,7 @@ async def accept_offer(
             "offer_id": str(offer_id),
             "worker_id": str(worker.id),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return refreshed
 
@@ -1254,7 +1246,7 @@ async def record_scan(
             aggregate_type="pick_task",
             aggregate_id=task.id,
             payload={"organization_id": str(ctx.organization_id), "task_id": str(task.id)},
-            actor=_actor(ctx),
+            actor=actor_for(ctx),
         )
     await session.flush()
     return scan
@@ -1333,7 +1325,7 @@ async def confirm_pick(
             aggregate_type="pick_task",
             aggregate_id=task.id,
             payload={"organization_id": str(org_id), "task_id": str(task.id)},
-            actor=_actor(ctx),
+            actor=actor_for(ctx),
         )
 
     line = await selectors.get_task_line(session, org_id, line_id, for_update=True)
@@ -1411,7 +1403,7 @@ async def confirm_pick(
                 "task_line_id": str(line.id),
                 "quantity_milli": requested,
             },
-            actor=_actor(ctx),
+            actor=actor_for(ctx),
         )
 
     if shortfall > 0:
@@ -1479,7 +1471,7 @@ async def confirm_pick(
                 "warehouse_id": str(task.warehouse_id),
                 "alert_contact": domain.alert_contact(exception_settings),
             },
-            actor=_actor(ctx),
+            actor=actor_for(ctx),
         )
     else:
         await session.flush()
@@ -1516,7 +1508,7 @@ async def confirm_pick(
                 aggregate_type="pick_task",
                 aggregate_id=task.id,
                 payload={"organization_id": str(org_id), "task_id": str(task.id)},
-                actor=_actor(ctx),
+                actor=actor_for(ctx),
             )
             await _maybe_ready_order(session, ctx, order, request=request)
 
@@ -1631,7 +1623,7 @@ async def resolve_exception(
             aggregate_type="pick_task",
             aggregate_id=task.id,
             payload={"organization_id": str(org_id), "task_id": str(task.id)},
-            actor=_actor(ctx),
+            actor=actor_for(ctx),
         )
         await _maybe_ready_order(session, ctx, order, request=request)
 
@@ -1909,7 +1901,7 @@ async def confirm_package(
             "package_id": str(package.id),
             "order_id": str(order.id),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
     await ledger.post_move(
@@ -1962,7 +1954,7 @@ async def confirm_package(
             "package_id": str(package.id),
             "order_id": str(order.id),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return package
 

@@ -47,7 +47,7 @@ from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
 from platform_core.db import constraint_name
 from platform_core.errors import BusinessRuleProblem, ConflictProblem, NotFoundProblem
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 
 #: `hrms.time.*` because these are the product's own, not the platform's.
 EVT_LEAVE_TYPE_CREATED = "hrms.time.leave_type.created"
@@ -66,14 +66,6 @@ EVT_LEAVE_CANCELLED = "hrms.time.leave.cancelled"
 REQUEST_TYPE_LEAVE = "hrms.time.leave"
 
 DEFAULT_TIMEZONE = "Asia/Kolkata"
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 def _consumer_actor() -> dict[str, Any]:
@@ -144,7 +136,7 @@ async def update_leave_settings(
         aggregate_type="leave_settings",
         aggregate_id=ctx.organization_id,
         payload={"organization_id": str(ctx.organization_id), "timezone": row.timezone},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return row
 
@@ -245,7 +237,7 @@ async def create_leave_type(
             "code": leave_type.code,
             "is_paid": leave_type.is_paid,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return leave_type
 
@@ -298,7 +290,7 @@ async def update_leave_type(
             "leave_type_id": str(leave_type.id),
             "changed": sorted(changes),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return leave_type
 
@@ -337,7 +329,7 @@ async def delete_leave_type(
         aggregate_type="leave_type",
         aggregate_id=leave_type.id,
         payload={"organization_id": str(ctx.organization_id), "leave_type_id": str(leave_type.id)},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -432,7 +424,7 @@ async def grant_leave_balance(
             "entry_type": entry.entry_type,
             "delta_half_days": entry.delta_half_days,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return entry
 
@@ -616,7 +608,7 @@ async def apply_for_leave(
             "total_half_days": req.total_half_days,
             "reason": req.reason,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return req
 
@@ -921,6 +913,6 @@ async def cancel_leave_request(
             "employee_id": str(req.employee_id),
             "was_status": before_status,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return req

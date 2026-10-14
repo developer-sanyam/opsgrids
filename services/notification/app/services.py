@@ -94,7 +94,7 @@ from platform_core.errors import (
     UpstreamUnavailableProblem,
     ValidationProblem,
 )
-from platform_core.events import publish_event, schedule_event
+from platform_core.events import actor_for, publish_event, schedule_event
 from platform_core.logging import get_logger
 
 log = get_logger("notification.services")
@@ -135,14 +135,6 @@ class OutsideServiceWindowProblem(ConflictProblem):
         body = super().to_problem(request)
         body["remedy"] = "template"
         return body
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 # --------------------------------------------------------------------- templates & rules
@@ -896,7 +888,7 @@ async def send_direct(
         subject=subject,
         body=body,
         created_by=str(ctx.principal.sub),
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     if message is None:  # pragma: no cover - a direct send carries no dedupe key
         raise ConflictProblem("That message has already been staged")
@@ -2338,7 +2330,7 @@ async def reply_to_conversation(
         body=body,
         created_by=str(ctx.principal.sub),
         dedupe_key=dedupe_key,
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     if message is None:
         # The same idempotency key was used before — the caller gets back what that first call
@@ -2703,7 +2695,7 @@ async def create_connection(
             "kind": kind,
             "daily_cap": connection.daily_cap,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return connection
 
@@ -2870,7 +2862,7 @@ async def replace_connection(
             "kind": kind,
             "daily_cap": existing.daily_cap,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return existing
 
@@ -2984,7 +2976,7 @@ async def create_whatsapp_connection(
             "provider_account_id": str(account.id),
             "channel": "whatsapp",
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return account
 
@@ -3090,7 +3082,7 @@ async def replace_whatsapp_connection(
             "provider_account_id": str(existing.id),
             "channel": "whatsapp",
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return existing
 
@@ -3153,7 +3145,7 @@ async def create_domain(
             "domain": name,
             "status": row.status,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return row
 
@@ -3247,7 +3239,7 @@ async def record_domain_check(
                 "domain_id": str(row.id),
                 "domain": row.domain,
             },
-            actor=_actor(ctx),
+            actor=actor_for(ctx),
         )
     return row
 
@@ -3497,7 +3489,7 @@ async def create_sender(
             "domain_id": str(email_domain.id),
             "address": sender_address,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return sender
 
@@ -3684,7 +3676,7 @@ async def send_test(
             "provider": receipt.provider,
             "provider_message_id": receipt.provider_message_id,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return sender
 
@@ -5385,7 +5377,7 @@ async def request_send(
         aggregate_type="campaign",
         aggregate_id=row.id,
         payload={"organization_id": str(ctx.organization_id), "campaign_id": str(row.id)},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return row
 
@@ -5455,7 +5447,7 @@ async def schedule_send(
             "campaign_id": str(row.id),
             "scheduled_for": scheduled_at.astimezone(UTC).isoformat(),
         },
-        target_actor=_actor(ctx),
+        target_actor=actor_for(ctx),
     )
     return row
 
@@ -5602,7 +5594,7 @@ async def cancel_campaign(
         aggregate_type="campaign",
         aggregate_id=row.id,
         payload={"organization_id": str(ctx.organization_id), "campaign_id": str(row.id)},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return row
 

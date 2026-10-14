@@ -115,7 +115,7 @@ from platform_core.errors import (
     NotFoundProblem,
     UpstreamUnavailableProblem,
 )
-from platform_core.events import publish_event, schedule_event
+from platform_core.events import actor_for, publish_event, schedule_event
 from platform_core.logging import get_logger
 
 log = get_logger("finance.services")
@@ -238,14 +238,6 @@ async def _bind_tenant(session: AsyncSession, organization_id: uuid.UUID) -> Non
         await assert_tenant(session, organization_id)
 
 
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
-
-
 def _line_amount_minor(quantity: float, unit_price_minor: int) -> int:
     """A line's amount in minor units, rounded half-up once. Kept exact via Decimal so a
     fractional quantity cannot introduce a float error that stops the invoice footing."""
@@ -361,7 +353,7 @@ async def create_customer(
             "customer_id": str(customer.id),
             "name": customer.name,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return customer
 
@@ -444,7 +436,7 @@ async def update_customer(
             "before": before,
             "after": after,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return customer
 
@@ -496,7 +488,7 @@ async def archive_customer(
             "organization_id": str(ctx.organization_id),
             "customer_id": str(customer.id),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -635,7 +627,7 @@ async def ensure_customer_for_crm_contact(
                 "name": customer.name,
                 "crm_contact_id": str(customer.crm_contact_id),
             },
-            actor=_actor(ctx),
+            actor=actor_for(ctx),
         )
     return customer
 
@@ -861,7 +853,7 @@ async def create_invoice(
                 supply_type=invoice.supply_type, document_type=invoice.document_type
             ),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
     # Auto-filing starts here, and it starts as a *row*. Staged on the outbox inside this same
@@ -1018,7 +1010,7 @@ def _reject_order_invoice(
             "expected_total_minor": expected_total_minor,
             "actual_total_minor": actual_total_minor,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return OrderInvoiceOutcome(
         outcome="rejected",
@@ -1236,7 +1228,7 @@ async def evaluate_order_invoice_request(
             "invoice_number": invoice.number,
             "total_minor": invoice.total_minor,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
     # Auto-filing and withholding run exactly as they do for a principal-route invoice
@@ -1416,7 +1408,7 @@ async def record_payment(
                     "payment_id": str(payment.id),
                     "amount_paid_minor": new_paid,
                 },
-                actor=_actor(ctx),
+                actor=actor_for(ctx),
             )
     await session.flush()
 
@@ -1453,7 +1445,7 @@ async def record_payment(
                 for a in allocations
             ],
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return payment
 
@@ -1545,7 +1537,7 @@ async def set_gst_registration(
             "state_code": registration.state_code,
             "is_primary": registration.is_primary,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return registration
 
@@ -1727,7 +1719,7 @@ def _dispatch_filing_request(
             target_aggregate_type="invoice",
             target_aggregate_id=invoice_id,
             target_payload=payload,
-            target_actor=_actor(ctx),
+            target_actor=actor_for(ctx),
         )
         return
     publish_event(
@@ -1738,7 +1730,7 @@ def _dispatch_filing_request(
         aggregate_type="invoice",
         aggregate_id=invoice_id,
         payload=payload,
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -2044,7 +2036,7 @@ def _publish_filed(
             "portal": portal,
             **extra,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -2079,7 +2071,7 @@ def _publish_filing_failed(
             "retryable": retryable,
             **extra,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -2757,7 +2749,7 @@ async def record_irn_cancellation(
             "reason_code": facts.reason_code,
             "cancelled_at": outcome.ack.cancel_date.isoformat(),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return filing
 
@@ -3332,7 +3324,7 @@ async def record_ims_fetch(
                 "period": row.period,
                 "total_minor": row.total_minor,
             },
-            actor=_actor(ctx),
+            actor=actor_for(ctx),
         )
 
     record_audit(
@@ -3617,7 +3609,7 @@ def _publish_itc_posting(
             ],
             "posted_at": at.isoformat(),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -3809,7 +3801,7 @@ async def record_ims_decision(
             "followed_suggestion": decision.suggested_action == decision.action,
             "decided_at": decision.decided_at.isoformat(),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return decision
 
@@ -4015,7 +4007,7 @@ async def generate_return(
             "document_count": ret.document_count,
             "generated_at": at.isoformat(),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return ret
 
@@ -4212,7 +4204,7 @@ async def file_return(
             "total_taxable_minor": ret.total_taxable_minor,
             "filed_at": at.isoformat(),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return ret
 
@@ -4889,7 +4881,7 @@ async def record_eway_generation(
                 "valid_until": valid_until.isoformat(),
                 "portal": portal,
             },
-            actor=_actor(ctx),
+            actor=actor_for(ctx),
         )
         return bill
 
@@ -5181,7 +5173,7 @@ async def record_eway_cancellation(
             "reason_code": facts.reason_code,
             "cancelled_at": ack.cancel_date.isoformat(),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return bill
 
@@ -5422,7 +5414,7 @@ def _publish_eway_failed(
             "retryable": retryable,
             "portal": portal,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -5583,7 +5575,7 @@ async def assess_withholdings(
                 #: re-resolving a schedule that may since have gained a later row.
                 "withholding_rate_id": str(row.withholding_rate_id),
             },
-            actor=_actor(ctx),
+            actor=actor_for(ctx),
         )
     return recorded
 

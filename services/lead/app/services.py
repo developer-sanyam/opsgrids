@@ -60,7 +60,7 @@ from platform_core.errors import (
     UpstreamUnavailableProblem,
     ValidationProblem,
 )
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 from platform_core.logging import get_logger
 from platform_core.models import utcnow
 from platform_core.pii import PiiError, blind_index, open_sealed, seal
@@ -84,14 +84,6 @@ EVT_LEAD_CONVERSION_ABORTED = "crm.lead.conversion_aborted"
 #: `:convert` has to pick something; thirty days is deal-service's own board's typical early
 #: pipeline horizon, and a rep changes it on the deal the moment they have a real one.
 _DEFAULT_CLOSE_HORIZON_DAYS = 30
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 async def _bind_tenant(session: AsyncSession, organization_id: uuid.UUID) -> None:
@@ -527,7 +519,7 @@ async def create_lead(
             "source": source,
             "owner_id": str(resolved_owner_id) if resolved_owner_id else None,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return lead
 
@@ -635,7 +627,7 @@ async def update_lead(
             "lead_id": str(lead.id),
             "changed": sorted(changes),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return lead
 
@@ -1082,7 +1074,7 @@ def _stage_conversion_aborted(
             "contact_id": str(contact_id) if contact_id else None,
             "deal_id": str(deal_id),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -1240,7 +1232,7 @@ async def finalize_conversion(
                         "contact_id": str(contact_id) if contact_id else None,
                         "deal_id": str(deal_id),
                     },
-                    actor=_actor(ctx),
+                    actor=actor_for(ctx),
                 )
 
     if missing_claim:
