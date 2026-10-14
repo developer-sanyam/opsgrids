@@ -175,12 +175,7 @@ export const CURRENCY_HINT = "Three letters, for example INR, USD or EUR.";
 
 /* ------------------------------ updating an existing record ------------------------------ */
 
-/** A column of an entity by key, so a spec cannot name a column it does not have. */
-export function columnOf(columns: readonly ImportColumn[], key: string): ImportColumn {
-  const found = columns.find((column) => column.key === key);
-  if (found === undefined) throw new Error(`The entity has no column "${key}"`);
-  return found;
-}
+export { columnOf } from "@opsgrids/client";
 
 /**
  * `UpdateField.resolve` for a lookup column: the value `toPayload` sends for the same cell (a
