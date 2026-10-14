@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 
 import { useAnnounce } from "../lib/announcer";
 import { cn } from "../lib/cn";
+import { useMediaQuery } from "../lib/useMediaQuery";
 import type { StatusTone } from "../lib/status";
 import { Button } from "./Button";
 import { RowActions } from "./RowActions";
@@ -98,6 +99,10 @@ export function KanbanBoard<T>({
   readOnly = false,
 }: KanbanBoardProps<T>) {
   const say = useAnnounce();
+  // Dragging a card fights the page's own scroll (an Android long-press starts a drag, a swipe
+  // scrolls the column), so a touch screen gets the "Move to" menu alone, which is on every card.
+  const pointerFine = useMediaQuery("(pointer: fine)", true);
+  const dragEnabled = !readOnly && pointerFine;
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
   const [movingIds, setMovingIds] = useState<ReadonlySet<string>>(new Set());
@@ -231,20 +236,20 @@ export function KanbanBoard<T>({
                       else cards.current.set(id, node);
                     }}
                     tabIndex={-1}
-                    draggable={!readOnly}
-                    onDragStart={readOnly ? undefined : () => setDragId(id)}
+                    draggable={dragEnabled}
+                    onDragStart={dragEnabled ? () => setDragId(id) : undefined}
                     onDragEnd={
-                      readOnly
-                        ? undefined
-                        : () => {
+                      dragEnabled
+                        ? () => {
                             setDragId(null);
                             setOverId(null);
                           }
+                        : undefined
                     }
                     aria-busy={moving || undefined}
                     className={cn(
                       "flex flex-col gap-3 rounded-tile border border-line bg-surface p-3 shadow-card transition-opacity focus:outline-none focus-visible:ring-2 focus-visible:ring-accent",
-                      !readOnly && "cursor-grab active:cursor-grabbing",
+                      dragEnabled && "cursor-grab active:cursor-grabbing",
                       // Not faded while moving: the card stays readable at full contrast.
                       dragging && "opacity-50",
                       moving && "border-dashed border-accent",

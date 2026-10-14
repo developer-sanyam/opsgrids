@@ -271,10 +271,38 @@ describe("DataTable v2", () => {
     expect(screen.getAllByRole("columnheader")[0]?.className).toContain("sticky");
   });
 
-  it("stays a table on a phone when it has not asked for cards", () => {
+  it("is a list of cards on a phone by default", () => {
     stubViewport(375);
     render(<DataTable columns={COLUMNS} rows={ROWS} rowKey={(row) => row.id} caption="Widgets" />);
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(within(screen.getByRole("list", { name: "Widgets" })).getAllByRole("listitem")).toHaveLength(3);
+  });
+
+  it("stays a table on a phone when it opts out, scrolling inside its own region", () => {
+    stubViewport(375);
+    render(<DataTable columns={COLUMNS} rows={ROWS} rowKey={(row) => row.id} caption="Widgets" mobileCard="table" />);
     expect(screen.getByRole("table")).toBeTruthy();
+    const region = screen.getByRole("region", { name: "Widgets" });
+    expect(region.className).toContain("overflow-x-auto");
+    expect(region.className).toContain("scroll-fade");
+  });
+
+  it("keeps a clickable row a row: the open control is a button in its first cell, not the row", async () => {
+    const user = userEvent.setup();
+    const onRowClick = vi.fn();
+    render(<DataTable columns={COLUMNS} rows={ROWS} rowKey={(row) => row.id} onRowClick={onRowClick} />);
+    const row = screen.getAllByRole("row")[1] as HTMLElement;
+    expect(row.getAttribute("role")).toBeNull();
+    expect(row.tabIndex).toBe(-1);
+    // Named by the whole row, as the row itself was.
+    const open = within(row).getByRole("button", { name: "Acme Bracket w1" });
+    open.focus();
+    await user.keyboard("{Enter}");
+    expect(onRowClick).toHaveBeenCalledTimes(1);
+    // A pointer click on another cell of the row opens it too, once.
+    await user.click(within(row).getByText("w1"));
+    expect(onRowClick).toHaveBeenCalledTimes(2);
+    expect(onRowClick).toHaveBeenLastCalledWith(ROWS[0]);
   });
 
   it("stays a table where the viewport cannot be measured, whatever it asked for", () => {

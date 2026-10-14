@@ -431,3 +431,11 @@ export const LongText: Story = {
     ],
   },
 };
+
+/**
+ * `mobileCard="table"` opts out of the phone cards: the table stays a table and scrolls inside
+ * its own region, with a fade on the edge that has more to see.
+ */
+export const MobileKeepsTable: Story = {
+  render: () => <AccountsTable mobileCard="table" />,
+};

@@ -91,3 +91,13 @@ export const SectionHeaders: Story = {
     </Card>
   ),
 };
+
+/** A raw HTTP message from a client is shown as words a person can act on. */
+export const ErrorFromHttpStatus: Story = {
+  render: () => <ErrorState message="Request failed with 500" onRetry={fn()} />,
+};
+
+/** The placeholder that is announced: `label` makes the block a status region. */
+export const SkeletonAnnounced: Story = {
+  render: () => <Skeleton label="Loading invoices" className="h-16 w-full rounded-card" />,
+};

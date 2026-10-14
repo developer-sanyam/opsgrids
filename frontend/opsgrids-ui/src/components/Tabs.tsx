@@ -2,6 +2,7 @@ import { useEffect, useId, useRef } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
 
 import { cn } from "../lib/cn";
+import { useScrollFade } from "../lib/useScrollFade";
 
 export interface TabItem {
   /** Stable key, handed back through `onChange`. */
@@ -47,21 +48,21 @@ const LIST: Record<TabsVariant, string> = {
   // `overflow-x-auto` is the mobile behaviour the brief asks for (§2): the row scrolls, it never
   // wraps into a second line of tabs that reads as a second control.
   // `relative` so each tab's `offsetLeft` is measured from the row, for `reveal` below.
-  line: "relative flex max-w-full gap-1 overflow-x-auto border-b border-line",
-  segmented: "relative inline-flex max-w-full gap-1 overflow-x-auto rounded-full bg-ground p-1",
+  line: "scroll-fade relative flex max-w-full gap-1 overflow-x-auto border-b border-line",
+  segmented: "scroll-fade relative inline-flex max-w-full gap-1 overflow-x-auto rounded-full bg-ground p-1",
 };
 
 const TAB: Record<TabsVariant, { base: string; on: string; off: string }> = {
   line: {
     base:
-      "relative inline-flex h-11 shrink-0 items-center gap-2 px-3 text-sm font-semibold whitespace-nowrap " +
+      "relative inline-flex h-11 min-w-11 shrink-0 items-center justify-center gap-2 px-3 text-sm font-semibold whitespace-nowrap " +
       "transition-colors duration-150 after:absolute after:inset-x-3 after:bottom-0 after:h-0.5 after:rounded-full",
     on: "text-ink after:bg-accent",
     off: "text-muted hover:text-ink after:bg-transparent",
   },
   segmented: {
     base:
-      "inline-flex h-9 shrink-0 items-center gap-2 rounded-full px-3 text-sm font-semibold whitespace-nowrap " +
+      "hit-44 relative inline-flex h-9 min-w-11 shrink-0 items-center justify-center gap-2 rounded-full px-3 text-sm font-semibold whitespace-nowrap " +
       "transition-colors duration-150",
     on: "bg-surface text-ink shadow-card",
     off: "text-muted hover:text-ink",
@@ -91,6 +92,7 @@ export function Tabs({
 }: TabsProps) {
   const base = useId();
   const listRef = useRef<HTMLDivElement>(null);
+  const fade = useScrollFade(listRef);
   const tabId = (id: string) => `${base}-tab-${id}`;
   const panelId = `${base}-panel`;
   const hasPanel = children !== undefined;
@@ -193,6 +195,7 @@ export function Tabs({
         role="tablist"
         aria-label={label}
         aria-orientation="horizontal"
+        data-fade={fade}
         className={LIST[variant]}
       >
         {items.map((item) => {

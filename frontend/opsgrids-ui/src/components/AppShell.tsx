@@ -31,6 +31,9 @@ const CommandMenu = lazy(() => import("./CommandMenu").then((m) => ({ default: m
 /** A display preference, never anything sensitive — same reasoning as the theme toggle's own key. */
 const DESKTOP_COLLAPSE_KEY = "opsgrids.shell.sidebar-collapsed";
 
+/** The bottom bar is for top-level destinations only, and five is what a thumb can tell apart. */
+const MAX_BOTTOM_ITEMS = 5;
+
 type IconType = ComponentType<SVGProps<SVGSVGElement>>;
 
 export interface AppShellProduct {
@@ -96,9 +99,9 @@ export interface AppShellProps {
   quickActions?: QuickAction[] | undefined;
   /**
    * The bottom nav's own app-specific destinations, between Modules/the "+" and More — "Products"
-   * for the ecosystem home, "Accounts" and "Subscriptions" for the staff console. Never invented
-   * when the app doesn't supply any; the bar still ends in Home, then whatever this app gave it,
-   * then More.
+   * for the ecosystem home, "Accounts" and "Subscriptions" for the staff console. Omitted, the bar
+   * takes the first three entries of `nav` after Home; pass `[]` for a bar of Home and More only.
+   * Whatever the source, the bar holds five at most and More is always the last.
    */
   bottomNavExtra?: NavEntry[] | undefined;
   /** Grants/directory status banners — rendered once, at the top of the routed content, replacing
@@ -253,7 +256,9 @@ export function AppShell({
       isFirstRender.current = false;
       return;
     }
-    mainRef.current?.focus();
+    // `preventScroll`: the focus is for the screen reader and the keyboard; letting the browser
+    // scroll to <main> would push the sticky header's worth of page off the top on every route.
+    mainRef.current?.focus({ preventScroll: true });
   }, [pathname]);
 
   useEffect(() => {
@@ -269,6 +274,7 @@ export function AppShell({
     panelRef: drawerRef,
     onClose: () => setNavDrawerOpen(false),
     initialFocusRef: drawerCloseRef,
+    lockBodyScroll: true,
   });
 
   useEffect(() => {
@@ -361,7 +367,11 @@ export function AppShell({
       expanded: quickActionsOpen,
     });
   }
-  for (const entry of bottomNavExtra ?? []) {
+  // The bar holds five at most, and More is always the last. Destinations the app named come
+  // first; without any, the first of its own navigation after Home fill the room that is left.
+  const room = Math.max(0, MAX_BOTTOM_ITEMS - bottomItems.length - 1);
+  const extras = bottomNavExtra ?? nav.flatMap((group) => group.items).filter((entry) => entry !== homeEntry).slice(0, 3);
+  for (const entry of extras.slice(0, room)) {
     bottomItems.push({ key: `extra-${entry.to}`, label: entry.label, icon: entry.icon, to: entry.to });
   }
   bottomItems.push({
@@ -373,7 +383,9 @@ export function AppShell({
   });
 
   return (
-    <div className="min-h-dvh bg-ground">
+    // `overflow-x-clip`: no child, however wide, may stretch the layout viewport and take the fixed
+    // bars with it. It clips rather than scrolls, so sticky positioning is untouched.
+    <div className="min-h-dvh overflow-x-clip bg-ground">
       <a
         href="#main-content"
         onClick={(event) => {
@@ -381,9 +393,9 @@ export function AppShell({
           // browser, and never announces anything to a screen reader. Doing it here guarantees
           // both: the skip link's entire job is to hand focus straight to `<main>`.
           event.preventDefault();
-          mainRef.current?.focus();
+          mainRef.current?.focus({ preventScroll: true });
         }}
-        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[60] focus:rounded-full focus:bg-surface focus:px-4 focus:py-2 focus:text-sm focus:font-bold focus:text-ink focus:shadow-float"
+        className="skip-link rounded-full bg-surface px-4 py-3 text-sm font-bold text-ink shadow-float"
       >
         Skip to main content
       </a>
@@ -468,8 +480,8 @@ export function AppShell({
             tabIndex={-1}
             className={
               layout === "full-bleed"
-                ? "min-w-0 flex-1 shell-content-bottom-pad focus:outline-none"
-                : "mx-auto w-full shell-content-max shell-content-bottom-pad-padded px-3 pt-3 sm:px-6 sm:pt-6 focus:outline-none"
+                ? "min-w-0 max-w-full flex-1 shell-content-bottom-pad focus:outline-none"
+                : "mx-auto w-full min-w-0 shell-content-max shell-content-bottom-pad-padded px-3 pt-3 sm:px-6 sm:pt-6 focus:outline-none"
             }
           >
             {banner ? (
@@ -498,13 +510,13 @@ export function AppShell({
             onClick={() => setNavDrawerOpen(false)}
             aria-hidden
           />
-          <div className="shell-drawer-w absolute left-0 top-0 h-full shadow-overlay">
+          <div className="shell-drawer-w sheet-safe absolute left-0 top-0 h-full bg-surface shadow-overlay">
             <button
               ref={drawerCloseRef}
               type="button"
               onClick={() => setNavDrawerOpen(false)}
               aria-label="Close navigation"
-              className="absolute right-3 top-3 z-10 grid size-9 place-items-center rounded-full bg-surface text-ink shadow-card"
+              className="hit-44 absolute right-3 top-3 z-10 grid size-9 place-items-center rounded-full bg-surface text-ink shadow-card"
             >
               <CloseIcon className="size-5" />
             </button>

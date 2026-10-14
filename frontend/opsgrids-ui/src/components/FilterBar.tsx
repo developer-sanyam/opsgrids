@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { CloseIcon, FilterIcon } from "../icons";
 import { cn } from "../lib/cn";
 import { TABLET_QUERY, useMediaQuery } from "../lib/useMediaQuery";
+import { useScrollFade } from "../lib/useScrollFade";
 import { Button } from "./Button";
 import { Drawer } from "./Drawer";
 import { SearchInput } from "./SearchInput";
@@ -61,13 +62,13 @@ interface FilterBarProps {
 
 function Chip({ label, onRemove }: { label: string; onRemove: () => void }) {
   return (
-    <li className="inline-flex h-8 items-center gap-1 rounded-full bg-accent-soft pl-3 pr-1 text-sm font-medium text-accent-ink">
+    <li className="inline-flex h-8 shrink-0 items-center gap-1 rounded-full bg-accent-soft pl-3 pr-1 text-sm font-medium text-accent-ink">
       {label}
       <button
         type="button"
         onClick={onRemove}
         aria-label={`Remove filter ${label}`}
-        className="grid size-6 place-items-center rounded-full transition-colors hover:bg-surface"
+        className="hit-44 relative grid size-6 place-items-center rounded-full transition-colors hover:bg-surface"
       >
         <CloseIcon className="size-3.5" />
       </button>
@@ -112,6 +113,7 @@ export function FilterBar({
 }: FilterBarProps) {
   const wide = useMediaQuery(TABLET_QUERY, true);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const chipsRef = useRef<HTMLUListElement>(null);
 
   const active: FilterChip[] = [
     ...filters
@@ -125,6 +127,7 @@ export function FilterBar({
   ];
   const activeFilters = filters.filter((filter) => filter.value !== "").length;
   const anything = active.length > 0 || (search !== undefined && search.value !== "");
+  const chipFade = useScrollFade(chipsRef, active.length);
 
   return (
     <div role="search" aria-label={label} className={cn("flex flex-col gap-3", className)}>
@@ -162,7 +165,12 @@ export function FilterBar({
       {active.length > 0 || (anything && onClearAll) ? (
         <div className="flex flex-wrap items-center gap-2">
           {active.length > 0 ? (
-            <ul aria-label="Active filters" className="flex flex-wrap items-center gap-2">
+            <ul
+              ref={chipsRef}
+              data-fade={chipFade}
+              aria-label="Active filters"
+              className="scroll-fade flex max-w-full items-center gap-2 overflow-x-auto md:flex-wrap md:overflow-visible"
+            >
               {active.map((chip) => (
                 <Chip key={chip.key} label={chip.label} onRemove={chip.onRemove} />
               ))}

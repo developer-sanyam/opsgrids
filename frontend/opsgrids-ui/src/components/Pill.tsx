@@ -24,7 +24,7 @@ export function Pill({
       type={type ?? "button"}
       aria-pressed={active}
       className={cn(
-        "inline-flex h-9 items-center gap-1.5 rounded-tile px-3 text-sm font-semibold whitespace-nowrap",
+        "hit-44 relative inline-flex h-9 shrink-0 items-center gap-1.5 rounded-tile px-3 text-sm font-semibold whitespace-nowrap",
         "transition-colors duration-(--duration-quick)",
         active ? "bg-accent text-on-accent" : "text-muted hover:bg-sunken hover:text-ink",
         className,

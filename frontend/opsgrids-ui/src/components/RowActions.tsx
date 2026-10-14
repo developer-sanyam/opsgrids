@@ -153,7 +153,7 @@ export function RowActions({ actions, label, inlineLimit = 3, className }: RowAc
       // `gap-2`, not `gap-1`: the 44px hit areas below grow up to 6px past each control, and an
       // 8px gap keeps two of them from overlapping — a thumb must never land on Delete while
       // aiming at the control beside it.
-      className={cn("flex items-center justify-end gap-2", className)}
+      className={cn("flex flex-wrap items-center justify-end gap-2", className)}
       // These sit inside a `DataTable` row that may itself be clickable. Without this, Delete
       // opens the row it was about to delete on the way to the confirmation.
       onClick={(event) => event.stopPropagation()}
@@ -214,8 +214,11 @@ export function RowActions({ actions, label, inlineLimit = 3, className }: RowAc
               aria-label={`More actions for ${label}`}
               onKeyDown={onMenuKeyDown}
               className={cn(
-                "absolute right-0 top-full z-10 mt-1 flex min-w-44 flex-col",
-                "rounded-tile border border-line bg-surface py-1 shadow-float",
+                // A bottom sheet on a phone (a popover at a row's edge leaves the screen); from
+                // 768px it hangs from the trigger.
+                "sheet-safe-bottom fixed inset-x-2 bottom-2 z-40 flex max-h-3/4 flex-col overflow-y-auto",
+                "rounded-card border border-line bg-surface py-1 shadow-overlay",
+                "md:absolute md:inset-x-auto md:bottom-auto md:right-0 md:top-full md:z-10 md:mt-1 md:min-w-44 md:max-h-none md:rounded-tile md:shadow-float",
               )}
             >
               {overflow.map((action, index) => {

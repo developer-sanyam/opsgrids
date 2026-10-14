@@ -102,7 +102,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: string)
         type="button"
         onClick={() => onDismiss(toast.id)}
         aria-label={`Dismiss: ${toast.title}`}
-        className="grid size-7 shrink-0 place-items-center rounded-tile text-muted transition-colors hover:bg-sunken hover:text-ink"
+        className="hit-44 relative grid size-7 shrink-0 place-items-center rounded-tile text-muted transition-colors hover:bg-sunken hover:text-ink"
       >
         <CloseIcon className="size-4" />
       </button>

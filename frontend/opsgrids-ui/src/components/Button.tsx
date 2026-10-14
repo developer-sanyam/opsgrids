@@ -69,10 +69,10 @@ const VARIANTS: Record<ButtonVariant, string> = {
 };
 
 const SIZES: Record<ButtonSize, string> = {
-  // 36px: dense toolbars and table rows.
-  sm: "h-9 px-3 text-sm",
+  // 36px: dense toolbars and table rows. `hit-44` gives a phone the 44px target without the bulk.
+  sm: "hit-44 min-h-9 px-3 py-1.5 text-sm",
   // 44px: the default, and the touch target the brief asks for on a phone.
-  md: "h-11 px-4 text-sm",
+  md: "min-h-11 px-4 py-2 text-sm",
 };
 
 const GAPS: Record<ButtonSize, string> = {
@@ -125,10 +125,11 @@ export function Button({
       disabled={disabled === true || loading}
       aria-busy={loading || undefined}
       className={cn(
-        // `shrink-0`: a flex row squeezes a button below its own label, the label then wraps inside the
-        // pill and grows past its fixed height and out of its card ("Import / Export" on a phone). A label
-        // too long for any row still wraps, in a button that is not in a flex row.
-        "relative inline-flex items-center justify-center shrink-0 rounded-tile font-semibold",
+        // `shrink-0`: a flex row squeezes a button below its own label. `min-h-*` rather than `h-*`: a
+        // label too long for its row (a half-width card cell on a phone) wraps and the button grows
+        // with it, instead of the text spilling out of a fixed-height pill. `max-w-full` keeps it in
+        // its container.
+        "relative inline-flex max-w-full items-center justify-center shrink-0 rounded-tile text-center font-semibold",
         "transition-colors duration-(--duration-quick) disabled:cursor-not-allowed",
         SIZES[size],
         VARIANTS[variant],

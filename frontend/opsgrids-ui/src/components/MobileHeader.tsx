@@ -32,12 +32,12 @@ export function MobileHeader({
   profile,
 }: MobileHeaderProps) {
   return (
-    <header className="shell-mobile-header-h flex items-center gap-1 border-b border-line bg-surface px-2 md:hidden">
+    <header className="shell-mobile-header-h sticky top-0 z-30 flex items-center gap-1 border-b border-line bg-surface md:hidden">
       <button
         type="button"
         onClick={onOpenNav}
         aria-label="Open navigation"
-        className="grid size-10 shrink-0 place-items-center rounded-full text-ink transition-colors hover:bg-ground"
+        className="grid size-11 shrink-0 place-items-center rounded-full text-ink transition-colors hover:bg-ground"
       >
         <MenuIcon className="size-5" />
       </button>
@@ -49,7 +49,7 @@ export function MobileHeader({
           type="button"
           onClick={search.onOpen}
           aria-label={search.placeholder}
-          className="grid size-10 shrink-0 place-items-center rounded-full text-ink-soft transition-colors hover:bg-ground"
+          className="grid size-11 shrink-0 place-items-center rounded-full text-ink-soft transition-colors hover:bg-ground"
         >
           <SearchIcon className="size-5" />
         </button>

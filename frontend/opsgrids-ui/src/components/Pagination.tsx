@@ -113,7 +113,7 @@ export function Pagination({
                 value={size}
                 onChange={(event) => onSizeChange(Number(event.target.value))}
                 className={cn(
-                  "tnum h-9 cursor-pointer appearance-none rounded-tile border border-field-edge bg-surface",
+                  "tnum h-11 cursor-pointer appearance-none rounded-tile border border-field-edge bg-surface md:h-9",
                   "pl-3 pr-8 text-sm text-ink transition-colors hover:border-muted",
                   "focus:outline-none focus-visible:outline-2 focus-visible:outline-focus focus-visible:outline-offset-2",
                 )}
@@ -133,20 +133,26 @@ export function Pagination({
         ) : null}
 
         {pages > 1 ? (
-          <nav aria-label={`${noun} pages`} className="flex items-center gap-1">
+          <nav aria-label={`${noun} pages`} className="flex items-center gap-1 max-md:gap-2">
             <button
               type="button"
               onClick={() => onPageChange(page - 1)}
               disabled={page <= 1}
               aria-label="Previous page"
-              className="grid size-9 place-items-center rounded-tile text-ink-soft transition-colors hover:bg-sunken disabled:cursor-not-allowed disabled:text-disabled disabled:hover:bg-transparent"
+              className="grid size-11 place-items-center md:size-9 rounded-tile text-ink-soft transition-colors hover:bg-sunken disabled:cursor-not-allowed disabled:text-disabled disabled:hover:bg-transparent"
             >
               <ChevronRight className="size-4 rotate-180" />
             </button>
 
+            {/* A phone has room for Previous, where you are, and Next, each a full 44px target; the
+                numbered row (and its seven small buttons) is from 768px. */}
+            <span className="tnum px-2 text-sm font-medium text-ink-soft md:hidden">
+              Page {page} of {pages}
+            </span>
+
             {numbers.map((value) =>
               value < 0 ? (
-                <span key={`gap${value}`} aria-hidden className="px-1 text-sm text-faint">
+                <span key={`gap${value}`} aria-hidden className="hidden px-1 text-sm text-faint md:inline">
                   …
                 </span>
               ) : (
@@ -157,7 +163,7 @@ export function Pagination({
                   aria-label={`Page ${value}`}
                   aria-current={value === page ? "page" : undefined}
                   className={cn(
-                    "tnum grid h-9 min-w-9 place-items-center rounded-tile px-2 text-sm transition-colors",
+                    "tnum hidden h-9 min-w-9 place-items-center rounded-tile px-2 text-sm transition-colors md:grid",
                     value === page
                       ? "bg-accent font-bold text-on-accent"
                       : "font-medium text-ink-soft hover:bg-sunken",
@@ -173,7 +179,7 @@ export function Pagination({
               onClick={() => onPageChange(page + 1)}
               disabled={page >= pages}
               aria-label="Next page"
-              className="grid size-9 place-items-center rounded-tile text-ink-soft transition-colors hover:bg-sunken disabled:cursor-not-allowed disabled:text-disabled disabled:hover:bg-transparent"
+              className="grid size-11 place-items-center md:size-9 rounded-tile text-ink-soft transition-colors hover:bg-sunken disabled:cursor-not-allowed disabled:text-disabled disabled:hover:bg-transparent"
             >
               <ChevronRight className="size-4" />
             </button>

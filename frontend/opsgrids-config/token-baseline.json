@@ -146,9 +146,6 @@
   "opsgrids-ui/src/components/AppShell.stories.tsx": {
     "spacing": 1
   },
-  "opsgrids-ui/src/components/AppShell.tsx": {
-    "arbitrary": 1
-  },
   "opsgrids-ui/src/components/Card.stories.tsx": {
     "spacing": 1
   },
@@ -162,7 +159,7 @@
   },
   "opsgrids-ui/src/components/Dialog.tsx": {
     "arbitrary": 1,
-    "spacing": 3
+    "spacing": 2
   },
   "opsgrids-ui/src/components/FormDialog.tsx": {
     "spacing": 3

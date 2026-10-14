@@ -107,7 +107,8 @@ export function SearchInput({
   return (
     <div
       className={cn(
-        "flex h-11 items-center gap-2 rounded-tile border border-field-edge bg-surface px-3",
+        // `min-h-11`, not `h-11`: in a column flex with `flex-1` the basis wins over a height and the field collapsed to its text.
+        "flex min-h-11 items-center gap-2 rounded-tile border border-field-edge bg-surface px-3",
         "transition-colors duration-(--duration-quick) hover:border-muted",
         "focus-within:outline focus-within:outline-2 focus-within:outline-offset-2",
         focusRing === "accent" ? "focus-within:outline-focus" : "focus-within:outline-ink",
@@ -122,7 +123,7 @@ export function SearchInput({
         id={inputId}
         type="search"
         className={cn(
-          "min-w-0 flex-1 bg-transparent text-sm text-ink placeholder:text-faint",
+          "-my-px min-w-0 flex-1 self-stretch bg-transparent text-sm text-ink placeholder:text-faint",
           "focus:outline-none",
           className,
         )}

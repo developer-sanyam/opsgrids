@@ -59,7 +59,8 @@ export function BottomNavigation({ items }: BottomNavigationProps) {
             key={item.key}
             type="button"
             onClick={item.onSelect}
-            aria-expanded={item.expanded}
+            aria-haspopup="dialog"
+            aria-expanded={item.expanded ?? false}
             className={cn(
               "flex flex-1 flex-col items-center justify-center gap-0.5 text-caption font-semibold text-muted",
               item.raised && "relative",

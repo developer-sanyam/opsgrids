@@ -73,3 +73,17 @@ export const WithMetaAndPeriodControl: Story = {
     ),
   },
 };
+
+/** Import and Export are secondary: buttons from 640px, one "More actions" menu below it, so the
+ *  phone header keeps the title, the primary action and a single extra control. */
+export const SecondaryActionsCollapseOnPhone: Story = {
+  args: {
+    title: "Employees",
+    description: "Everyone on payroll, by department.",
+    secondaryActions: [
+      { label: "Import", onSelect: () => undefined },
+      { label: "Export", onSelect: () => undefined },
+    ],
+    actions: <Button leadingIcon={<PlusIcon className="size-5" />}>Add employee</Button>,
+  },
+};

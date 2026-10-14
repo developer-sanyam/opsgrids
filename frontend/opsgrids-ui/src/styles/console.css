@@ -407,8 +407,13 @@ body {
   height: var(--shell-header-h);
 }
 
+/* The header's own height plus the notch: the safe area pads the bar, it does not shrink the
+   buttons. The inset is zero without `viewport-fit=cover`, which every app's index.html sets. */
 .shell-mobile-header-h {
-  height: var(--shell-mobile-header-h);
+  height: calc(var(--shell-mobile-header-h) + env(safe-area-inset-top));
+  padding-top: env(safe-area-inset-top);
+  padding-left: max(0.5rem, env(safe-area-inset-left));
+  padding-right: max(0.5rem, env(safe-area-inset-right));
 }
 
 .shell-content-max {
@@ -433,6 +438,8 @@ body {
 .shell-bottom-nav {
   height: calc(var(--shell-bottom-nav-h) + env(safe-area-inset-bottom));
   padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
 }
 
 /* Reserves the space the fixed bottom nav would otherwise cover, at the foot of the routed
@@ -471,4 +478,108 @@ body {
   *::after {
     transition-duration: 0.01ms !important;
   }
+}
+
+/* ------------------------------ mobile and touch ------------------------------ *
+ * What a phone needs that a pointer does not. Each rule is here, once, so a component asks for
+ * the behaviour by class name and the numbers (44px, 16px, the safe-area insets) stay in one file.
+ * ---------------------------------------------------------------------------- */
+
+/*
+ * A focused control must not end up behind the fixed bottom navigation or the sticky mobile
+ * header: the browser scrolls it into view, and `scroll-padding` is how it learns where "in
+ * view" ends (WCAG 2.4.11). The bottom inset is zero at 768px and up, so desktop scrolling is
+ * untouched; the header is `md:hidden`, so is its padding.
+ */
+html {
+  scroll-padding-bottom: calc(var(--shell-bottom-inset) + 1rem);
+  scroll-padding-top: 1rem;
+}
+
+@media (max-width: 767px) {
+  html {
+    scroll-padding-top: calc(var(--shell-mobile-header-h) + env(safe-area-inset-top) + 1rem);
+  }
+}
+
+/*
+ * A 44x44 hit area without a 44px control. The pseudo-element is the tap target; the visible
+ * control keeps its size. Opt in with `relative hit-44` (the element must be positioned). On a
+ * phone and on any coarse pointer; a mouse keeps the compact control.
+ */
+@media (max-width: 767px), (pointer: coarse) {
+  .hit-44::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: max(100%, 44px);
+    height: max(100%, 44px);
+    transform: translate(-50%, -50%);
+  }
+}
+
+/*
+ * iOS Safari zooms the whole page when a field under 16px takes focus, and does not zoom back.
+ * Unlayered on purpose, like the focus rules above: it has to outrank every `text-sm` utility, in
+ * the design system's fields and in an app's own.
+ */
+@media (max-width: 767px) {
+  input:not([type="checkbox"], [type="radio"], [type="range"], [type="color"], [type="file"], [type="hidden"], [type="button"], [type="submit"]),
+  select,
+  textarea {
+    font-size: 1rem;
+  }
+}
+
+/*
+ * A full-screen or bottom sheet keeps clear of the notch and the home indicator. `sheet-safe`
+ * pads both edges below `sm` (where `Dialog` is a full-screen sheet); `sheet-safe-bottom` pads the
+ * bottom edge below `md` (where `Drawer` and `Menu` are bottom sheets).
+ */
+@media (max-width: 639px) {
+  .sheet-safe {
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+@media (max-width: 767px) {
+  .sheet-safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+/*
+ * A row that scrolls sideways says so: the edge with more to see fades out. `useScrollFade` sets
+ * `data-fade` to `start`, `end` or `both`; with nothing to scroll to there is no fade. A mask, not
+ * an overlay, so it works on any background in either theme.
+ */
+.scroll-fade[data-fade="end"] {
+  mask-image: linear-gradient(to right, black calc(100% - 2rem), transparent);
+}
+
+.scroll-fade[data-fade="start"] {
+  mask-image: linear-gradient(to left, black calc(100% - 2rem), transparent);
+}
+
+.scroll-fade[data-fade="both"] {
+  mask-image: linear-gradient(to right, transparent, black 2rem, black calc(100% - 2rem), transparent);
+}
+
+/*
+ * The skip link: off-screen until it takes focus, then a visible pill at the top. A transform, not
+ * `sr-only`, so it has a real size when it appears (the clip-based pattern collapsed it to 1px
+ * on a phone, where `focus:fixed` lost to `not-sr-only`'s `position: static`).
+ */
+.skip-link {
+  position: fixed;
+  left: max(1rem, env(safe-area-inset-left));
+  top: max(1rem, env(safe-area-inset-top));
+  z-index: 60;
+  transform: translateY(-300%);
+}
+
+.skip-link:focus {
+  transform: none;
 }

@@ -1,16 +1,21 @@
 import type { ReactNode } from "react";
 
 import { cn } from "../lib/cn";
+import { plainErrorMessage } from "../lib/errorText";
 import { Button } from "./Button";
 
 /** A shimmering placeholder block that reserves layout so nothing shifts on load. */
-export function Skeleton({ className }: { className?: string | undefined }) {
-  return (
-    <div
-      className={cn("animate-pulse rounded-full bg-sunken", className)}
-      aria-hidden
-    />
-  );
+export function Skeleton({ className, label }: { className?: string | undefined; label?: string | undefined }) {
+  if (label !== undefined) {
+    // One announced placeholder for the region ("Loading invoices"), not a silent block: the
+    // status role is read when it appears, and `aria-busy` tells a reader the content is coming.
+    return (
+      <div role="status" aria-busy="true" className={cn("animate-pulse rounded-full bg-sunken", className)}>
+        <span className="sr-only">{label}</span>
+      </div>
+    );
+  }
+  return <div className={cn("animate-pulse rounded-full bg-sunken", className)} aria-hidden />;
 }
 
 interface EmptyStateProps {
@@ -89,7 +94,7 @@ export function ErrorState({
     >
       <div className="flex flex-col gap-1 max-w-sm">
         <p className={cn("text-base font-bold", ERROR_TONE[tone])}>{title}</p>
-        <p className="text-sm text-muted">{message}</p>
+        <p className="text-sm text-muted">{plainErrorMessage(message)}</p>
         {reference ? <p className="text-xs text-faint tnum">Reference: {reference}</p> : null}
       </div>
       {onRetry ? (
