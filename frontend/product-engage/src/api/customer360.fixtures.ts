@@ -1,5 +1,5 @@
 /** Test-only: typed to the C1 contract so a change to the wire shape fails the typecheck here. */
-import type { Customer360 } from "./customer360";
+import type { Customer360 } from "./customer360.types";
 
 export const CUSTOMER_ID = "c1a0f2e4-9b3d-4a7c-8e1f-2d6b9c4a5e10";
 
