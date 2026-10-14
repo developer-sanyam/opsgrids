@@ -22,10 +22,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 import uuid
-from datetime import date
 from typing import TYPE_CHECKING, Any
+
+from _common import bootstrap, date_from_iso
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -657,10 +657,6 @@ INVENTORY: list[tuple[str, str, str, str, int, int, str, int, str]] = [
 ]
 
 
-def _date(s: str) -> date:
-    return date.fromisoformat(s)
-
-
 async def seed(session: AsyncSession, ctx: ScopeContext) -> dict[str, int]:
     """Insert the full Operations demo dataset through the real service write paths. Idempotent.
 
@@ -719,7 +715,7 @@ async def seed(session: AsyncSession, ctx: ScopeContext) -> dict[str, int]:
             contact_name=contact,
             contact_email=email,
             location=location,
-            since=_date(since),
+            since=date_from_iso(since),
         )
         counts["suppliers"] += 1
 
@@ -749,9 +745,9 @@ async def seed(session: AsyncSession, ctx: ScopeContext) -> dict[str, int]:
             warehouse=spec["warehouse"],
             raised_by=spec["raised_by"],
             currency="INR",
-            created_date=_date(spec["created"]),
-            expected_date=_date(spec["expected"]),
-            received_date=_date(spec["received"]) if spec["received"] else None,
+            created_date=date_from_iso(spec["created"]),
+            expected_date=date_from_iso(spec["expected"]),
+            received_date=date_from_iso(spec["received"]) if spec["received"] else None,
             notes=spec["notes"],
             lines=lines,
         )
@@ -774,7 +770,7 @@ async def seed(session: AsyncSession, ctx: ScopeContext) -> dict[str, int]:
             uom=uom,
             unit_value_minor=inr(unit_value),
             currency="INR",
-            stocked_at=_date(stocked),
+            stocked_at=date_from_iso(stocked),
         )
         counts["inventory"] += 1
 
@@ -782,15 +778,6 @@ async def seed(session: AsyncSession, ctx: ScopeContext) -> dict[str, int]:
 
 
 # ------------------------------------------------------------------ standalone entry point
-
-
-def _bootstrap() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
-    """Parse argv and put the service dir on the import path — sync, before the event loop."""
-    from pathlib import Path
-
-    service_dir = Path(sys.argv[1]).resolve()
-    sys.path.insert(0, str(service_dir))
-    return uuid.UUID(sys.argv[2]), uuid.UUID(sys.argv[3]), uuid.UUID(sys.argv[4])
 
 
 async def _main(
@@ -836,5 +823,5 @@ async def _main(
 
 
 if __name__ == "__main__":
-    _org, _user, _membership = _bootstrap()
+    _org, _user, _membership = bootstrap()
     asyncio.run(_main(_org, _user, _membership))
