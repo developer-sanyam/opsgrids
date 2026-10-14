@@ -192,12 +192,6 @@ export const ChevronRightIcon = (p: IconProps) => (
   </Base>
 );
 
-export const ChevronsUpDown = (p: IconProps) => (
-  <Base {...p}>
-    <path d="m7 15 5 5 5-5M7 9l5-5 5 5" />
-  </Base>
-);
-
 export const CircleDotIcon = (p: IconProps) => (
   <Base {...p}>
     <circle cx="12" cy="12" r="9" />
@@ -421,13 +415,6 @@ export const LayoutIcon = (p: IconProps) => (
   </Base>
 );
 
-export const LeafIcon = (p: IconProps) => (
-  <Base {...p}>
-    <path d="M11 20A7 7 0 0 1 4 13c0-6 5-9 15-9 0 8-4 13-8 13Z" />
-    <path d="M4 20c2-5 6-8 12-9" />
-  </Base>
-);
-
 export const LifeBuoyIcon = (p: IconProps) => (
   <Base {...p}>
     <circle cx="12" cy="12" r="9" />
@@ -573,13 +560,6 @@ export const PlusIcon = (p: IconProps) => (
   </Base>
 );
 
-/** A pulse / activity waveform — the product's signature glyph. */
-export const PulseIcon = (p: IconProps) => (
-  <Base {...p}>
-    <path d="M3 12h3l2.5-6 4 13 2.5-7 1.5 3H21" />
-  </Base>
-);
-
 export const ReceiptIcon = (p: IconProps) => (
   <Base {...p}>
     <path d="M5 3h14v18l-2.5-1.5L14 21l-2-1.5L10 21l-2.5-1.5L5 21z" />
@@ -711,12 +691,6 @@ export const TicketIcon = (p: IconProps) => (
   <Base {...p}>
     <path d="M4 8a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2 2 2 0 0 0 0 4 2 2 0 0 1-2 2H6a2 2 0 0 1-2-2 2 2 0 0 0 0-4Z" />
     <path d="M14 6v2m0 3v2m0 3v2" />
-  </Base>
-);
-
-export const TrendingDownIcon = (p: IconProps) => (
-  <Base {...p}>
-    <path d="M3 7l6 6 4-4 8 8M21 17v-6h-6" />
   </Base>
 );
 
