@@ -189,6 +189,24 @@ def build_envelope(row: Any, *, producer: str) -> dict[str, Any]:
     }
 
 
+def parse_envelope_dt(raw: Any, log_event: str) -> datetime:
+    """A timestamp read off an event envelope or payload, falling back to "now".
+
+    For fields that are display/debugging only, or that a handler must not dead-letter an
+    otherwise-good event over: absent or falsy is "now", and so is a malformed value, which is
+    logged as a warning under `log_event` (carrying at most the first 100 characters of `raw`)
+    rather than raised. A consumer for which a timestamp is load-bearing and a bad one an error
+    does not belong here.
+    """
+    if not raw:
+        return datetime.now(UTC)
+    try:
+        return datetime.fromisoformat(raw)
+    except (TypeError, ValueError):
+        log.warning(log_event, raw=str(raw)[:100])
+        return datetime.now(UTC)
+
+
 def event_schema_path(event_type: str, version: int, *, contracts_root: Path) -> Path:
     """Where `build_envelope`'s `schema_uri` for `(event_type, version)` resolves on disk.
 
