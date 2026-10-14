@@ -68,10 +68,10 @@ describe("parseMinor", () => {
     expect(parseMinor("", "INR")).toEqual({ ok: true, minor: 0 });
   });
 
-  it("refuses more than two decimal places, saying so as it always has", () => {
+  it("refuses more than two decimal places", () => {
     expect(parseMinor("24000.5055", "INR")).toEqual({
       ok: false,
-      message: "Enter a whole-currency amount, like 24000 or 24000.50. No more than two decimal places.",
+      message: "Enter an amount in digits, like 24000 or 24000.50, with no currency sign or words and no more than two decimal places.",
     });
   });
 
@@ -88,7 +88,7 @@ describe("parseMinor", () => {
   it("refuses a decimal for a currency that has none", () => {
     expect(parseMinor("1500.5", "JPY")).toEqual({
       ok: false,
-      message: "Enter a whole-currency amount, like 24000. JPY has no decimal places.",
+      message: "Enter a whole amount in digits, like 24000. JPY has no decimal places.",
     });
   });
 
@@ -97,7 +97,7 @@ describe("parseMinor", () => {
     expect(parseMinor("12.5", "KWD")).toEqual({ ok: true, minor: 12_500 });
     expect(parseMinor("1.2505", "KWD")).toEqual({
       ok: false,
-      message: "Enter a whole-currency amount, like 24000 or 24000.500. No more than three decimal places.",
+      message: "Enter an amount in digits, like 24000 or 24000.500, with no currency sign or words and no more than three decimal places.",
     });
   });
 
