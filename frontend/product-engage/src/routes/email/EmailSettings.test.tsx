@@ -84,23 +84,23 @@ describe("populated", () => {
     serve();
     renderPage();
 
-    expect(await screen.findByText("All Accounts (1)")).toBeTruthy();
+    expect(await screen.findByText("All accounts (1)")).toBeTruthy();
     const details = screen.getByRole("region", { name: "Account details" });
-    expect(within(details).getByText("Account Details")).toBeTruthy();
+    expect(within(details).getByText("Account details")).toBeTruthy();
     expect(within(details).getByText(CONNECTION.host)).toBeTruthy();
     expect(within(details).getByText(String(CONNECTION.port))).toBeTruthy();
     expect(within(screen.getByRole("region", { name: "Accounts" })).getByText("Connected")).toBeTruthy();
   });
 
-  it("shows the daily limit under Sending Limits, and only the tabs it has data for", async () => {
+  it("shows the daily limit under Sending limits, and only the tabs it has data for", async () => {
     serve();
     const user = userEvent.setup();
     renderPage();
 
-    await screen.findByText("All Accounts (1)");
+    await screen.findByText("All accounts (1)");
     expect(screen.queryByRole("tab", { name: "Tracking" })).toBeNull();
     expect(screen.queryByRole("tab", { name: "Webhooks" })).toBeNull();
-    await user.click(screen.getByRole("tab", { name: "Sending Limits" }));
+    await user.click(screen.getByRole("tab", { name: "Sending limits" }));
 
     expect(screen.getByText(`${new Intl.NumberFormat().format(CONNECTION.daily_cap)} emails`)).toBeTruthy();
   });
@@ -117,7 +117,7 @@ describe("populated", () => {
   it("hides Edit from someone who may not change the connection", async () => {
     serve();
     renderPage(["engage.setup.connection.read:ORG"]);
-    await screen.findByText("All Accounts (1)");
+    await screen.findByText("All accounts (1)");
     expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
   });
 });
@@ -126,14 +126,14 @@ describe("inbox sync", () => {
   it("shows nothing about IMAP while the payload does not carry it", async () => {
     serve();
     renderPage();
-    await screen.findByText("All Accounts (1)");
+    await screen.findByText("All accounts (1)");
     expect(screen.queryByText("Inbox sync (IMAP)")).toBeNull();
   });
 
   it("shows it, read-only, when the payload carries it", async () => {
     serve({ ...ACCOUNT, imap_enabled: true });
     renderPage();
-    await screen.findByText("All Accounts (1)");
+    await screen.findByText("All accounts (1)");
     expect(screen.getByText("Inbox sync (IMAP)")).toBeTruthy();
     expect(screen.getByText("On")).toBeTruthy();
     expect(screen.queryByRole("switch")).toBeNull();
@@ -185,7 +185,7 @@ describe("sending domain authentication", () => {
     renderPage();
 
     expect(await screen.findByText("Couldn't load your sending domains")).toBeTruthy();
-    expect(screen.getByText("All Accounts (1)")).toBeTruthy();
+    expect(screen.getByText("All accounts (1)")).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "Try again" }));
     expect(await screen.findByText("vaayu-logistics.example.com")).toBeTruthy();
@@ -200,15 +200,15 @@ describe("empty", () => {
     renderPage();
 
     expect(await screen.findByText("No email account connected")).toBeTruthy();
-    await user.click(screen.getAllByRole("button", { name: "Connect Account" })[0] as HTMLElement);
+    await user.click(screen.getAllByRole("button", { name: "Connect account" })[0] as HTMLElement);
     expect(screen.getByText("Connection page")).toBeTruthy();
   });
 
-  it("offers no Connect Account to someone who may not connect one", async () => {
+  it("offers no Connect account to someone who may not connect one", async () => {
     serve(null);
     renderPage(["engage.setup.connection.read:ORG"]);
     await screen.findByText("No email account connected");
-    expect(screen.queryByRole("button", { name: "Connect Account" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect account" })).toBeNull();
   });
 });
 

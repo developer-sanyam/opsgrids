@@ -154,7 +154,7 @@ function Populated({ stats }: { stats: StatsOut }) {
                     <th scope="row" className="py-3 pr-4 text-left">
                       <Link
                         to={`/automations/${encodeURIComponent(row.automation_id)}`}
-                        className="text-sm font-bold text-ink underline-offset-4 hover:text-accent-ink hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                        className="relative hit-44 text-sm font-bold text-ink underline-offset-4 hover:text-accent-ink hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                       >
                         {row.name}
                       </Link>
@@ -198,7 +198,7 @@ function Analytics() {
     <div className="rise flex flex-col gap-6">
       <Link
         to="/automations"
-        className="inline-flex w-fit items-center gap-2 text-sm font-semibold text-muted transition-colors hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        className="relative hit-44 inline-flex w-fit items-center gap-2 text-sm font-semibold text-muted transition-colors hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
         <ArrowLeftIcon className="size-4" />
         All automations

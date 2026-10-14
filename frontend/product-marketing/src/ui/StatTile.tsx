@@ -19,7 +19,7 @@ export function StatTile({ label, value, sub, className }: StatTileProps) {
         className,
       )}
     >
-      <span className="text-[0.7rem] font-semibold uppercase tracking-wide text-faint">
+      <span className="text-xs font-semibold uppercase tracking-wide text-faint">
         {label}
       </span>
       <span className="display text-xl font-extrabold tnum leading-none text-ink">{value}</span>

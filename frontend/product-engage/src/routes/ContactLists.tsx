@@ -95,7 +95,7 @@ function ContactLists() {
         <div className="flex flex-col">
           <Link
             to={`/lists/${list.id}`}
-            className="text-sm font-bold text-ink underline-offset-4 hover:text-accent-ink hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            className="relative hit-44 text-sm font-bold text-ink underline-offset-4 hover:text-accent-ink hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           >
             {list.name}
           </Link>

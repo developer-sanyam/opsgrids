@@ -36,7 +36,7 @@ import {
   Skeleton,
   StagePill,
 } from "@/ui";
-import { formatMoney, ActivityIcon, ArrowLeftIcon, BuildingIcon, MailIcon, StepUpDialog, useToast } from "@opsgrids/ui";
+import { formatMoney, ActivityIcon, ArrowLeftIcon, BuildingIcon, MailIcon, Menu, StepUpDialog, useToast } from "@opsgrids/ui";
 import { DealFormDialog } from "@/forms/DealFormDialog";
 import { ActivityFormDialog } from "@/forms/ActivityFormDialog";
 
@@ -57,7 +57,7 @@ function ContactRow({ contact, primary }: { contact: Contact; primary?: boolean 
         <span className="truncate text-sm font-semibold text-ink">
           {contact.full_name}
           {primary ? (
-            <span className="ml-1.5 rounded-full bg-accent-soft px-1.5 py-0.5 text-[0.65rem] font-bold text-accent-ink align-middle">
+            <span className="ml-1.5 rounded-full bg-accent-soft px-1.5 py-0.5 text-xs font-bold text-accent-ink align-middle">
               Primary
             </span>
           ) : null}
@@ -131,7 +131,7 @@ export function DealDetailPage() {
     <div className="rise flex flex-col gap-6">
       <Link
         to="/deals"
-        className="inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors"
+        className="relative hit-44 inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors"
       >
         <ArrowLeftIcon className="size-4" />
         Back to deals
@@ -175,33 +175,31 @@ export function DealDetailPage() {
                       {company ? (
                         <Link
                           to={`/companies/${company.id}`}
-                          className="inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-accent hover:text-accent-strong transition-colors"
+                          className="relative hit-44 inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-accent hover:text-accent-strong transition-colors"
                         >
                           <BuildingIcon className="size-4" />
                           {company.name}
                         </Link>
                       ) : null}
                     </div>
-                    <div className="flex flex-col items-end gap-3">
-                      <div className="flex flex-col items-end">
+                    <div className="flex flex-col items-start gap-3 sm:items-end">
+                      <div className="flex flex-col items-start sm:items-end">
                         <span className="display text-[2rem] font-extrabold leading-none tnum">
                           {formatMoney(d.value_minor, d.currency)}
                         </span>
                         <span className="text-sm text-muted">{d.probability}% to close</span>
                       </div>
                       <Can permission="crm.pipeline.deal.write" scope="OWN">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 whitespace-nowrap">
                           <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
                             Edit
                           </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="text-negative"
-                            onClick={() => setDeleting(true)}
-                          >
-                            Delete
-                          </Button>
+                          <Menu
+                            label={`More actions for ${d.name}`}
+                            trigger="icon"
+                            align="end"
+                            items={[{ label: "Delete", tone: "danger", onSelect: () => setDeleting(true) }]}
+                          />
                         </div>
                       </Can>
                     </div>
@@ -316,7 +314,7 @@ export function DealDetailPage() {
                         <div className="flex flex-col gap-1.5 border-t border-line pt-4 text-sm">
                           <a
                             href={`mailto:${primary.email}`}
-                            className="inline-flex items-center gap-2 text-ink-soft hover:text-accent transition-colors"
+                            className="relative hit-44 inline-flex items-center gap-2 text-ink-soft hover:text-accent transition-colors"
                           >
                             <MailIcon className="size-4 text-faint" />
                             {primary.email}

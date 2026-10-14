@@ -82,7 +82,7 @@ export function ActivityTimeline({
                     <span aria-hidden>·</span>
                     <Link
                       to={`/companies/${activity.company_id}`}
-                      className="font-medium text-accent hover:text-accent-strong transition-colors"
+                      className="relative hit-44 font-medium text-accent hover:text-accent-strong transition-colors"
                     >
                       {companyName(companies, activity.company_id)}
                     </Link>

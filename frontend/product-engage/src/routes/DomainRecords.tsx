@@ -1,10 +1,18 @@
 import { useEffect, useState } from "react";
 
-import { CheckCircleIcon, CheckIcon, CircleDotIcon, ClipboardListIcon } from "@opsgrids/ui";
+import {
+  CheckCircleIcon,
+  CheckIcon,
+  CircleDotIcon,
+  ClipboardListIcon,
+  MobileDataCard,
+  TABLET_QUERY,
+  useMediaQuery,
+} from "@opsgrids/ui";
 
 import type { DnsRecordOut, DnsRecordStatus } from "@/api/types";
 import { dnsRecordLabel } from "@/lib/format";
-import { requiredProgress } from "@/lib/records";
+import { readableInstruction, requiredProgress } from "@/lib/records";
 import { InlineAlert, useAnnounce } from "@/ui";
 
 /**
@@ -52,7 +60,7 @@ function CopyButton({ value, label }: { value: string; label: string }) {
       type="button"
       onClick={() => void copy()}
       aria-label={`Copy ${label}`}
-      className="inline-flex h-7 items-center gap-1 rounded-full px-2 text-xs font-semibold text-muted transition-colors hover:bg-ground hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      className="relative hit-44 inline-flex h-7 items-center gap-1 rounded-full px-2 text-xs font-semibold text-muted transition-colors hover:bg-ground hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
     >
       {copied ? (
         <CheckIcon className="size-3.5 text-positive" />
@@ -181,13 +189,54 @@ function RecordRow({ record }: { record: DnsRecordOut }) {
             twice. Every other kind has no directive line, so its instruction is the only
             explanation on the row. */}
         {record.kind === "spf" ? null : (
-          <p className="mt-2 max-w-sm font-sans text-xs text-muted">{record.instruction}</p>
+          <p className="mt-2 max-w-sm font-sans text-xs text-muted">{readableInstruction(record.instruction)}</p>
         )}
       </td>
       <td className="py-3 whitespace-nowrap">
         <RecordStatusTag status={record.status} />
       </td>
     </tr>
+  );
+}
+
+/** One record as a card, for a phone. Every value is still shown whole and copyable. */
+function RecordCard({ record }: { record: DnsRecordOut }) {
+  const name = dnsRecordLabel(record.kind);
+  return (
+    <MobileDataCard
+      title={name}
+      subtitle={record.required ? "Required" : "Recommended — doesn't block sending"}
+      status={<RecordStatusTag status={record.status} />}
+      fields={[
+        { key: "type", label: "Type", value: record.type },
+        {
+          key: "name",
+          label: "Name",
+          value: (
+            <span className="block min-w-0 break-all font-mono text-xs">
+              {record.registrar_name}
+              <span className="mt-1 block font-sans">
+                <CopyButton value={record.registrar_name} label={`${name} name`} />
+              </span>
+              <span className="mt-1 block font-sans text-xs text-faint">{record.fqdn}</span>
+            </span>
+          ),
+        },
+        {
+          key: "value",
+          label: "Value",
+          value: (
+            <span className="block min-w-0 break-all font-mono text-xs">
+              <ValueBlock record={record} />
+              {record.kind === "spf" ? null : (
+                <span className="mt-2 block font-sans text-xs text-muted">{readableInstruction(record.instruction)}</span>
+              )}
+            </span>
+          ),
+        },
+      ]}
+      className="[&_dl]:grid-cols-1"
+    />
   );
 }
 
@@ -198,6 +247,7 @@ export function DomainRecordsTable({
   records: DnsRecordOut[];
   domainName: string;
 }) {
+  const wide = useMediaQuery(TABLET_QUERY, true);
   const { found, total } = requiredProgress(records);
   const multipleSpf = records.find((r) => r.kind === "spf" && r.status === "multiple");
 
@@ -213,10 +263,21 @@ export function DomainRecordsTable({
 
       {multipleSpf !== undefined ? (
         <InlineAlert tone="danger" title="Your domain has more than one SPF record">
-          {multipleSpf.instruction}
+          {readableInstruction(multipleSpf.instruction)}
         </InlineAlert>
       ) : null}
 
+      {!wide ? (
+        <ul className="flex flex-col gap-3" aria-label={`DNS records to publish for ${domainName}`}>
+          {records.map((record) => (
+            <li key={`${record.kind}-${record.fqdn}`}>
+              <RecordCard record={record} />
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {wide ? (
       <div className="relative overflow-x-auto">
         <table className="w-full min-w-[52rem] border-collapse text-left">
           <caption className="sr-only">
@@ -249,6 +310,7 @@ export function DomainRecordsTable({
           </tbody>
         </table>
       </div>
+      ) : null}
     </div>
   );
 }

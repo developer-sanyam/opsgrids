@@ -122,7 +122,7 @@ export function TextLink({ to, children }: { to: string; children: ReactNode }) 
   return (
     <Link
       to={to}
-      className="inline-flex h-9 items-center rounded-tile px-2 text-sm font-semibold text-accent-ink transition-colors hover:bg-accent-soft focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      className="relative hit-44 inline-flex h-9 items-center rounded-tile px-2 text-sm font-semibold text-accent-ink transition-colors hover:bg-accent-soft focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
     >
       {children}
     </Link>

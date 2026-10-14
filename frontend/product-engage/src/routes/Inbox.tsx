@@ -122,11 +122,15 @@ function Inbox() {
 
   return (
     <div className="rise flex h-full flex-col gap-6">
-      <PageHeader
-        eyebrow="Engage"
-        title="Inbox"
-        description="Two-way WhatsApp conversations with your customers, inside the 24-hour service window Meta allows."
-      />
+      {/* With a thread open on a phone the thread is the screen; the page title would only push
+          the conversation down. */}
+      <div className={selectedId !== null ? "hidden lg:block" : undefined}>
+        <PageHeader
+          eyebrow="Engage"
+          title="Inbox"
+          description="Two-way WhatsApp conversations with your customers, inside the 24-hour service window Meta allows."
+        />
+      </div>
 
       <div className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-[22rem_1fr]">
         <Card
@@ -190,7 +194,7 @@ function Inbox() {
                 <button
                   type="button"
                   onClick={() => select(null)}
-                  className="mb-3 inline-flex items-center gap-1.5 text-sm font-medium text-muted hover:text-ink lg:hidden"
+                  className="relative hit-44 mb-3 inline-flex items-center gap-1.5 text-sm font-medium text-muted hover:text-ink lg:hidden"
                 >
                   <ArrowLeftIcon className="size-4" aria-hidden />
                   Back to conversations

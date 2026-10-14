@@ -15,3 +15,12 @@ export function requiredProgress(records: DnsRecordOut[]): { found: number; tota
     total: required.length,
   };
 }
+
+/**
+ * The service writes menu paths as "Apps -> Google Workspace -> Gmail". On a phone the line breaks
+ * between the hyphen and the bracket ("Apps - > Google Workspace"), which reads as a typo, so
+ * the arrow is drawn as the single character it stands for.
+ */
+export function readableInstruction(instruction: string): string {
+  return instruction.replaceAll(" -> ", " \u2192 ");
+}

@@ -59,7 +59,7 @@ export function HeadcountTrend({ current, series: seriesByRange }: HeadcountTren
   const active = hover !== null ? geo.points[hover] : null;
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex min-w-0 flex-col gap-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center gap-2.5">
@@ -87,7 +87,7 @@ export function HeadcountTrend({ current, series: seriesByRange }: HeadcountTren
                   setHover(null);
                 }}
                 className={cn(
-                  "rounded-full px-3 h-8 text-xs font-semibold transition-colors",
+                  "hit-44 relative h-8 rounded-full px-3 text-xs font-semibold transition-colors",
                   range === r.value
                     ? "bg-surface text-ink shadow-card"
                     : "text-muted hover:text-ink",
@@ -100,7 +100,7 @@ export function HeadcountTrend({ current, series: seriesByRange }: HeadcountTren
         </div>
       </div>
 
-      <figure className="relative m-0">
+      <figure className="relative m-0 min-w-0">
         <svg
           viewBox={`0 0 ${W} ${H}`}
           className="w-full h-44 overflow-visible"
@@ -161,9 +161,10 @@ export function HeadcountTrend({ current, series: seriesByRange }: HeadcountTren
           </div>
         ) : null}
 
-        <div className="mt-2 flex justify-between px-0.5 text-[0.7rem] font-medium text-faint">
-          {series.map((p) => (
-            <span key={p.label} className="tnum">
+        <div className="mt-2 flex justify-between px-0.5 text-xs font-medium text-faint">
+          {/* Every other label on a phone: twelve month names do not fit in 280px without touching. */}
+          {series.map((p, i) => (
+            <span key={p.label} className={cn("tnum", i % 2 === 1 && "hidden sm:inline")}>
               {p.label}
             </span>
           ))}

@@ -105,7 +105,7 @@ export function CorrectionCell({
       </span>
     );
     return link ? (
-      <Link to={link} className="focus-visible:outline-none">
+      <Link to={link} className="relative hit-44 focus-visible:outline-none">
         {body}
       </Link>
     ) : (
@@ -135,7 +135,9 @@ export function CorrectionCell({
       </span>
     );
     return reg.approval_request_id ? (
-      <Link to={`/approvals/requests/${reg.approval_request_id}`}>{body}</Link>
+      <Link to={`/approvals/requests/${reg.approval_request_id}`} className="relative hit-44">
+        {body}
+      </Link>
     ) : (
       body
     );
@@ -151,7 +153,9 @@ export function CorrectionCell({
       </span>
     );
     return reg.approval_request_id ? (
-      <Link to={`/approvals/requests/${reg.approval_request_id}`}>{body}</Link>
+      <Link to={`/approvals/requests/${reg.approval_request_id}`} className="relative hit-44">
+        {body}
+      </Link>
     ) : (
       body
     );

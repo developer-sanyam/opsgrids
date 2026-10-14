@@ -36,7 +36,11 @@ export function RevealField({ kind, masked, subject, canReveal, stepUp, resetKey
     noun: NOUN[kind],
     load,
   });
+  // The button row plus the line that says "Hides again in 30 seconds" appears under it on reveal;
+  // reserving that height here keeps the rows below from moving when it does.
   return (
-    <RevealableField kind={kind} masked={masked} canReveal={canReveal} field={field} stepUpIdle={stepUp.state === "idle"} />
+    <div className={canReveal && masked !== null && masked.trim() !== "" ? "min-h-16" : undefined}>
+      <RevealableField kind={kind} masked={masked} canReveal={canReveal} field={field} stepUpIdle={stepUp.state === "idle"} />
+    </div>
   );
 }

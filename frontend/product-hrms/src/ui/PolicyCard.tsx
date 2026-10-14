@@ -182,20 +182,20 @@ export function PolicyCard({ policy, canEdit, announce }: PolicyCardProps) {
 
       {canEdit ? (
         <>
-          <fieldset className="flex flex-col gap-2">
+          <fieldset className="flex flex-col gap-2" aria-describedby={`${policy.request_type}-sla-help`}>
             <legend className="text-xs font-semibold uppercase tracking-wide text-faint">
               Time to decide
             </legend>
-            <div className="flex flex-wrap items-start gap-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
               <TextField
                 label="Amount"
                 type="number"
+                inputMode="decimal"
                 min="0"
                 step="any"
                 value={amount}
                 onChange={(e) => onAmountChange(e.target.value)}
-                containerClassName="w-32"
-                helper="How long each approver gets before the request moves up to their manager. Default: 1 day."
+                containerClassName="w-full sm:w-32"
                 {...(slaError !== undefined ? { error: slaError } : {})}
               />
               <Select
@@ -206,9 +206,12 @@ export function PolicyCard({ policy, canEdit, announce }: PolicyCardProps) {
                   { value: "hours", label: "Hours" },
                   { value: "days", label: "Days" },
                 ]}
-                containerClassName="w-32"
+                containerClassName="w-full sm:w-32"
               />
             </div>
+            <p id={`${policy.request_type}-sla-help`} className="text-sm text-muted">
+              How long each approver gets before the request moves up to their manager. Default: 1 day.
+            </p>
           </fieldset>
 
           <Switch
@@ -255,10 +258,20 @@ export function PolicyCard({ policy, canEdit, announce }: PolicyCardProps) {
           {staleNote ? <InlineAlert tone="warning" title={staleNote} /> : null}
           {formError ? <InlineAlert tone="danger" title={formError} /> : null}
 
-          <div className="flex items-center gap-3">
-            <Button variant="primary" onClick={() => void save()} disabled={!canSave}>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              variant="primary"
+              onClick={() => void save()}
+              disabled={!canSave}
+              aria-describedby={!dirty && !submitting ? `${policy.request_type}-no-changes` : undefined}
+            >
               {submitting ? "Saving…" : "Save changes"}
             </Button>
+            {!dirty && !submitting ? (
+              <span id={`${policy.request_type}-no-changes`} className="text-sm text-muted">
+                No changes to save.
+              </span>
+            ) : null}
             {dirty ? (
               <Button variant="ghost" onClick={discard} disabled={submitting}>
                 Discard

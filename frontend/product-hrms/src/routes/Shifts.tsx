@@ -68,6 +68,8 @@ function ShiftsSection() {
       render: (s) => (
         <RowActions
           label={s.name}
+          inlineLimit={1}
+          className="whitespace-nowrap"
           actions={[
             { label: "Edit", onSelect: () => setEditing(s), hidden: !canWrite },
             { label: "Delete", tone: "danger", onSelect: () => setDeleting(s), hidden: !canWrite },
@@ -187,6 +189,8 @@ function GeofencesSection() {
       render: (g) => (
         <RowActions
           label={g.name}
+          inlineLimit={1}
+          className="whitespace-nowrap"
           actions={[
             { label: "Edit", onSelect: () => setEditing(g), hidden: !canWrite },
             { label: "Delete", tone: "danger", onSelect: () => setDeleting(g), hidden: !canWrite },

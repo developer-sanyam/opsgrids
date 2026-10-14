@@ -1,3 +1,4 @@
+import { ChipRow } from "@/ui/ChipRow";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
@@ -144,13 +145,14 @@ export function EmployeesPage() {
       <PageHeader
         eyebrow="Directory"
         title="Employees"
+        meta={
+          <span className="inline-flex items-center gap-1.5">
+            <UsersIcon className="size-4 text-muted" aria-hidden />
+            <span className="tnum font-semibold text-ink">{total}</span> people
+          </span>
+        }
         actions={
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
-              <UsersIcon className="size-4 text-muted" />
-              <span className="tnum">{total}</span>
-              <span className="text-muted font-medium">people</span>
-            </span>
+          <div className="flex flex-wrap items-center gap-2 [&_button]:whitespace-nowrap">
             <ImportExportButton
               meta={dx.meta}
               state={dx.state}
@@ -193,7 +195,7 @@ export function EmployeesPage() {
               ...[...orgUnitMap.entries()].map(([id, n]) => ({ value: id, label: n })),
             ]}
           />
-          <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
+          <ChipRow label="Filter employees by status">
             {STATUS_FILTERS.map((f) => (
               <Pill
                 key={f.value}
@@ -206,7 +208,7 @@ export function EmployeesPage() {
                 {f.label}
               </Pill>
             ))}
-          </div>
+          </ChipRow>
         </div>
       </Card>
 

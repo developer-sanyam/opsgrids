@@ -58,7 +58,7 @@ export function VariablesPanel({
                 type="button"
                 onClick={() => onInsert(name)}
                 aria-label={`Insert ${placeholderToken(name)}`}
-                className="flex w-full items-center justify-between gap-2 rounded-tile border border-line px-3 py-2 text-left text-sm text-ink transition-colors hover:bg-ground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                className="relative hit-44 flex w-full items-center justify-between gap-2 rounded-tile border border-line px-3 py-2 text-left text-sm text-ink transition-colors hover:bg-ground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
               >
                 <span className="font-semibold">{name}</span>
                 <span className="text-xs text-muted">Text</span>

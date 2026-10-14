@@ -225,7 +225,7 @@ function TemplateForm({
       >
         <Card className="flex flex-col gap-4 p-4 sm:p-6">
           <TextField
-            label="Template Name"
+            label="Template name"
             required
             ref={codeRef}
             value={code}

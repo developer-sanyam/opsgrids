@@ -130,7 +130,7 @@ export function LeadDetailPage() {
     <div className="rise flex flex-col gap-6">
       <Link
         to="/leads"
-        className="inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors"
+        className="relative hit-44 inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors"
       >
         <ArrowLeftIcon className="size-4" />
         Back to leads
@@ -168,14 +168,23 @@ export function LeadDetailPage() {
                     </div>
                     <Can permission="crm.lead.lead.convert" scope="OWN">
                       {!converted ? (
-                        <Button
-                          size="sm"
-                          leadingIcon={<ArrowRightIcon className="size-4" />}
-                          disabled={l.status !== "qualified"}
-                          onClick={() => setConfirmingConvert(true)}
-                        >
-                          Convert
-                        </Button>
+                        <div className="flex w-full flex-col gap-1 sm:w-auto sm:items-end">
+                          <Button
+                            size="md"
+                            className="w-full sm:w-auto"
+                            leadingIcon={<ArrowRightIcon className="size-4" />}
+                            disabled={l.status !== "qualified"}
+                            aria-describedby={l.status !== "qualified" ? "convert-reason" : undefined}
+                            onClick={() => setConfirmingConvert(true)}
+                          >
+                            Convert
+                          </Button>
+                          {l.status !== "qualified" ? (
+                            <p id="convert-reason" className="text-xs text-muted">
+                              Qualify first: only a qualified lead can be converted.
+                            </p>
+                          ) : null}
+                        </div>
                       ) : null}
                     </Can>
                   </div>

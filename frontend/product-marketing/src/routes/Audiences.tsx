@@ -156,6 +156,7 @@ export function AudiencesPage() {
                       </div>
                       <RowActions
                         label={audience.name}
+                        inlineLimit={1}
                         actions={[
                           { label: "Edit", onSelect: () => setEditing(audience), hidden: !canWrite },
                           {
@@ -195,7 +196,7 @@ export function AudiencesPage() {
                           <Link
                             key={c.id}
                             to={`/campaigns/${c.id}`}
-                            className="inline-flex max-w-full items-center gap-1 rounded-full bg-ground px-2.5 py-1 text-xs font-semibold text-ink-soft hover:bg-accent-soft hover:text-accent-ink transition-colors"
+                            className="relative hit-44 inline-flex max-w-full items-center gap-1 rounded-full bg-ground px-2.5 py-1 text-xs font-semibold text-ink-soft hover:bg-accent-soft hover:text-accent-ink transition-colors"
                           >
                             <span className="truncate">{c.name}</span>
                             <ArrowRightIcon className="size-3 shrink-0" />

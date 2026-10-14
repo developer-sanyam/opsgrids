@@ -194,15 +194,15 @@ describe("empty", () => {
     vi.spyOn(email, "countCampaignsByStatus").mockResolvedValue({ ...COUNTS, all: 0 });
     renderPage();
     expect(await screen.findByText("No campaigns yet")).toBeTruthy();
-    expect(screen.getAllByRole("button", { name: "Create Campaign" }).length).toBe(2);
+    expect(screen.getAllByRole("button", { name: "Create campaign" }).length).toBe(2);
   });
 
-  it("hides Create Campaign from someone who may not write campaigns", async () => {
+  it("hides Create campaign from someone who may not write campaigns", async () => {
     serve();
     vi.spyOn(email, "countCampaignsByStatus").mockResolvedValue(COUNTS);
     renderPage(["engage.campaign.campaign.read:ORG"]);
     await screen.findByRole("table");
-    expect(screen.queryByRole("button", { name: "Create Campaign" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create campaign" })).toBeNull();
   });
 });
 

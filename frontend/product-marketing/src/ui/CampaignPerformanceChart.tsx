@@ -1,3 +1,5 @@
+import { cn } from "@opsgrids/ui";
+
 import { formatMoneyCompact } from "@/lib/format";
 
 export interface WeekPoint {
@@ -8,7 +10,7 @@ export interface WeekPoint {
 
 const W = 560;
 const H = 200;
-const BASE = H - 22;
+const BASE = H - 4;
 const TOP = 10;
 
 interface CampaignPerformanceChartProps {
@@ -75,19 +77,25 @@ export function CampaignPerformanceChart({ weeks, currency }: CampaignPerformanc
               >
                 <title>{`${w.label} spend ${formatMoneyCompact(w.spend_minor, currency)}`}</title>
               </rect>
-              <text
-                x={cx}
-                y={H - 4}
-                textAnchor="middle"
-                className="fill-faint"
-                style={{ fontSize: "11px", fontWeight: 600 }}
-              >
-                {w.label}
-              </text>
             </g>
           );
         })}
       </svg>
+      {/* Week labels are text on the page, not in the drawing: an SVG scaled to a phone's width
+          shrinks its own type to about 5px. With many weeks a phone shows every other label. */}
+      <div className="flex" aria-hidden>
+        {weeks.map((w, i) => (
+          <span
+            key={w.label}
+            className={cn(
+              "min-w-0 flex-1 text-center text-xs font-semibold text-faint tnum",
+              weeks.length > 6 && i % 2 === 1 && "invisible sm:visible",
+            )}
+          >
+            {w.label}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }

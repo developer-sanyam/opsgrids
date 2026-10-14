@@ -3,7 +3,17 @@ import type { ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { ApiError, Can, useAsync, useMutation } from "@opsgrids/client";
-import { FileTextIcon, PlusIcon, RefreshIcon, Tabs, Toaster, useToast } from "@opsgrids/ui";
+import {
+  FileTextIcon,
+  MobileDataCard,
+  PlusIcon,
+  RefreshIcon,
+  TABLET_QUERY,
+  Tabs,
+  Toaster,
+  useMediaQuery,
+  useToast,
+} from "@opsgrids/ui";
 import type { TabItem } from "@opsgrids/ui";
 
 import { listTemplates, syncTemplates } from "@/api/whatsappTemplates";
@@ -51,7 +61,7 @@ const WRITE = "engage.whatsapp.template.write";
 const NEW_TEMPLATE = "/whatsapp/templates/new";
 
 const TAB_ITEMS: TabItem[] = [
-  { id: "all", label: "All Templates" },
+  { id: "all", label: "All templates" },
   { id: "marketing", label: "Marketing" },
   { id: "utility", label: "Utility" },
   { id: "authentication", label: "Authentication" },
@@ -107,7 +117,7 @@ function TemplateRow({
       <th scope="row" className="w-1/3 min-w-32 max-w-0 py-3 pl-4 pr-4 text-left">
         <Link
           to={`/whatsapp/templates/${encodeURIComponent(template.id)}`}
-          className="block truncate font-mono text-body-sm font-bold text-ink underline-offset-4 hover:text-accent-ink hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          className="relative hit-44 block truncate font-mono text-body-sm font-bold text-ink underline-offset-4 hover:text-accent-ink hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
           {name}
         </Link>
@@ -137,6 +147,23 @@ function TemplateRow({
   );
 }
 
+/** One template as a card, for a phone. Tapping it opens the template's own page: a side preview
+ *  panel below the list is a second screen's worth of scrolling to read what one tap shows. */
+function TemplateCard({ template, onOpen }: { template: WhatsAppTemplate; onOpen: () => void }) {
+  return (
+    <MobileDataCard
+      title={<span className="font-mono">{templateName(template)}</span>}
+      status={<TemplateStatusTag status={template.status} />}
+      onOpen={onOpen}
+      fields={[
+        { key: "category", label: "Category", value: CATEGORY_LABEL[template.category] },
+        { key: "language", label: "Language", value: languageLabel(template.language) },
+        { key: "updated", label: "Updated", value: formatInstant(template.updated_at) },
+      ]}
+    />
+  );
+}
+
 function TableSkeleton() {
   return (
     <div className="flex flex-col gap-2 p-4" aria-busy="true">
@@ -154,7 +181,7 @@ function PreviewPanel({ id, loading }: { id: string | null; loading: boolean }) 
   const navigate = useNavigate();
   return (
     <Card className="flex flex-col gap-4 p-6">
-      <h2 className="text-section text-ink">Template Preview</h2>
+      <h2 className="text-section text-ink">Template preview</h2>
       {id === null && loading ? (
         <Skeleton className="h-64 w-full rounded-card" />
       ) : id === null ? (
@@ -276,6 +303,8 @@ function TemplatesList() {
     setQuery("");
   }
 
+  const wide = useMediaQuery(TABLET_QUERY, true);
+
   const canWrite = (node: ReactNode) => (
     <Can permission={WRITE} scope="ORG">
       {node}
@@ -286,7 +315,7 @@ function TemplatesList() {
     <div className="rise flex flex-col gap-6">
       <PageHeader
         eyebrow="WhatsApp"
-        title="WhatsApp Templates"
+        title="WhatsApp templates"
         description="Manage and sync your WhatsApp message templates."
         actions={
           <div className="flex flex-wrap items-center gap-3">
@@ -305,7 +334,7 @@ function TemplatesList() {
                 leadingIcon={<PlusIcon className="size-4" />}
                 onClick={() => navigate(NEW_TEMPLATE)}
               >
-                Create Template
+                Create template
               </Button>,
             )}
           </div>
@@ -332,7 +361,7 @@ function TemplatesList() {
                     setQuery(value);
                     setPage(1);
                   }}
-                  containerClassName="flex-1"
+                  containerClassName="sm:flex-1"
                 />
                 <Select
                   label="Category"
@@ -383,12 +412,25 @@ function TemplatesList() {
                     icon={<FileTextIcon className="size-6" />}
                     title="No WhatsApp templates yet"
                     description="Create a template to start Meta's review, or sync the ones already in your Meta account. Nothing can send outside a customer's 24-hour service window until one is approved."
-                    action={canWrite(<Button onClick={() => navigate(NEW_TEMPLATE)}>Create Template</Button>)}
+                    action={canWrite(<Button onClick={() => navigate(NEW_TEMPLATE)}>Create template</Button>)}
                   />
                 )
               ) : null}
 
-              {items.length > 0 ? (
+              {items.length > 0 && !wide ? (
+                <ul className="flex flex-col gap-3 p-4 pt-0" aria-label="WhatsApp templates">
+                  {items.map((template) => (
+                    <li key={template.id}>
+                      <TemplateCard
+                        template={template}
+                        onOpen={() => navigate(`/whatsapp/templates/${encodeURIComponent(template.id)}`)}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+
+              {items.length > 0 && wide ? (
                 <div className="relative overflow-x-auto">
                   <table className="w-full border-collapse text-left">
                     <caption className="sr-only">
@@ -445,7 +487,7 @@ function TemplatesList() {
               ) : null}
             </Card>
 
-            <PreviewPanel id={selectedId} loading={state.status === "loading"} />
+            {wide ? <PreviewPanel id={selectedId} loading={state.status === "loading"} /> : null}
           </div>
         </Tabs>
       )}

@@ -16,10 +16,12 @@ import {
   Pill,
   SearchInput,
   Skeleton,
+  TABLET_QUERY,
   Tag,
   formatInstant,
   formatRelative,
   useAnnounce,
+  useMediaQuery,
 } from "@opsgrids/ui";
 import type { Column } from "@opsgrids/ui";
 
@@ -33,6 +35,7 @@ import {
   summaryLine,
 } from "@/lib/approvalCopy";
 import { useZoneLookup } from "@/lib/zone";
+import { ChipRow } from "@/ui/ChipRow";
 import { PersonRefBlock } from "@/ui/PersonRef";
 
 const PAGE_SIZE = 25;
@@ -61,6 +64,7 @@ function ApprovalsInbox() {
   const location = useLocation();
   const announce = useAnnounce();
   const zoneLookup = useZoneLookup();
+  const wide = useMediaQuery(TABLET_QUERY, true);
 
   const [items, setItems] = useState<InboxItemOut[]>([]);
   const [total, setTotal] = useState(0);
@@ -142,10 +146,11 @@ function ApprovalsInbox() {
       ? formatInstant(iso, row.requester_location_code, zoneLookup, "datetime", now).text
       : undefined;
 
-  const columns: Column<InboxItemOut>[] = [
+  const baseColumns: Column<InboxItemOut>[] = [
     {
       key: "requester",
       header: "Requester",
+      mobile: "title",
       render: (r) => {
         const chip = inboxReasonChip(r.inbox_reason, r.from_name);
         return (
@@ -177,6 +182,7 @@ function ApprovalsInbox() {
     {
       key: "reason",
       header: "Reason",
+      mobile: "hidden",
       cellClassName: "hidden lg:table-cell max-w-64",
       headerClassName: "hidden lg:table-cell",
       render: (r) =>
@@ -200,6 +206,7 @@ function ApprovalsInbox() {
     {
       key: "why",
       header: "Why",
+      mobile: "hidden",
       cellClassName: "hidden md:table-cell",
       headerClassName: "hidden md:table-cell",
       render: (r) => {
@@ -239,6 +246,39 @@ function ApprovalsInbox() {
     },
   ];
 
+  const decideColumn: Column<InboxItemOut> = {
+      // Below `md` a row is a card and the whole card opens the request. These two buttons are the
+      // shortcut for the common case: they open the request with the decision dialog already up,
+      // where the same server checks and the same confirmation apply. Only on a phone: the table
+      // has the request's own page for this.
+      key: "decide",
+      header: "Decide",
+      mobile: "actions",
+      render: (r) => (
+        <div className="flex w-full gap-2">
+          <Button
+            size="md"
+            variant="primary"
+            className="flex-1"
+            aria-label={`Approve request from ${r.requester_name ?? "this employee"}`}
+            onClick={() => navigate(`/approvals/requests/${r.id}`, { state: { decide: "approve" } })}
+          >
+            Approve
+          </Button>
+          <Button
+            size="md"
+            variant="outline"
+            className="flex-1"
+            aria-label={`Reject request from ${r.requester_name ?? "this employee"}`}
+            onClick={() => navigate(`/approvals/requests/${r.id}`, { state: { decide: "reject" } })}
+          >
+            Reject
+          </Button>
+        </div>
+      ),
+    };
+  const columns = wide ? baseColumns : [...baseColumns, decideColumn];
+
   if (state.status === "error" && state.error instanceof ApiError && state.error.status === 403) {
     return (
       <ErrorState
@@ -271,7 +311,7 @@ function ApprovalsInbox() {
           onChange={(e) => setSearch(e.target.value)}
           containerClassName="lg:max-w-xs"
         />
-        <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
+        <ChipRow label="Filter requests">
           <Pill active={filter === "all"} onClick={() => setFilter("all")}>
             All
           </Pill>
@@ -296,7 +336,7 @@ function ApprovalsInbox() {
           <Pill active={filter === "overdue"} onClick={() => setFilter("overdue")}>
             Overdue
           </Pill>
-        </div>
+        </ChipRow>
       </Card>
 
       {state.status === "loading" ? (

@@ -71,7 +71,7 @@ export function ChannelBreakdown({ data, currency }: ChannelBreakdownProps) {
 
       <Link
         to="/channels"
-        className="inline-flex h-10 items-center justify-center gap-1.5 rounded-full border border-line bg-surface text-sm font-semibold text-ink hover:bg-ground transition-colors"
+        className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-full border border-line bg-surface text-sm font-semibold text-ink hover:bg-ground transition-colors"
       >
         Channel detail
         <ArrowRightIcon className="size-4" />

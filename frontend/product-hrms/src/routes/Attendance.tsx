@@ -169,6 +169,17 @@ function AttendanceTable() {
     }
   }
 
+  // Why Check in is unavailable, said in words under the page title rather than only in a tooltip
+  // that a touch screen never shows.
+  const checkInReason =
+    punchStatus.kind === "no-employee"
+      ? "No employee record is linked to your account."
+      : punchStatus.kind === "checked-out"
+        ? "Already checked out for the day."
+        : punchStatus.kind === "fixture-unsupported"
+          ? "Not available in fixture mode."
+          : undefined;
+
   const records = attendance.status === "success" ? attendance.data.items : [];
   const total = attendance.status === "success" ? attendance.data.total : 0;
   const present = records.filter((r) => r.status === "present").length;
@@ -183,6 +194,7 @@ function AttendanceTable() {
       {
         key: "name",
         header: "Employee",
+        mobile: "title",
         render: (r) => (
           <div className="flex items-center gap-3">
             <Avatar name={r.full_name} size="sm" />
@@ -217,6 +229,7 @@ function AttendanceTable() {
       {
         key: "source",
         header: "Source",
+        mobile: "hidden",
         cellClassName: "hidden md:table-cell",
         headerClassName: "hidden md:table-cell",
         render: (r) => <span className="text-muted">{SOURCE_LABEL[r.source]}</span>,
@@ -224,6 +237,7 @@ function AttendanceTable() {
       {
         key: "status",
         header: "Status",
+        mobile: "status",
         align: "right",
         render: (r) => (
           <div className="flex flex-col items-end gap-1.5">
@@ -242,6 +256,7 @@ function AttendanceTable() {
       {
         key: "correction",
         header: "Correction",
+        mobile: "hidden",
         align: "right",
         cellClassName: "hidden md:table-cell",
         headerClassName: "hidden md:table-cell",
@@ -259,6 +274,7 @@ function AttendanceTable() {
             {
               key: "actions",
               header: "",
+              mobile: "actions" as const,
               align: "right" as const,
               render: (r: AttendanceRecord) => (
                 <RowActions
@@ -285,6 +301,9 @@ function AttendanceTable() {
       <PageHeader
         eyebrow="Daily punches"
         title="Attendance"
+        {...(checkInReason !== undefined
+          ? { meta: <span id="check-in-reason">Check in is unavailable: {checkInReason}</span> }
+          : {})}
         actions={
           <>
             {punchStatus.kind === "checked-in" ? (
@@ -300,15 +319,7 @@ function AttendanceTable() {
                   punchStatus.kind === "checked-out" ||
                   punchStatus.kind === "fixture-unsupported"
                 }
-                title={
-                  punchStatus.kind === "no-employee"
-                    ? "No employee record is linked to your account."
-                    : punchStatus.kind === "checked-out"
-                      ? "Already checked out for the day."
-                      : punchStatus.kind === "fixture-unsupported"
-                        ? "Not available in fixture mode."
-                        : undefined
-                }
+                aria-describedby={checkInReason !== undefined ? "check-in-reason" : undefined}
               >
                 Check in
               </Button>
@@ -323,7 +334,7 @@ function AttendanceTable() {
                   setDate(e.target.value || todayISO());
                   setPage(1);
                 }}
-                className="bg-transparent text-ink focus:outline-none tnum"
+                className="h-11 bg-transparent text-ink focus:outline-none tnum"
               />
             </label>
           </>

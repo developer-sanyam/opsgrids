@@ -86,6 +86,18 @@ function RequestDetailScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestId]);
 
+  // The inbox's mobile card can open a request with a decision already chosen. The dialog still
+  // asks for confirmation, and only opens for a request this reader may decide.
+  const requestedOutcome = (location.state as { decide?: "approve" | "reject" } | null)?.decide;
+  useEffect(() => {
+    if (requestedOutcome === undefined || status.kind !== "ready") return;
+    if (status.detail.status === "pending" && status.detail.inbox_reason !== null) {
+      setDecisionOutcome(requestedOutcome);
+    }
+    navigate(location.pathname, { replace: true, state: null });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestedOutcome, status.kind]);
+
   useEffect(() => {
     if (conflictComment !== null) conflictRef.current?.focus();
   }, [conflictComment]);
@@ -191,7 +203,7 @@ function RequestDetailScreen() {
     <div className="rise flex flex-col gap-6">
       <Link
         to={cameFromMine ? "/approvals/mine" : "/approvals"}
-        className="inline-flex items-center gap-2 text-sm font-semibold text-muted hover:text-ink w-fit"
+        className="relative hit-44 inline-flex items-center gap-2 text-sm font-semibold text-muted hover:text-ink w-fit"
       >
         <ArrowLeftIcon className="size-4" />
         {cameFromMine ? "Back to my requests" : "Back to approvals"}

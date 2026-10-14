@@ -106,6 +106,32 @@ describe("Approval settings", () => {
     expect(screen.getByRole("button", { name: "Save changes" })).toHaveProperty("disabled", true);
   });
 
+  it("says why Save is disabled until something changes", async () => {
+    listPolicies.mockResolvedValue([REGULARIZATION_POLICY]);
+    const user = userEvent.setup();
+    renderEditable();
+
+    await waitFor(() => expect(screen.getByLabelText("Amount")).toBeDefined());
+    const save = screen.getByRole("button", { name: "Save changes" });
+    expect(save).toHaveProperty("disabled", true);
+    expect(screen.getByText("No changes to save.")).toBeDefined();
+    expect(save.getAttribute("aria-describedby")).toBe(screen.getByText("No changes to save.").id);
+
+    await user.type(screen.getByLabelText("Amount"), "2");
+    expect(screen.queryByText("No changes to save.")).toBeNull();
+  });
+
+  it("puts the helper text under the amount and unit rather than squeezed beside them", async () => {
+    listPolicies.mockResolvedValue([REGULARIZATION_POLICY]);
+    renderEditable();
+
+    await waitFor(() => expect(screen.getByLabelText("Amount")).toBeDefined());
+    expect(screen.getByLabelText("Amount").getAttribute("inputmode")).toBe("decimal");
+    expect(
+      screen.getByText(/How long each approver gets before the request moves up to their manager/),
+    ).toBeDefined();
+  });
+
   it("a sub-floor value is caught before any request and names the 15-minute floor", async () => {
     listPolicies.mockResolvedValue([REGULARIZATION_POLICY]);
     const user = userEvent.setup();

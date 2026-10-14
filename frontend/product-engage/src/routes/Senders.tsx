@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { useAsync } from "@opsgrids/client";
-import { SendIcon, UsersIcon } from "@opsgrids/ui";
+import { MobileDataCard, SendIcon, TABLET_QUERY, UsersIcon, useMediaQuery } from "@opsgrids/ui";
 
 import { listDomains, listSenders } from "@/api/client";
 import type { DomainOut, SenderOut } from "@/api/types";
@@ -87,11 +87,55 @@ function SenderRow({
   );
 }
 
+/** The same sender as a card, for a phone: a 60rem table is a sideways scroll nobody can use. */
+function SenderCard({
+  sender,
+  domainName,
+  onTest,
+}: {
+  sender: SenderOut;
+  domainName: string;
+  onTest: () => void;
+}) {
+  return (
+    <MobileDataCard
+      title={sender.name}
+      subtitle={<span className="break-all font-mono">{sender.address}</span>}
+      status={<SenderStatusTag usable={sender.usable} />}
+      fields={[
+        { key: "domain", label: "Domain", value: domainName },
+        { key: "department", label: "Department", value: sender.department === "" ? "—" : sender.department },
+        {
+          key: "reply_to",
+          label: "Reply-to",
+          value:
+            sender.reply_to === "" ? "Replies go to the address" : <span className="break-all">{sender.reply_to}</span>,
+        },
+        {
+          key: "tested",
+          label: "Can it send?",
+          value:
+            sender.verified_at === null
+              ? "No campaign can send as this address until a test message is delivered."
+              : `Delivered ${formatInstant(sender.verified_at)}`,
+        },
+      ]}
+      actions={
+        <Button variant="outline" size="md" onClick={onTest} leadingIcon={<SendIcon className="size-4" />}>
+          {sender.usable ? "Test again" : "Send test"}
+          <span className="sr-only"> as {sender.address}</span>
+        </Button>
+      }
+    />
+  );
+}
+
 const NO_SENDERS: SenderOut[] = [];
 const NO_DOMAINS: DomainOut[] = [];
 
 function Senders() {
   const announce = useAnnounce();
+  const wide = useMediaQuery(TABLET_QUERY, true);
   const [attempt, setAttempt] = useState(0);
   const [adding, setAdding] = useState(false);
   const [testing, setTesting] = useState<SenderOut | null>(null);
@@ -157,7 +201,7 @@ function Senders() {
           action={
             <Link
               to="/domains"
-              className="inline-flex h-9 items-center rounded-full px-3 text-sm font-semibold text-accent-ink transition-colors hover:bg-accent-soft focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              className="inline-flex min-h-11 items-center rounded-full px-3 text-sm font-semibold text-accent-ink transition-colors hover:bg-accent-soft focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             >
               Open Domains
             </Link>
@@ -181,7 +225,21 @@ function Senders() {
         </Card>
       ) : null}
 
-      {senders.length > 0 ? (
+      {senders.length > 0 && !wide ? (
+        <ul className="flex flex-col gap-3" aria-label="Senders">
+          {senders.map((sender) => (
+            <li key={sender.id}>
+              <SenderCard
+                sender={sender}
+                domainName={domainNames.get(sender.domain_id) ?? "Unknown domain"}
+                onTest={() => setTesting(sender)}
+              />
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {senders.length > 0 && wide ? (
         <Card className="p-6">
           <div className="relative overflow-x-auto">
             <table className="w-full min-w-[60rem] border-collapse text-left">

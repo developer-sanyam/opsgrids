@@ -30,14 +30,14 @@ const WRITE = "engage.setup.connection.write";
 
 const TABS: TabItem[] = [
   { id: "configuration", label: "Configuration" },
-  { id: "limits", label: "Sending Limits" },
+  { id: "limits", label: "Sending limits" },
 ];
 
 function ConnectButton() {
   const navigate = useNavigate();
   return (
     <Can permission={WRITE} scope="ORG">
-      <Button onClick={() => navigate("/connection")}>Connect Account</Button>
+      <Button onClick={() => navigate("/connection")}>Connect account</Button>
     </Can>
   );
 }
@@ -85,7 +85,7 @@ function AccountDetails({ account }: { account: EmailAccount }) {
     <Card className="flex flex-col gap-6 p-4 sm:p-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex flex-col gap-1">
-          <h2 className="text-lg font-bold text-ink">Account Details</h2>
+          <h2 className="text-lg font-bold text-ink">Account details</h2>
           <p className="text-sm text-ink">{account.username}</p>
           <p className="text-sm text-muted">{connectionKindLabel(account.kind)}</p>
         </div>
@@ -111,7 +111,7 @@ function AccountDetails({ account }: { account: EmailAccount }) {
 function AccountList({ account }: { account: EmailAccount }) {
   return (
     <Card className="flex flex-col gap-4 p-4 sm:p-6">
-      <h2 className="text-base font-bold text-ink">All Accounts (1)</h2>
+      <h2 className="text-base font-bold text-ink">All accounts (1)</h2>
       <ul>
         <li className="flex items-center gap-3 rounded-tile bg-ground p-3">
           <span className="flex min-w-0 flex-1 flex-col">
@@ -137,7 +137,7 @@ export function EmailSettingsPage() {
     <div className="rise flex flex-col gap-6">
       <PageHeading
         eyebrow="Email"
-        title="Email Accounts"
+        title="Email accounts"
         description="Connect and manage your email service providers."
         actions={state.status === "success" && account === null ? <ConnectButton /> : undefined}
       />

@@ -140,7 +140,7 @@ export function OverviewPage() {
       {/* Row 1 — KPI cards */}
       <section
         aria-label="Key metrics"
-        className="cascade grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4"
+        className="cascade grid grid-cols-2 gap-4 xl:grid-cols-4"
       >
         {overview.status === "loading"
           ? Array.from({ length: 4 }).map((_, i) => (
@@ -155,7 +155,7 @@ export function OverviewPage() {
             ))
           : null}
         {overview.status === "error" ? (
-          <Card className="p-5 sm:col-span-2 xl:col-span-4">
+          <Card className="p-5 col-span-2 xl:col-span-4">
             <ErrorState
               title="Couldn't load the overview"
               message={problemMessage(overview.error)}

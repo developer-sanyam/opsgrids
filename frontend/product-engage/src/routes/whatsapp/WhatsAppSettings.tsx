@@ -419,7 +419,7 @@ function WhatsAppSettings() {
       <PageHeading
         ref={headingRef}
         eyebrow="WhatsApp"
-        title="WhatsApp Settings"
+        title="WhatsApp settings"
         description="Manage your WhatsApp Business Account, phone numbers and connection."
       />
 

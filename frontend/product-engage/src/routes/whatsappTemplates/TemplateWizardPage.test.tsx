@@ -42,7 +42,7 @@ function currentStep(): string {
 }
 
 async function fillDetails(user: UserEvent, name = "order_shipped") {
-  await user.type(screen.getByLabelText("Template Name"), name);
+  await user.type(screen.getByLabelText("Template name"), name);
 }
 
 async function next(user: UserEvent, label: string) {
@@ -65,7 +65,7 @@ describe("the steps", () => {
       expect.stringContaining("Submit"),
     ]);
     expect(currentStep()).toContain("Details");
-    expect(screen.getByRole("heading", { name: "Create WhatsApp Template" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Create WhatsApp template" })).toBeTruthy();
     expect(screen.getByText("Create a new template and submit it for Meta approval.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Next: Content" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
@@ -92,7 +92,7 @@ describe("the steps", () => {
     await next(user, "Back");
     await next(user, "Back");
     expect(currentStep()).toContain("Details");
-    expect((screen.getByLabelText("Template Name") as HTMLInputElement).value).toBe("order_shipped");
+    expect((screen.getByLabelText("Template name") as HTMLInputElement).value).toBe("order_shipped");
     await next(user, "Next: Content");
     expect((screen.getByLabelText("Message text") as HTMLTextAreaElement).value).toBe(
       "Hello {{1}}, your order has shipped.",
@@ -118,9 +118,9 @@ describe("guarded progress", () => {
     expect(currentStep()).toContain("Details");
     expect(screen.getByText("Enter a template name.")).toBeTruthy();
     expect(screen.getByText("Check the fields marked below")).toBeTruthy();
-    expect(screen.getByLabelText("Template Name").getAttribute("aria-invalid")).toBe("true");
+    expect(screen.getByLabelText("Template name").getAttribute("aria-invalid")).toBe("true");
 
-    await user.type(screen.getByLabelText("Template Name"), "Not Valid!");
+    await user.type(screen.getByLabelText("Template name"), "Not Valid!");
     await next(user, "Next: Content");
     expect(currentStep()).toContain("Details");
     expect(screen.getByText(/Use lowercase letters, numbers and underscores only/)).toBeTruthy();
@@ -162,7 +162,7 @@ describe("guarded progress", () => {
 
     // Back to Details and break it; the step list must not carry the user past it unchecked.
     await user.click(within(steps()).getByRole("button", { name: /Details/ }));
-    await user.clear(screen.getByLabelText("Template Name"));
+    await user.clear(screen.getByLabelText("Template name"));
     await user.click(within(steps()).getByRole("button", { name: /Review/ }));
 
     expect(currentStep()).toContain("Details");
@@ -363,10 +363,10 @@ describe("submitting", () => {
 
     expect(await screen.findByText("A template named order_shipped already exists.")).toBeTruthy();
     expect(currentStep()).toContain("Details");
-    expect(screen.getByLabelText("Template Name").getAttribute("aria-invalid")).toBe("true");
-    expect((screen.getByLabelText("Template Name") as HTMLInputElement).value).toBe("order_shipped");
+    expect(screen.getByLabelText("Template name").getAttribute("aria-invalid")).toBe("true");
+    expect((screen.getByLabelText("Template name") as HTMLInputElement).value).toBe("order_shipped");
 
-    await user.type(screen.getByLabelText("Template Name"), "_v2");
+    await user.type(screen.getByLabelText("Template name"), "_v2");
     expect(screen.queryByText("A template named order_shipped already exists.")).toBeNull();
   });
 
@@ -427,7 +427,7 @@ describe("routes", () => {
       </PermissionProvider>,
     );
     expect(await screen.findByText("You can't open the template editor right now")).toBeTruthy();
-    expect(screen.queryByLabelText("Template Name")).toBeNull();
+    expect(screen.queryByLabelText("Template name")).toBeNull();
   });
 
   it("opens the create flow for a caller with it", async () => {
@@ -437,6 +437,6 @@ describe("routes", () => {
         <MemoryRouter>{element}</MemoryRouter>
       </PermissionProvider>,
     );
-    expect(await screen.findByLabelText("Template Name")).toBeTruthy();
+    expect(await screen.findByLabelText("Template name")).toBeTruthy();
   });
 });

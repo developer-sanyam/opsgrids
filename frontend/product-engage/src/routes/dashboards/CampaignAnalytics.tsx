@@ -389,7 +389,7 @@ export function CampaignAnalyticsPage() {
     <div className="rise flex flex-col gap-6">
       <Link
         to="/campaigns"
-        className="inline-flex w-fit items-center gap-2 rounded-tile text-sm font-semibold text-accent-ink hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        className="relative hit-44 inline-flex w-fit items-center gap-2 rounded-tile text-sm font-semibold text-accent-ink hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
         <ArrowLeftIcon className="size-4" />
         Campaigns

@@ -7,6 +7,7 @@ import type { StatusTone } from "@opsgrids/ui";
 import { listDomains } from "@/api/client";
 import type { DnsRecordKind, DnsRecordOut, DnsRecordStatus, DomainOut } from "@/api/types";
 import { isNotActivated } from "@/lib/errors";
+import { readableInstruction } from "@/lib/records";
 import { ErrorState, Skeleton } from "@/ui";
 
 /**
@@ -28,14 +29,16 @@ const STATUS: Record<DnsRecordStatus, { label: string; tone: StatusTone }> = {
 function RecordRow({ record }: { record: DnsRecordOut }) {
   const { label, tone } = STATUS[record.status];
   return (
-    <li className="flex flex-wrap items-center gap-3 border-t border-line py-3 first:border-t-0">
+    <li className="flex min-w-0 flex-wrap items-center gap-3 border-t border-line py-3 first:border-t-0">
       <span className="w-16 text-sm font-bold text-ink">{KIND_LABEL[record.kind]}</span>
-      <span className="min-w-0 flex-1 text-sm text-muted">{record.instruction}</span>
+      <span className="min-w-0 basis-full break-words text-sm text-muted sm:basis-0 sm:flex-1">
+        {readableInstruction(record.instruction)}
+      </span>
       <StatusBadge tone={tone} label={label} />
       {record.status !== "verified" ? (
         <Link
           to="/domains"
-          className="text-sm font-semibold text-accent-ink underline-offset-4 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          className="relative hit-44 inline-flex w-full items-center justify-center rounded-tile border border-field-edge px-3 text-sm font-semibold text-accent-ink hover:bg-accent-soft focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent sm:w-auto sm:border-0 sm:underline-offset-4 sm:hover:bg-transparent sm:hover:underline"
         >
           Add record
         </Link>

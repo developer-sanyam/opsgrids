@@ -54,8 +54,10 @@ export function NeedsAttention({ items }: { items: AttentionItem[] }) {
                 <Icon className="size-[18px]" />
               </span>
               <div className="flex min-w-0 flex-1 flex-col leading-tight">
-                <span className="truncate text-sm font-bold text-ink">{deal.name}</span>
-                <span className="truncate text-xs text-muted">{companyName(companies, deal.company_id)}</span>
+                <span className="truncate text-sm font-bold text-ink" title={deal.name}>{deal.name}</span>
+                <span className="truncate text-xs text-muted" title={companyName(companies, deal.company_id)}>
+                  {companyName(companies, deal.company_id)}
+                </span>
               </div>
               <div className="hidden shrink-0 sm:block">
                 <OwnerBadge ownerId={deal.owner_id} compact />
@@ -64,7 +66,7 @@ export function NeedsAttention({ items }: { items: AttentionItem[] }) {
                 <span className="tnum text-sm font-bold text-ink">
                   {formatMoney(deal.value_minor, deal.currency, { compact: true })}
                 </span>
-                <span className={cn("rounded-full px-2 py-0.5 text-[0.7rem] font-semibold", meta.tone)}>
+                <span className={cn("rounded-full px-2 py-0.5 text-xs font-semibold", meta.tone)}>
                   {detail}
                 </span>
               </div>

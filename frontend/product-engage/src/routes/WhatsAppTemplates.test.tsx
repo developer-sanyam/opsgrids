@@ -53,7 +53,7 @@ describe("empty", () => {
     vi.spyOn(api, "listTemplates").mockResolvedValue(page([]));
     renderPage();
     expect(await screen.findByText("No WhatsApp templates yet")).toBeTruthy();
-    expect(screen.getAllByRole("button", { name: "Create Template" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: "Create template" }).length).toBeGreaterThan(0);
   });
 });
 
@@ -102,7 +102,7 @@ describe("permission gating", () => {
     renderPage(["engage.whatsapp.template.read:ORG"]);
 
     await screen.findByRole("link", { name: "order_shipped" });
-    expect(screen.queryByRole("button", { name: "Create Template" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create template" })).toBeNull();
     expect(screen.queryByRole("button", { name: /Sync from Meta/ })).toBeNull();
   });
 
@@ -112,7 +112,7 @@ describe("permission gating", () => {
     renderPage();
 
     await screen.findByRole("link", { name: "order_shipped" });
-    expect(screen.getByRole("button", { name: "Create Template" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create template" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Sync from Meta" })).toBeTruthy();
   });
 });

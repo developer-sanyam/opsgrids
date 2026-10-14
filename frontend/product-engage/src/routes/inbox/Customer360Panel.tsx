@@ -147,7 +147,7 @@ function QuickActions({ data }: { data: Customer360 }) {
           href={`${getPlatformHost("finance")}/invoices/new`}
           target="_blank"
           rel="noreferrer"
-          className="inline-flex h-9 items-center gap-2 rounded-tile border border-line bg-surface px-3 text-sm font-medium text-ink hover:bg-surface-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          className="relative hit-44 inline-flex h-9 items-center gap-2 rounded-tile border border-line bg-surface px-3 text-sm font-medium text-ink hover:bg-surface-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
           Create invoice
           <ArrowUpRight className="size-3.5" aria-hidden />
@@ -266,7 +266,11 @@ function Customer360Body({ customerId }: { customerId: string }) {
  * The body is not mounted while the panel is collapsed, so a collapsed panel makes no request.
  */
 export function Customer360Panel({ customerId }: { customerId: string | null }) {
-  const [open, setOpen] = useState(true);
+  // Open beside the thread on a wide screen; on a phone it starts collapsed, so the thread and the
+  // reply box are what the screen opens on.
+  const [open, setOpen] = useState(
+    () => typeof window.matchMedia !== "function" || window.matchMedia("(min-width: 1024px)").matches,
+  );
   const bodyId = useId();
 
   return (

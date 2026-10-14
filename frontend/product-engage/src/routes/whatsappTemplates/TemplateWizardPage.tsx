@@ -94,7 +94,7 @@ function DetailsStep({
   return (
     <div className="flex max-w-xl flex-col gap-6">
       <TextField
-        label="Template Name"
+        label="Template name"
         required
         value={draft.name}
         onChange={(event) => onChange({ name: event.target.value })}
@@ -359,7 +359,7 @@ function TemplateWizard() {
     <div className="rise flex flex-col gap-6">
       <PageHeader
         eyebrow="WhatsApp"
-        title="Create WhatsApp Template"
+        title="Create WhatsApp template"
         description="Create a new template and submit it for Meta approval."
         actions={
           <Button variant="secondary" onClick={() => navigate(LIST_PATH)} disabled={create.pending}>

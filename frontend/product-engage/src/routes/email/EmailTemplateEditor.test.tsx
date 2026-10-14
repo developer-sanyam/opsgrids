@@ -97,7 +97,7 @@ describe("editing an existing template", () => {
     expect(await screen.findByRole("heading", { name: "Edit Template" })).toBeTruthy();
     expect(subject().value).toBe(SHIPPED.subject);
     expect(body().value).toBe(SHIPPED.body);
-    const name = screen.getByRole("textbox", { name: /Template Name/ }) as HTMLInputElement;
+    const name = screen.getByRole("textbox", { name: /Template name/ }) as HTMLInputElement;
     expect(name.value).toBe("order_shipped");
     expect(name.readOnly).toBe(true);
   });
@@ -152,7 +152,7 @@ describe("creating a template", () => {
     const user = userEvent.setup();
     renderEditor("/email/templates/new");
 
-    await user.type(await screen.findByRole("textbox", { name: /Template Name/ }), "Order Shipped");
+    await user.type(await screen.findByRole("textbox", { name: /Template name/ }), "Order Shipped");
     await user.click(screen.getByRole("button", { name: "Save Template" }));
 
     expect(screen.getByText("Use lowercase letters, digits and underscores only.")).toBeTruthy();
@@ -164,7 +164,7 @@ describe("creating a template", () => {
     const user = userEvent.setup();
     renderEditor("/email/templates/new");
 
-    const name = await screen.findByRole("textbox", { name: /Template Name/ });
+    const name = await screen.findByRole("textbox", { name: /Template name/ });
     await waitFor(() => expect(email.listEmailTemplates).toHaveBeenCalled());
     await user.type(name, "order_shipped");
     await user.type(subject(), "Shipped");
@@ -192,7 +192,7 @@ describe("creating a template", () => {
     const user = userEvent.setup();
     renderEditor("/email/templates/new");
 
-    const name = await screen.findByRole("textbox", { name: /Template Name/ });
+    const name = await screen.findByRole("textbox", { name: /Template name/ });
     await waitFor(() => expect(email.listEmailTemplates).toHaveBeenCalled());
     await user.type(name, "welcome_email");
     await user.type(subject(), "Welcome");
@@ -212,7 +212,7 @@ describe("creating a template", () => {
     const user = userEvent.setup();
     renderEditor("/email/templates/new");
 
-    const name = await screen.findByRole("textbox", { name: /Template Name/ });
+    const name = await screen.findByRole("textbox", { name: /Template name/ });
     await waitFor(() => expect(list).toHaveBeenCalledTimes(1));
     await user.type(name, "order_shipped");
     await user.type(subject(), "Shipped");
@@ -238,7 +238,7 @@ describe("creating a template", () => {
     const user = userEvent.setup();
     renderEditor("/email/templates/new");
 
-    await user.type(await screen.findByRole("textbox", { name: /Template Name/ }), "order_shipped");
+    await user.type(await screen.findByRole("textbox", { name: /Template name/ }), "order_shipped");
     await user.type(subject(), "Shipped");
     await user.type(body(), "On its way");
     await user.click(screen.getByRole("button", { name: "Save Template" }));
@@ -262,7 +262,7 @@ describe("creating a template", () => {
     const user = userEvent.setup();
     renderEditor("/email/templates/new");
 
-    await user.type(await screen.findByRole("textbox", { name: /Template Name/ }), "order_shipped");
+    await user.type(await screen.findByRole("textbox", { name: /Template name/ }), "order_shipped");
     await user.type(subject(), "Shipped");
     await user.type(body(), "On its way");
     await user.click(screen.getByRole("button", { name: "Save Template" }));
@@ -278,7 +278,7 @@ describe("creating a template", () => {
     const user = userEvent.setup();
     renderEditor("/email/templates/new");
 
-    await user.type(await screen.findByRole("textbox", { name: /Template Name/ }), "order_shipped");
+    await user.type(await screen.findByRole("textbox", { name: /Template name/ }), "order_shipped");
     await user.type(subject(), "Shipped");
     await user.type(body(), "On its way");
     await user.click(screen.getByRole("button", { name: "Save Template" }));
@@ -294,7 +294,7 @@ describe("creating a template", () => {
     const user = userEvent.setup();
     renderEditor("/email/templates/new");
 
-    await user.type(await screen.findByRole("textbox", { name: /Template Name/ }), "order_shipped");
+    await user.type(await screen.findByRole("textbox", { name: /Template name/ }), "order_shipped");
     await user.type(subject(), "Shipped");
     await user.type(body(), "On its way");
     const button = screen.getByRole("button", { name: "Save Template" });
@@ -322,7 +322,7 @@ describe("variables", () => {
     const user = userEvent.setup();
     renderEditor("/email/templates/new");
 
-    await screen.findByRole("textbox", { name: /Template Name/ });
+    await screen.findByRole("textbox", { name: /Template name/ });
     await user.type(body(), "Hi , welcome");
     body().setSelectionRange(3, 3);
     await user.click(screen.getByRole("button", { name: "Insert {{customer_name}}" }));
@@ -337,7 +337,7 @@ describe("variables", () => {
     const user = userEvent.setup();
     renderEditor("/email/templates/new");
 
-    await screen.findByRole("textbox", { name: /Template Name/ });
+    await screen.findByRole("textbox", { name: /Template name/ });
     await user.type(body(), "Body text");
     await user.type(subject(), "Order  shipped");
     subject().setSelectionRange(6, 6);
@@ -352,7 +352,7 @@ describe("variables", () => {
     const user = userEvent.setup();
     renderEditor("/email/templates/new");
 
-    await screen.findByRole("textbox", { name: /Template Name/ });
+    await screen.findByRole("textbox", { name: /Template name/ });
     await user.type(body(), "Hi NAME!");
     body().setSelectionRange(3, 7);
     await user.click(screen.getByRole("button", { name: "Insert {{customer_name}}" }));
@@ -365,7 +365,7 @@ describe("variables", () => {
     const user = userEvent.setup();
     renderEditor("/email/templates/new");
 
-    await screen.findByRole("textbox", { name: /Template Name/ });
+    await screen.findByRole("textbox", { name: /Template name/ });
     const name = screen.getByRole("textbox", { name: "New variable name" });
     await user.type(name, "bad name");
     await user.click(screen.getByRole("button", { name: "Add Variable" }));
@@ -384,7 +384,7 @@ describe("variables", () => {
     const user = userEvent.setup();
     renderEditor("/email/templates/new");
 
-    await screen.findByRole("textbox", { name: /Template Name/ });
+    await screen.findByRole("textbox", { name: /Template name/ });
     await user.type(screen.getByRole("searchbox", { name: "Search variables" }), "order");
 
     expect(screen.getByRole("button", { name: "Insert {{order_number}}" })).toBeTruthy();

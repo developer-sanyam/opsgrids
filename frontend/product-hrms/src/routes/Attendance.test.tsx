@@ -80,3 +80,35 @@ describe("Attendance — Correction column narrow-width fallback", () => {
     expect(columnCopy).toBeDefined();
   });
 });
+
+describe("Attendance — why Check in is unavailable", () => {
+  beforeEach(() => {
+    listAttendanceRoster.mockReset();
+    listAttendance.mockReset();
+    listAttendanceRoster.mockResolvedValue(pagedOf([OWN_RECORD]));
+  });
+
+  it("says so in words, tied to the button, when the day is already checked out", async () => {
+    listAttendance.mockResolvedValue({
+      items: [{ ...OWN_RECORD, check_in: "2026-08-24T04:00:00Z", check_out_at: "2026-08-24T12:00:00Z" }],
+      total: 1,
+      page: 1,
+      size: 1,
+      pages: 1,
+    });
+    render(<AttendancePage />);
+
+    const reason = await screen.findByText(/Check in is unavailable: Already checked out for the day\./);
+    const button = screen.getByRole("button", { name: "Check in" });
+    expect(button).toHaveProperty("disabled", true);
+    expect(button.getAttribute("aria-describedby")).toBe(reason.id);
+  });
+
+  it("shows no reason, and an enabled button, when the person can check in", async () => {
+    listAttendance.mockResolvedValue({ items: [], total: 0, page: 1, size: 1, pages: 0 });
+    render(<AttendancePage />);
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Check in" })).toHaveProperty("disabled", false));
+    expect(screen.queryByText(/Check in is unavailable/)).toBeNull();
+  });
+});

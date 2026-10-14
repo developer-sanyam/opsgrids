@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { Can, useAsync } from "@opsgrids/client";
-import { MegaphoneIcon } from "@opsgrids/ui";
+import { MegaphoneIcon, MobileDataCard, TABLET_QUERY, useMediaQuery } from "@opsgrids/ui";
 
 import { listCampaigns } from "@/api/client";
 import type { CampaignOut, CampaignStatus } from "@/api/types";
@@ -46,7 +46,7 @@ function CampaignRow({ campaign, resolved }: { campaign: CampaignOut; resolved: 
       <th scope="row" className="py-3 pr-4 text-left">
         <Link
           to={`/campaigns/${campaign.id}`}
-          className="text-sm font-bold text-ink underline-offset-4 hover:text-accent-ink hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          className="relative hit-44 text-sm font-bold text-ink underline-offset-4 hover:text-accent-ink hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
           {campaign.name}
         </Link>
@@ -67,11 +67,45 @@ function CampaignRow({ campaign, resolved }: { campaign: CampaignOut; resolved: 
   );
 }
 
+/** The same campaign as a card, for a phone: name, status, and the one figure that matters. */
+function CampaignCard({
+  campaign,
+  resolved,
+  onOpen,
+}: {
+  campaign: CampaignOut;
+  resolved: ResolvedLists;
+  onOpen: () => void;
+}) {
+  return (
+    <MobileDataCard
+      title={campaign.name}
+      subtitle={audienceName(campaign, resolved)}
+      status={<CampaignStatusTag status={campaign.status} />}
+      onOpen={onOpen}
+      fields={[
+        {
+          key: "sent",
+          label: "Sent",
+          value: `${formatNumber(campaign.stats.sent)} / ${formatNumber(campaign.stats.recipients)}`,
+        },
+        {
+          key: "failed",
+          label: "Failed",
+          value: campaign.stats.failed > 0 ? formatNumber(campaign.stats.failed) : "—",
+        },
+        { key: "updated", label: "Updated", value: formatInstant(campaign.updated_at) },
+      ]}
+    />
+  );
+}
+
 const NO_CAMPAIGNS: CampaignOut[] = [];
 const NO_RESOLVED: ResolvedLists = { lists: [], gone: new Set() };
 
 function Campaigns() {
   const navigate = useNavigate();
+  const wide = useMediaQuery(TABLET_QUERY, true);
   const titleRef = useRef<HTMLHeadingElement>(null);
   useRouteNotice(titleRef);
   const [status, setStatus] = useState<CampaignStatus | "">("");
@@ -153,7 +187,20 @@ function Campaigns() {
       ) : null}
 
       {state.status === "success" && campaigns.length > 0 ? (
-        <Card className="p-6">
+        <Card className="p-4 sm:p-6">
+          {!wide ? (
+            <ul className="flex flex-col gap-3" aria-label="Campaigns">
+              {campaigns.map((campaign) => (
+                <li key={campaign.id}>
+                  <CampaignCard
+                    campaign={campaign}
+                    resolved={resolved}
+                    onOpen={() => navigate(`/campaigns/${campaign.id}`)}
+                  />
+                </li>
+              ))}
+            </ul>
+          ) : (
           <div className="relative overflow-x-auto">
             <table className="w-full min-w-4xl border-collapse text-left">
               <caption className="sr-only">
@@ -185,6 +232,7 @@ function Campaigns() {
               </tbody>
             </table>
           </div>
+          )}
           <Pagination
             page={state.data.campaigns.page}
             pages={state.data.campaigns.pages}

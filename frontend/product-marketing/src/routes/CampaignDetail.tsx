@@ -27,7 +27,7 @@ import {
   Skeleton,
   StatTile,
 } from "@/ui";
-import { Announcer, ArrowRightIcon, TargetIcon, UsersIcon, useAnnounce, useToast } from "@opsgrids/ui";
+import { Announcer, ArrowRightIcon, Menu, TargetIcon, UsersIcon, useAnnounce, useToast } from "@opsgrids/ui";
 import { CampaignFormDialog } from "@/forms/CampaignFormDialog";
 
 const WRITE_PERMISSION = "marketing.analytics.campaign.write";
@@ -135,7 +135,9 @@ function CampaignDetailScreen() {
           <p className="text-sm text-muted">
             {channelLabel(campaign.channel)} · owned by{" "}
             <span className="font-semibold text-ink-soft">{campaign.owner || "Unassigned"}</span> ·{" "}
-            {formatDate(campaign.start_date)} – {formatDate(campaign.end_date)}
+            {campaign.end_date === null
+              ? `${formatDate(campaign.start_date)} · No end date`
+              : `${formatDate(campaign.start_date)} – ${formatDate(campaign.end_date)}`}
           </p>
         </div>
         <Can permission={WRITE_PERMISSION} scope="ORG">
@@ -163,9 +165,12 @@ function CampaignDetailScreen() {
             <Button variant="outline" onClick={() => setEditing(true)}>
               Edit campaign
             </Button>
-            <Button variant="danger" onClick={() => setDeleting(true)}>
-              Delete
-            </Button>
+            <Menu
+              label={`More actions for ${campaign.name}`}
+              trigger="icon"
+              align="end"
+              items={[{ label: "Delete", tone: "danger", onSelect: () => setDeleting(true) }]}
+            />
           </div>
         </Can>
       </header>
@@ -278,7 +283,7 @@ function CampaignDetailScreen() {
                 </p>
                 <Link
                   to="/audiences"
-                  className="inline-flex h-10 items-center justify-center gap-1.5 rounded-full border border-line bg-surface text-sm font-semibold text-ink hover:bg-ground transition-colors"
+                  className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-full border border-line bg-surface text-sm font-semibold text-ink hover:bg-ground transition-colors"
                 >
                   View in Audiences
                   <ArrowRightIcon className="size-4" />
@@ -348,7 +353,7 @@ function BackLink() {
   return (
     <Link
       to="/campaigns"
-      className="inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors"
+      className="relative hit-44 inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors"
     >
       <ArrowRightIcon className="size-4 rotate-180" />
       All campaigns
