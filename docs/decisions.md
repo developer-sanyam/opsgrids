@@ -163,8 +163,9 @@ correctable and backed up with the money it defends.
 Not everything warrants an ADR, but these shape daily work and are easy to trip over:
 
 - **Commit messages name no AI assistant** — no generated-by footers, no co-author trailers.
-- **The `.claude/` build harness is local tooling and is not tracked.** It stays on disk; the
-  backlog it used to carry now lives in [backlog.md](backlog.md).
+- **The `.claude/` build harness is local tooling and is not tracked** — except
+  `.claude/settings.json`, the project permission policy (secrets denied, production commands
+  ask), which is. The backlog the harness used to carry now lives in [backlog.md](backlog.md).
 - **Tests run against real PostgreSQL, never SQLite.** The schema leans on `citext`, partial
   unique indexes and JSONB; a test passing on SQLite proves nothing about production.
 - **Each service is run, tested and typechecked in its own process,** because every service
