@@ -7,7 +7,7 @@ import { useDirectory } from "@/data/directoryContext";
 import { contactImport } from "@/data/importExport/contacts";
 import type { ContactFilters } from "@/data/importExport/contacts";
 import { companyName, ownerName } from "@/data/lookups";
-import { ArrowRightIcon, ChevronDown, cn, ImportExportButton, MailIcon, PlusIcon, StepUpDialog, useDebouncedValue, UsersIcon, useToast } from "@opsgrids/ui";
+import { ArrowRightIcon, ChevronDown, cn, ImportExportButton, MailIcon, MobileDataCard, TABLET_QUERY, useMediaQuery, PlusIcon, StepUpDialog, useDebouncedValue, UsersIcon, useToast, ChipRow } from "@opsgrids/ui";
 import { formatDate, formatRelative } from "@/lib/format";
 import { RevealField } from "@/reveal/RevealField";
 import type { UseStepUpResult } from "@opsgrids/client";
@@ -72,7 +72,7 @@ function ContactDetail({
       <div className="flex flex-col gap-2 text-sm">
         <a
           href={`mailto:${contact.email}`}
-          className="inline-flex items-center gap-2 text-ink-soft hover:text-accent transition-colors"
+          className="relative hit-44 inline-flex items-center gap-2 text-ink-soft hover:text-accent transition-colors"
         >
           <MailIcon className="size-4 text-faint" />
           {contact.email}
@@ -93,7 +93,7 @@ function ContactDetail({
         </span>
         <Link
           to={`/companies/${contact.company_id}`}
-          className="inline-flex items-center gap-1.5 font-semibold text-accent hover:text-accent-strong transition-colors"
+          className="relative hit-44 inline-flex items-center gap-1.5 font-semibold text-accent hover:text-accent-strong transition-colors"
         >
           View {companyName(companies, contact.company_id)}
           <ArrowRightIcon className="size-4" />
@@ -115,6 +115,7 @@ function ContactDetail({
 
 export function ContactsPage() {
   const toast = useToast();
+  const wide = useMediaQuery(TABLET_QUERY, true);
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search);
   const [status, setStatus] = useState<StatusFilter>("all");
@@ -213,7 +214,7 @@ export function ContactsPage() {
             }}
             containerClassName="lg:max-w-xs"
           />
-          <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
+          <ChipRow label="Filter contacts by status">
             {STATUS_FILTERS.map((f) => (
               <Pill
                 key={f.value}
@@ -226,7 +227,7 @@ export function ContactsPage() {
                 {f.label}
               </Pill>
             ))}
-          </div>
+          </ChipRow>
           <Select
             label="Sort contacts"
             containerClassName="lg:ml-auto lg:w-56"
@@ -277,6 +278,38 @@ export function ContactsPage() {
             />
           ) : (
             <>
+              {!wide ? (
+              <ul className="flex flex-col gap-3 p-2" aria-label="All contacts">
+                {rows.map((contact) => {
+                  const isOpen = expanded === contact.id;
+                  return (
+                    <li key={contact.id} className="flex flex-col gap-2">
+                      <MobileDataCard
+                        title={contact.full_name}
+                        subtitle={contact.title}
+                        leading={<Avatar name={contact.full_name} size="sm" />}
+                        status={<ContactStatusPill status={contact.status} />}
+                        fields={[
+                          { key: "activity", label: "Last activity", value: formatRelative(contact.last_activity_at) },
+                        ]}
+                        onOpen={() => setExpanded(isOpen ? null : contact.id)}
+                        current={isOpen}
+                      />
+                      {isOpen ? (
+                        <ContactDetail
+                          contact={contact}
+                          canWrite={canWrite}
+                          canReveal={canReveal}
+                          stepUp={stepUp}
+                          onEdit={() => setEditing(contact)}
+                          onDelete={() => setDeleting(contact)}
+                        />
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
+              ) : (
               <div className="overflow-x-auto">
                 <table className="w-full border-collapse text-sm">
                   <caption className="sr-only">All contacts</caption>
@@ -322,7 +355,7 @@ export function ContactsPage() {
                             <td className="hidden py-3 pr-3 align-middle md:table-cell">
                               <Link
                                 to={`/companies/${contact.company_id}`}
-                                className="font-medium text-ink-soft hover:text-accent transition-colors"
+                                className="relative hit-44 font-medium text-ink-soft hover:text-accent transition-colors"
                               >
                                 {companyName(companies, contact.company_id)}
                               </Link>
@@ -377,6 +410,7 @@ export function ContactsPage() {
                   </tbody>
                 </table>
               </div>
+              )}
               <Pagination
                 page={contacts.data.page}
                 pages={contacts.data.pages}

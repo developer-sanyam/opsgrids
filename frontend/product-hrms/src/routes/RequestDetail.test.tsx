@@ -67,9 +67,9 @@ function InboxProbe() {
   return <div>Inbox — {state?.announce ?? "no announcement"}</div>;
 }
 
-function renderDetail() {
+function renderDetail(state?: { decide: "approve" | "reject" }) {
   return render(
-    <MemoryRouter initialEntries={["/approvals/requests/req-1"]}>
+    <MemoryRouter initialEntries={[{ pathname: "/approvals/requests/req-1", state }]}>
       <Routes>
         <Route path="/approvals/requests/:requestId" element={<RequestDetailPage />} />
         <Route path="/approvals" element={<InboxProbe />} />
@@ -211,5 +211,21 @@ describe("RequestDetail — the due line (slice 4, §2.11, §4.B)", () => {
     expect(screen.queryByText("No due time")).toBeNull();
     expect(screen.queryByText(/^Due /)).toBeNull();
     expect(screen.queryByText(/^Overdue/)).toBeNull();
+  });
+
+  it("opens the decision dialog straight away when the inbox card chose Reject", async () => {
+    getRequestDetail.mockResolvedValue(PENDING);
+    renderDetail({ decide: "reject" });
+
+    expect(await screen.findByRole("dialog", { name: "Reject this correction?" })).toBeDefined();
+    expect(decideRequest).not.toHaveBeenCalled();
+  });
+
+  it("does not open a decision dialog for a request this reader cannot decide", async () => {
+    getRequestDetail.mockResolvedValue({ ...PENDING, inbox_reason: null });
+    renderDetail({ decide: "approve" });
+
+    await waitFor(() => expect(screen.getByText("Only Sneha Kulkarni can decide this.")).toBeDefined());
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });

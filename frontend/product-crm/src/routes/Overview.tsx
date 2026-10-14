@@ -295,10 +295,7 @@ export function OverviewPage() {
             }
             empty={
               summary.status === "success" && funnelItems.every((item) => item.value === 0) ? (
-                <EmptyState
-                  title="No open deals yet"
-                  description="Add a deal to see the pipeline fill in here."
-                />
+                <p className="py-2 text-sm text-muted">No open deals yet. Add a deal to see the pipeline fill in here.</p>
               ) : undefined
             }
           >
@@ -342,7 +339,7 @@ export function OverviewPage() {
             action={
               <Link
                 to="/deals"
-                className="text-sm font-semibold text-accent hover:text-accent-strong transition-colors"
+                className="relative hit-44 text-sm font-semibold text-accent hover:text-accent-strong transition-colors"
               >
                 All deals
               </Link>
@@ -367,7 +364,7 @@ export function OverviewPage() {
             action={
               <Link
                 to="/activities"
-                className="text-sm font-semibold text-accent hover:text-accent-strong transition-colors"
+                className="relative hit-44 text-sm font-semibold text-accent hover:text-accent-strong transition-colors"
               >
                 View all
               </Link>

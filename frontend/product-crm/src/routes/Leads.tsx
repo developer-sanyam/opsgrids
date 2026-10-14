@@ -8,7 +8,7 @@ import { leadImport } from "@/data/importExport/leads";
 import type { LeadFilters } from "@/data/importExport/leads";
 import { formatDate } from "@/lib/format";
 import { Can, problemMessage, useAsync, useCan, useImportExport } from "@opsgrids/client";
-import { ImportExportButton, PlusIcon, UserPlusIcon } from "@opsgrids/ui";
+import { ImportExportButton, PlusIcon, UserPlusIcon, ChipRow } from "@opsgrids/ui";
 import {
   Button,
   Card,
@@ -43,11 +43,12 @@ function buildColumns(): Column<Lead>[] {
     {
       key: "name",
       header: "Lead",
+      mobile: "title",
       render: (l) => (
         <div className="flex flex-col leading-tight">
           <Link
             to={`/leads/${l.id}`}
-            className="font-semibold text-ink hover:text-accent transition-colors"
+            className="relative hit-44 font-semibold text-ink hover:text-accent transition-colors"
           >
             {l.full_name}
           </Link>
@@ -55,7 +56,7 @@ function buildColumns(): Column<Lead>[] {
         </div>
       ),
     },
-    { key: "status", header: "Status", render: (l) => <LeadStatusPill status={l.status} /> },
+    { key: "status", header: "Status", mobile: "status", render: (l) => <LeadStatusPill status={l.status} /> },
     {
       key: "source",
       header: "Source",
@@ -66,6 +67,7 @@ function buildColumns(): Column<Lead>[] {
     {
       key: "owner",
       header: "Owner",
+      mobile: "hidden",
       cellClassName: "hidden md:table-cell",
       headerClassName: "hidden md:table-cell",
       render: (l) => (l.owner_id ? <OwnerBadge ownerId={l.owner_id} /> : <span className="text-faint">Unassigned</span>),
@@ -73,6 +75,7 @@ function buildColumns(): Column<Lead>[] {
     {
       key: "created",
       header: "Captured",
+      mobile: "hidden",
       align: "right",
       cellClassName: "hidden lg:table-cell",
       headerClassName: "hidden lg:table-cell",
@@ -128,7 +131,7 @@ export function LeadsPage() {
       />
 
       <Card className="flex flex-col gap-4 p-4 sm:p-5">
-        <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
+        <ChipRow label="Filter leads by status">
           {STATUS_FILTERS.map((f) => (
             <Pill
               key={f.value}
@@ -141,7 +144,7 @@ export function LeadsPage() {
               {f.label}
             </Pill>
           ))}
-        </div>
+        </ChipRow>
       </Card>
 
       {leads.status === "loading" ? (

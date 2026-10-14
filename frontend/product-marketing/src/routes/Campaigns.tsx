@@ -6,7 +6,7 @@ import type { Campaign, CampaignStatus, Channel } from "@/api/types";
 import { roas } from "@/data/derive";
 import { downloadCsv } from "@/lib/csv";
 import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
-import { MegaphoneIcon, PlusIcon, cn, useDebouncedValue, useToast } from "@opsgrids/ui";
+import { MegaphoneIcon, PlusIcon, TABLET_QUERY, cn, useDebouncedValue, useMediaQuery, useToast, ChipRow } from "@opsgrids/ui";
 import type { TableSelection } from "@opsgrids/ui";
 import { formatMoneyCompact, formatNumber, formatRoas } from "@/lib/format";
 import {
@@ -71,6 +71,9 @@ export function CampaignsPage() {
   const [editing, setEditing] = useState<Campaign | null>(null);
   const [deleting, setDeleting] = useState<Campaign | null>(null);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  // On a phone a tick box on every card is clutter; selecting is a mode the person turns on.
+  const wide = useMediaQuery(TABLET_QUERY, true);
+  const [selecting, setSelecting] = useState(false);
   const canWrite = useCan(WRITE_PERMISSION, "ORG");
 
   // The sidebar's ⌘K search lands here with `?q=` — sync it into local state without touching the
@@ -176,6 +179,7 @@ export function CampaignsPage() {
       render: (c) => (
         <RowActions
           label={c.name}
+          inlineLimit={1}
           actions={[
             { label: "View", onSelect: () => navigate(`/campaigns/${c.id}`) },
             { label: "Edit", onSelect: () => setEditing(c), hidden: !canWrite },
@@ -187,7 +191,7 @@ export function CampaignsPage() {
   ];
 
   const campaignSelection: TableSelection<Campaign> | undefined =
-    campaigns.status === "success"
+    campaigns.status === "success" && (wide || selecting)
       ? {
           selected,
           onToggle: (key, next) =>
@@ -247,7 +251,7 @@ export function CampaignsPage() {
             }}
             containerClassName="lg:max-w-xs"
           />
-          <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
+          <ChipRow label="Filter by status">
             {STATUS_FILTERS.map((f) => (
               <Pill
                 key={f.value}
@@ -260,9 +264,10 @@ export function CampaignsPage() {
                 {f.label}
               </Pill>
             ))}
-          </div>
+          </ChipRow>
         </div>
-        <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1 border-t border-line pt-4">
+        <div className="border-t border-line pt-4">
+        <ChipRow label="Filter by channel">
           <span className="pr-1 text-xs font-semibold uppercase tracking-wide text-faint shrink-0">
             Channel
           </span>
@@ -278,7 +283,20 @@ export function CampaignsPage() {
               {f.label}
             </Pill>
           ))}
+        </ChipRow>
         </div>
+        {!wide && campaigns.status === "success" && campaigns.data.items.length > 0 ? (
+          <Button
+            variant="outline"
+            aria-pressed={selecting}
+            onClick={() => {
+              setSelecting((on) => !on);
+              setSelected(new Set());
+            }}
+          >
+            {selecting ? "Done selecting" : "Select campaigns"}
+          </Button>
+        ) : null}
       </Card>
 
       {/* Table */}

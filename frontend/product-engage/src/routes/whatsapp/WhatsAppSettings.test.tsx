@@ -52,7 +52,7 @@ describe("loading", () => {
     vi.spyOn(api, "getWhatsAppHealth").mockReturnValue(new Promise(() => {}));
     vi.spyOn(api, "listWhatsAppNumbers").mockReturnValue(new Promise(() => {}));
     const { container } = renderPage();
-    expect(screen.getByRole("heading", { level: 1, name: "WhatsApp Settings" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 1, name: "WhatsApp settings" })).toBeTruthy();
     expect(container.querySelectorAll('[aria-hidden="true"]').length).toBeGreaterThan(0);
     expect(screen.queryByRole("region", { name: "Phone numbers" })).toBeNull();
   });
@@ -195,7 +195,7 @@ describe("disconnecting", () => {
     expect(disconnect).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     await waitFor(() =>
-      expect(document.activeElement).toBe(screen.getByRole("heading", { level: 1, name: "WhatsApp Settings" })),
+      expect(document.activeElement).toBe(screen.getByRole("heading", { level: 1, name: "WhatsApp settings" })),
     );
   });
 

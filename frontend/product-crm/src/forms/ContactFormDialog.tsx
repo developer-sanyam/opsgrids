@@ -206,6 +206,9 @@ export function ContactFormDialog({
             label="Replace phone number"
             value={newPhone}
             onChange={(e) => setNewPhone(e.target.value)}
+            type="tel"
+            autoComplete="tel"
+            inputMode="tel"
             optional
             placeholder="+91 98765 43210"
             helper="With country code. Leave blank to keep the number on file."
@@ -217,6 +220,9 @@ export function ContactFormDialog({
           label="Phone"
           value={newPhone}
           onChange={(e) => setNewPhone(e.target.value)}
+          type="tel"
+          autoComplete="tel"
+          inputMode="tel"
           optional
           placeholder="+91 98765 43210"
           helper="With country code, e.g. +91 98765 43210."

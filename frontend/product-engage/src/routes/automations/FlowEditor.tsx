@@ -96,7 +96,7 @@ function StepCard({
 
   return (
     <article
-      className={`flex flex-col gap-2 rounded-card bg-surface p-3 shadow-card ${
+      className={`flex min-w-0 flex-col gap-2 rounded-card bg-surface p-3 shadow-card ${
         selected ? "outline outline-2 outline-accent" : ""
       }`}
     >
@@ -181,7 +181,7 @@ function StepItem({ step, props }: { step: FlowStep; props: FlowEditorProps }) {
   const { node, branches } = step;
   const number = props.numbers.get(node.id) ?? "?";
   return (
-    <li className="flex flex-col gap-3">
+    <li className="flex min-w-0 flex-col gap-3">
       <StepCard node={node} props={props} />
       {branches !== undefined ? (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

@@ -37,13 +37,13 @@ function lastQuery(spy: MockInstance<typeof api.listTemplates>): TemplateListQue
 }
 
 describe("tabs and filters", () => {
-  it("lists eight tabs and starts on All Templates", async () => {
+  it("lists eight tabs and starts on All templates", async () => {
     vi.spyOn(api, "listTemplates").mockResolvedValue(page([APPROVED]));
     stubPanel();
     renderPage();
     const tabs = await screen.findAllByRole("tab");
     expect(tabs.map((tab) => tab.textContent)).toEqual([
-      "All Templates",
+      "All templates",
       "Marketing",
       "Utility",
       "Authentication",
@@ -52,7 +52,7 @@ describe("tabs and filters", () => {
       "Approved",
       "Rejected",
     ]);
-    expect(screen.getByRole("tab", { name: "All Templates" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tab", { name: "All templates" }).getAttribute("aria-selected")).toBe("true");
   });
 
   it("a category tab filters by category and a status tab by status, each clearing the other", async () => {
@@ -71,7 +71,7 @@ describe("tabs and filters", () => {
     await waitFor(() => expect(lastQuery(list)).toMatchObject({ status: "pending" }));
     expect(lastQuery(list).category).toBeUndefined();
 
-    await user.click(screen.getByRole("tab", { name: "All Templates" }));
+    await user.click(screen.getByRole("tab", { name: "All templates" }));
     await waitFor(() => {
       expect(lastQuery(list).category).toBeUndefined();
       expect(lastQuery(list).status).toBeUndefined();
@@ -131,7 +131,7 @@ describe("tabs and filters", () => {
     await user.click(screen.getByRole("button", { name: "Clear filters" }));
     await screen.findByRole("table");
     expect(lastQuery(list).status).toBeUndefined();
-    expect(screen.getByRole("tab", { name: "All Templates" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tab", { name: "All templates" }).getAttribute("aria-selected")).toBe("true");
   });
 
   it("asks for the next page when it is chosen", async () => {

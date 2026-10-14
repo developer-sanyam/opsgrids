@@ -91,7 +91,7 @@ export function OwnerPicker({ owners, value, onChange, error, onOwnerCreated, di
         <button
           type="button"
           onClick={() => setAddingOwner(true)}
-          className="w-fit text-xs font-semibold text-accent hover:text-accent-strong transition-colors"
+          className="relative hit-44 w-fit text-xs font-semibold text-accent hover:text-accent-strong transition-colors"
         >
           Add a different team member
         </button>
@@ -124,7 +124,7 @@ export function OwnerPicker({ owners, value, onChange, error, onOwnerCreated, di
         <button
           type="button"
           onClick={() => setAddingOwner(true)}
-          className="w-fit text-xs font-semibold text-accent hover:text-accent-strong transition-colors"
+          className="relative hit-44 w-fit text-xs font-semibold text-accent hover:text-accent-strong transition-colors"
         >
           + Add a new team member
         </button>

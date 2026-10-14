@@ -37,7 +37,7 @@ function CreateButton() {
   const navigate = useNavigate();
   return (
     <Can permission={CREATE_PERMISSION} scope="ORG">
-      <Button onClick={() => navigate("/email/templates/new")}>Create Template</Button>
+      <Button onClick={() => navigate("/email/templates/new")}>Create template</Button>
     </Can>
   );
 }
@@ -48,7 +48,7 @@ function TemplateRow({ template }: { template: EmailTemplateOut }) {
       <th scope="row" className="py-3 pr-4 text-left">
         <Link
           to={`/email/templates/${encodeURIComponent(template.id)}`}
-          className="text-sm font-bold text-ink underline-offset-4 hover:text-accent-ink hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          className="relative hit-44 text-sm font-bold text-ink underline-offset-4 hover:text-accent-ink hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
           {template.id}
         </Link>
@@ -79,7 +79,7 @@ export function EmailTemplatesPage() {
     <div className="rise flex flex-col gap-6">
       <PageHeading
         eyebrow="Email"
-        title="Email Templates"
+        title="Email templates"
         description="Create and manage email templates for campaigns and automations."
         actions={<CreateButton />}
       />

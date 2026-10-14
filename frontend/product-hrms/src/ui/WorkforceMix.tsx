@@ -72,7 +72,7 @@ export function WorkforceMix({ slices, total, stats }: WorkforceMixProps) {
           </svg>
           <div className="absolute inset-0 flex flex-col items-center justify-center">
             <span className="display text-2xl font-extrabold tnum leading-none">{total}</span>
-            <span className="text-[0.7rem] font-medium text-muted">Total staff</span>
+            <span className="text-xs font-medium text-muted">Total staff</span>
           </div>
         </div>
 
@@ -114,7 +114,7 @@ export function WorkforceMix({ slices, total, stats }: WorkforceMixProps) {
 
       <Link
         to="/employees"
-        className="inline-flex h-10 items-center justify-center gap-1.5 rounded-full border border-line bg-surface text-sm font-semibold text-ink hover:bg-ground transition-colors"
+        className="inline-flex min-h-11 items-center justify-center gap-1.5 rounded-full border border-line bg-surface text-sm font-semibold text-ink hover:bg-ground transition-colors"
       >
         View reports
         <ArrowRightIcon className="size-4" />

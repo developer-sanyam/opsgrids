@@ -15,7 +15,7 @@ import {
   Pill,
   Skeleton,
 } from "@/ui";
-import { ActivityIcon, PlusIcon, useToast } from "@opsgrids/ui";
+import { ActivityIcon, PlusIcon, useToast, ChipRow } from "@opsgrids/ui";
 import { ActivityFormDialog } from "@/forms/ActivityFormDialog";
 
 type TypeFilter = ActivityType | "all";
@@ -78,7 +78,7 @@ export function ActivitiesPage() {
       />
 
       <Card className="p-4 sm:p-5">
-        <div className="flex items-center gap-1.5 overflow-x-auto -mx-1 px-1">
+        <ChipRow label="Filter activities by type">
           {TYPE_FILTERS.map((f) => (
             <Pill
               key={f.value}
@@ -91,7 +91,7 @@ export function ActivitiesPage() {
               {f.label}
             </Pill>
           ))}
-        </div>
+        </ChipRow>
       </Card>
 
       <Card className="p-6">

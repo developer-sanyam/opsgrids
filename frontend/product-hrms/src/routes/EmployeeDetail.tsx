@@ -451,7 +451,7 @@ export function EmployeeDetailPage() {
     <div className="rise flex flex-col gap-6">
       <Link
         to="/employees"
-        className="inline-flex items-center gap-2 text-sm font-semibold text-muted hover:text-ink w-fit"
+        className="relative hit-44 inline-flex items-center gap-2 text-sm font-semibold text-muted hover:text-ink w-fit"
       >
         <ArrowLeftIcon className="size-4" />
         Back to employees

@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { Can, useAsync } from "@opsgrids/client";
-import { MegaphoneIcon, Tabs } from "@opsgrids/ui";
+import { MegaphoneIcon, MobileDataCard, TABLET_QUERY, Tabs, useMediaQuery } from "@opsgrids/ui";
 import type { TabItem } from "@opsgrids/ui";
 
 import { countCampaignsByStatus } from "@/api/email";
@@ -78,7 +78,7 @@ function CampaignRow({ campaign }: { campaign: CampaignOut }) {
       <th scope="row" className="py-3 pr-4 text-left">
         <Link
           to={`/campaigns/${encodeURIComponent(campaign.id)}`}
-          className="text-sm font-bold text-ink underline-offset-4 hover:text-accent-ink hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          className="relative hit-44 text-sm font-bold text-ink underline-offset-4 hover:text-accent-ink hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
           {campaign.name}
         </Link>
@@ -105,12 +105,40 @@ function NewCampaignButton() {
   const navigate = useNavigate();
   return (
     <Can permission="engage.campaign.campaign.write" scope="ORG">
-      <Button onClick={() => navigate("/campaigns/new")}>Create Campaign</Button>
+      <Button onClick={() => navigate("/campaigns/new")}>Create campaign</Button>
     </Can>
   );
 }
 
 function CampaignTable({ campaigns }: { campaigns: CampaignOut[] }) {
+  const navigate = useNavigate();
+  const wide = useMediaQuery(TABLET_QUERY, true);
+  if (!wide) {
+    // A phone gets a card per campaign — name, status, and the figure that matters — and the whole
+    // card opens it. No 56rem table to scroll sideways.
+    return (
+      <ul className="flex flex-col gap-3" aria-label="Campaigns">
+        {campaigns.map((campaign) => (
+          <li key={campaign.id}>
+            <MobileDataCard
+              title={campaign.name}
+              subtitle={campaign.subject === "" ? undefined : campaign.subject}
+              status={<CampaignStatusTag status={campaign.status} />}
+              onOpen={() => navigate(`/campaigns/${encodeURIComponent(campaign.id)}`)}
+              fields={[
+                {
+                  key: "sent",
+                  label: "Sent",
+                  value: `${formatNumber(campaign.stats.sent)} / ${formatNumber(campaign.stats.recipients)}`,
+                },
+                { key: "when", label: "When", value: whenText(campaign) },
+              ]}
+            />
+          </li>
+        ))}
+      </ul>
+    );
+  }
   return (
     <div className="relative overflow-x-auto">
       <table className="w-full min-w-4xl border-collapse text-left">
@@ -175,7 +203,7 @@ export function EmailCampaignsPage() {
     <div className="rise flex flex-col gap-6">
       <PageHeading
         eyebrow="Email"
-        title="Email Campaigns"
+        title="Email campaigns"
         description="Create and manage email campaigns for marketing and communication."
         actions={<NewCampaignButton />}
       />

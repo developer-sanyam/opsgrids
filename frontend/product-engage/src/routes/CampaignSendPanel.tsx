@@ -64,7 +64,7 @@ function audienceSummary(
 }
 
 const LINK_CLASS =
-  "inline-flex h-9 items-center rounded-full px-3 text-sm font-semibold text-accent-ink transition-colors hover:bg-accent-soft focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent";
+  "relative hit-44 inline-flex h-9 items-center rounded-full px-3 text-sm font-semibold text-accent-ink transition-colors hover:bg-accent-soft focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent";
 
 /** The one step that fixes a refusal: a field on this form, a screen in this app, or — for a plan
  *  fact — the dashboard on its own host, which is an `<a>` and never a router path. */

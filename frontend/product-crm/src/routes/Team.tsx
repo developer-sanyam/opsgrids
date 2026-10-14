@@ -61,7 +61,7 @@ export function TeamPage() {
             {o.full_name}
           </span>
           {!o.is_active ? (
-            <span className="rounded-full bg-ground px-2 py-0.5 text-[0.65rem] font-bold uppercase text-muted">
+            <span className="rounded-full bg-ground px-2 py-0.5 text-xs font-bold uppercase text-muted">
               Inactive
             </span>
           ) : null}

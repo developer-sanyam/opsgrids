@@ -3,7 +3,6 @@ import { useCallback } from "react";
 import { getCampaigns } from "@/api/client";
 import { useAsync } from "@opsgrids/client";
 import {
-  FileTextIcon,
   HomeIcon,
   LifeBuoyIcon,
   MegaphoneIcon,
@@ -24,7 +23,9 @@ const PINNED: NavEntry[] = [
  * This product's navigation, for `AppShell`'s `nav`/`pinned` props.
  *
  * The Campaigns count is real (`total` from the same paged envelope the Campaigns screen reads),
- * not a literal `"14"` that never moves. It is simply omitted while the count is loading or
+ * not a literal `"14"` that never moves. Reports is not listed: the screen is a placeholder, and a
+ * nav entry that opens one is a promise the product cannot keep yet. `/reports` still answers
+ * (with the placeholder) for anyone who has the link. It is simply omitted while the count is loading or
  * failed to load, rather than showing a stale or fabricated number.
  */
 export function useNavGroups(): { groups: NavGroup[]; pinned: NavEntry[] } {
@@ -50,7 +51,6 @@ export function useNavGroups(): { groups: NavGroup[]; pinned: NavEntry[] } {
     {
       title: "Insights",
       items: [
-        { to: "/reports", label: "Reports", icon: FileTextIcon },
         { to: "/automations", label: "Automations", icon: SparkIcon },
         { to: "/integrations", label: "Integrations", icon: PlugIcon },
       ],

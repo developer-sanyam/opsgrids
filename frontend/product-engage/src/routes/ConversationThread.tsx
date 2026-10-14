@@ -60,7 +60,7 @@ function MessageBubble({ message }: { message: ConversationMessageOut }) {
           <p className="mb-1 text-xs font-semibold opacity-80">{message.profile_name}</p>
         ) : null}
         <p className="whitespace-pre-wrap break-words">{message.body}</p>
-        <p className={`mt-1 text-[0.7rem] ${mine ? "text-white/75" : "text-faint"}`}>
+        <p className={`mt-1 text-xs ${mine ? "text-white/75" : "text-faint"}`}>
           {formatInstant(message.occurred_at)}
         </p>
       </div>
@@ -205,7 +205,10 @@ function Composer({
       }
     >
       <form
-        className="flex flex-col gap-2"
+        // Pinned above the bottom navigation on a phone, so the reply box stays under the thumb
+        // however long the thread is. From `lg` it is an ordinary block under the thread.
+        className="sticky z-10 -mx-4 flex flex-col gap-2 border-t border-line bg-surface px-4 py-2 lg:static lg:mx-0 lg:border-0 lg:p-0"
+        style={{ bottom: "var(--shell-bottom-inset)" }}
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
@@ -281,7 +284,7 @@ export function ConversationThread({
   }
 
   return (
-    <Card className="flex h-full flex-col gap-4 p-4 sm:p-5">
+    <Card className="flex h-full flex-col gap-4 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-3">
         <div className="flex items-center gap-2">
           <span className="font-mono text-sm text-ink">{conversation.wa_address}</span>

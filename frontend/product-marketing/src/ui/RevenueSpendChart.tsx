@@ -145,7 +145,7 @@ export function RevenueSpendChart({ series, currency }: RevenueSpendChartProps) 
           </div>
         ) : null}
 
-        <div className="mt-2 flex justify-between px-0.5 text-[0.7rem] font-medium text-faint">
+        <div className="mt-2 flex justify-between px-0.5 text-xs font-medium text-faint">
           {series.map((p) => (
             <span key={p.label} className="tnum">
               {p.label}

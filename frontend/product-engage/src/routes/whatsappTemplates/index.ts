@@ -26,7 +26,7 @@ export const routes: AppRoute[] = [
   {
     path: "/whatsapp/templates",
     element: createElement(TemplatesPage),
-    title: "WhatsApp Templates",
+    title: "WhatsApp templates",
     nav: { label: "Templates", group: "WhatsApp" },
   },
   {
@@ -36,11 +36,11 @@ export const routes: AppRoute[] = [
       what: "the template editor",
       children: createElement(TemplateWizardPage),
     }),
-    title: "Create WhatsApp Template",
+    title: "Create WhatsApp template",
   },
   {
     path: "/whatsapp/templates/:id",
     element: createElement(TemplateDetailPage),
-    title: "WhatsApp Template",
+    title: "WhatsApp template",
   },
 ];

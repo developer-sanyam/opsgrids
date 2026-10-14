@@ -21,6 +21,14 @@ interface DealFormDialogProps {
   onSaved: (deal: Deal) => void;
 }
 
+/** The currencies a deal is quoted in; a deal already in another one keeps it as a choice. */
+const CURRENCIES = ["INR", "USD", "EUR", "GBP", "AED", "SGD"];
+
+function currencyOptions(current: string): { value: string; label: string }[] {
+  const codes = CURRENCIES.includes(current) ? CURRENCIES : [current, ...CURRENCIES];
+  return codes.map((code) => ({ value: code, label: code }));
+}
+
 /**
  * Create or edit a deal — `POST /deals` / `PATCH /deals/{id}`. `PATCH` carries no `stage`: a
  * stage move only ever goes through `POST /deals/{id}/stage` (the kanban drag, or the stage
@@ -197,11 +205,11 @@ export function DealFormDialog({
           required
           {...maybe("error", valueError ?? save.fieldErrors.value_minor)}
         />
-        <TextField
+        <Select
           label="Currency"
           value={currency}
-          onChange={(e) => setCurrency(e.target.value.toUpperCase())}
-          maxLength={3}
+          onChange={(e) => setCurrency(e.target.value)}
+          options={currencyOptions(currency)}
           {...maybe("error", save.fieldErrors.currency)}
         />
         <TextField

@@ -161,8 +161,8 @@ function MyRequestsList() {
                 onClick={() => setScope(t.value)}
                 className={
                   scope === t.value
-                    ? "rounded-full bg-surface px-3 h-8 text-xs font-semibold text-ink shadow-card"
-                    : "rounded-full px-3 h-8 text-xs font-semibold text-muted hover:text-ink"
+                    ? "hit-44 relative rounded-full bg-surface px-3 h-8 text-xs font-semibold text-ink shadow-card"
+                    : "hit-44 relative rounded-full px-3 h-8 text-xs font-semibold text-muted hover:text-ink"
                 }
               >
                 {t.label}

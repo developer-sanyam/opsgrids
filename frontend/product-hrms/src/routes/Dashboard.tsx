@@ -1,6 +1,6 @@
 import { useCallback, useMemo } from "react";
 import type { CSSProperties } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 import { getAllEmployees, getAttendanceDaySummary } from "@/api/client";
 import { getOrgUnitNameById } from "@/api/orgUnits";
@@ -26,7 +26,7 @@ import {
   WorkforceMix,
 } from "@/ui";
 import type { KpiTone, MiniStat } from "@/ui";
-import { CalendarCheckIcon, CalendarIcon, CheckSquareIcon, PlusIcon, UsersIcon } from "@opsgrids/ui";
+import { ArrowRightIcon, CalendarCheckIcon, CalendarIcon, CheckSquareIcon, PlusIcon, UsersIcon } from "@opsgrids/ui";
 
 /** The real clock — never a frozen fixture date. */
 function todayISO(): string {
@@ -275,7 +275,20 @@ export function DashboardPage() {
             <ErrorState message={employees.error.message} />
           ) : null}
           {employees.status === "success" ? (
-            <EmployeesPanel employees={items} orgUnitMap={orgUnitMap} />
+            <>
+              {/* The directory has its own page, built for a phone; a second, cramped copy of it
+               *  on the dashboard is what this link replaces below 768px. */}
+              <Link
+                to="/employees"
+                className="relative hit-44 inline-flex w-fit items-center gap-2 text-sm font-semibold text-accent hover:text-accent-strong md:hidden"
+              >
+                View all employees
+                <ArrowRightIcon className="size-4" />
+              </Link>
+              <div className="hidden md:block">
+                <EmployeesPanel employees={items} orgUnitMap={orgUnitMap} />
+              </div>
+            </>
           ) : null}
         </Card>
       </section>

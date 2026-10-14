@@ -113,7 +113,7 @@ export function CompanyDetailPage() {
     <div className="rise flex flex-col gap-6">
       <Link
         to="/companies"
-        className="inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors"
+        className="relative hit-44 inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors"
       >
         <ArrowLeftIcon className="size-4" />
         Back to companies

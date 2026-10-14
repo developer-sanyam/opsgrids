@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { moveDealStage } from "@/api/client";
@@ -9,6 +9,9 @@ import { isOpen, STAGES } from "@/data/stages";
 import { formatMoney, Avatar, CalendarIcon, GripIcon, Select, cn } from "@opsgrids/ui";
 import { problemMessage, useMutation } from "@opsgrids/client";
 import { formatDate } from "@/lib/format";
+
+/** `gap-4` between columns, in px. */
+const COLUMN_GAP = 16;
 
 const STAGE_OPTIONS = STAGES.map((s) => ({ value: s.stage, label: s.label }));
 
@@ -50,7 +53,7 @@ function DealCard({
         moving && "opacity-70",
       )}
     >
-      <Link to={`/deals/${deal.id}`} className="flex items-start gap-2">
+      <Link to={`/deals/${deal.id}`} className="relative hit-44 flex items-start gap-2">
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="truncate text-xs font-semibold text-muted">
             {companyName(companies, deal.company_id)}
@@ -79,7 +82,7 @@ function DealCard({
           <Avatar name={ownerName(owners, deal.owner_id)} size="sm" />
           <span className="truncate text-xs font-medium text-muted">{ownerName(owners, deal.owner_id)}</span>
         </span>
-        <span className="tnum text-[0.7rem] font-semibold text-faint">{deal.probability}%</span>
+        <span className="tnum text-xs font-semibold text-faint">{deal.probability}%</span>
       </div>
 
       {canMove ? (
@@ -153,8 +156,33 @@ export function KanbanBoard({ groups, canMove, onMoved, onMoveFailed, reload }: 
     void move.mutate({ deal, stage: targetStage });
   }
 
+  const scroller = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState({ first: 1, last: 1 });
+  const measure = useCallback(() => {
+    const node = scroller.current;
+    const column = node?.querySelector("section");
+    if (!node || !column) return;
+    const step = column.getBoundingClientRect().width + COLUMN_GAP;
+    const first = Math.min(STAGES.length, Math.floor((node.scrollLeft + COLUMN_GAP) / step) + 1);
+    const last = Math.min(STAGES.length, Math.max(first, Math.floor((node.scrollLeft + node.clientWidth) / step)));
+    setVisible((current) => (current.first === first && current.last === last ? current : { first, last }));
+  }, []);
+  useEffect(() => {
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [measure]);
+  const cue =
+    visible.first === visible.last
+      ? `Stage ${visible.first} of ${STAGES.length}`
+      : `Stages ${visible.first}–${visible.last} of ${STAGES.length}`;
+
   return (
-    <div className="overflow-x-auto pb-2">
+    <div className="flex flex-col gap-2">
+      <p className="text-xs font-medium text-muted md:hidden" data-testid="stage-cue">
+        {cue} · swipe for the rest
+      </p>
+      <div ref={scroller} onScroll={measure} className="snap-x snap-mandatory overflow-x-auto pb-2 md:snap-none">
       <div className="flex gap-4" style={{ minWidth: "min-content" }}>
         {STAGES.map((meta) => {
           const deals = local[meta.stage];
@@ -185,7 +213,7 @@ export function KanbanBoard({ groups, canMove, onMoved, onMoveFailed, reload }: 
                   : undefined
               }
               className={cn(
-                "flex w-[264px] shrink-0 flex-col rounded-card bg-ground/60 p-2.5 transition-colors",
+                "flex w-[264px] shrink-0 snap-start scroll-ml-2 flex-col rounded-card bg-ground/60 p-2.5 transition-colors",
                 dragOverStage === meta.stage && "bg-accent-soft/60 ring-2 ring-accent",
               )}
             >
@@ -196,7 +224,7 @@ export function KanbanBoard({ groups, canMove, onMoved, onMoveFailed, reload }: 
                   aria-hidden
                 />
                 <span className="text-sm font-bold text-ink">{meta.label}</span>
-                <span className="grid h-5 min-w-5 place-items-center rounded-full bg-surface px-1.5 text-[0.7rem] font-bold text-muted tnum">
+                <span className="grid h-5 min-w-5 place-items-center rounded-full bg-surface px-1.5 text-xs font-bold text-muted tnum">
                   {deals.length}
                 </span>
                 <span className="ml-auto tnum text-xs font-semibold text-muted">
@@ -231,6 +259,7 @@ export function KanbanBoard({ groups, canMove, onMoved, onMoveFailed, reload }: 
             </section>
           );
         })}
+      </div>
       </div>
     </div>
   );

@@ -119,20 +119,20 @@ describe("populated", () => {
     expect(screen.getByRole("link", { name: "order_shipped" })).toBeTruthy();
   });
 
-  it("offers Create Template to someone who may write templates", async () => {
+  it("offers Create template to someone who may write templates", async () => {
     vi.spyOn(email, "listEmailTemplates").mockResolvedValue(page([SHIPPED]));
     const user = userEvent.setup();
     renderPage();
 
-    await user.click(await screen.findByRole("button", { name: "Create Template" }));
+    await user.click(await screen.findByRole("button", { name: "Create template" }));
     expect(screen.getByText("New template page")).toBeTruthy();
   });
 
-  it("hides Create Template from someone who may not", async () => {
+  it("hides Create template from someone who may not", async () => {
     vi.spyOn(email, "listEmailTemplates").mockResolvedValue(page([SHIPPED]));
     renderPage(["engage.email.template.read:ORG"]);
     await screen.findByRole("link", { name: "order_shipped" });
-    expect(screen.queryByRole("button", { name: "Create Template" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create template" })).toBeNull();
   });
 });
 
@@ -141,7 +141,7 @@ describe("empty", () => {
     vi.spyOn(email, "listEmailTemplates").mockResolvedValue(page([]));
     renderPage();
     expect(await screen.findByText("No email templates yet")).toBeTruthy();
-    expect(screen.getAllByRole("button", { name: "Create Template" }).length).toBe(2);
+    expect(screen.getAllByRole("button", { name: "Create template" }).length).toBe(2);
   });
 });
 

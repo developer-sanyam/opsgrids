@@ -91,7 +91,7 @@ function StepTile({ step }: { step: SetupStepOut }) {
       <p className="flex-1 text-sm text-ink-soft">{step.detail}</p>
       <Link
         to={step.link}
-        className="inline-flex h-9 w-fit items-center gap-1.5 rounded-full px-3 text-sm font-semibold text-accent-ink transition-colors hover:bg-accent-soft focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        className="relative hit-44 inline-flex h-9 w-fit items-center gap-1.5 rounded-full px-3 text-sm font-semibold text-accent-ink transition-colors hover:bg-accent-soft focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
         {ctaFor(step.status, title)}
         <ArrowRightIcon className="size-4" />

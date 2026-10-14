@@ -48,7 +48,7 @@ export const routes: AppRoute[] = [
   {
     path: "whatsapp/settings",
     element: page(SettingsPage),
-    title: "WhatsApp Settings",
+    title: "WhatsApp settings",
     nav: { label: "Settings", group: "WhatsApp" },
   },
 ];

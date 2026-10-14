@@ -59,7 +59,7 @@ function buildListColumns(
         <div className="flex flex-col leading-tight">
           <Link
             to={`/deals/${d.id}`}
-            className="font-semibold text-ink hover:text-accent transition-colors"
+            className="relative hit-44 font-semibold text-ink hover:text-accent transition-colors"
           >
             {d.name}
           </Link>
@@ -196,12 +196,12 @@ export function DealsPage() {
                 aria-selected={view === "board"}
                 onClick={() => setView("board")}
                 className={cn(
-                  "inline-flex h-9 items-center gap-1.5 rounded-full px-3.5 text-sm font-semibold transition-colors",
+                  "inline-flex h-11 items-center gap-1.5 rounded-full px-3.5 sm:h-9 text-sm font-semibold transition-colors",
                   view === "board" ? "bg-accent text-white" : "text-muted hover:text-ink",
                 )}
               >
                 <KanbanIcon className="size-4" />
-                <span className="hidden sm:inline">Board</span>
+                <span className="sr-only sm:not-sr-only">Board</span>
               </button>
               <button
                 type="button"
@@ -209,12 +209,12 @@ export function DealsPage() {
                 aria-selected={view === "list"}
                 onClick={() => setView("list")}
                 className={cn(
-                  "inline-flex h-9 items-center gap-1.5 rounded-full px-3.5 text-sm font-semibold transition-colors",
+                  "inline-flex h-11 items-center gap-1.5 rounded-full px-3.5 sm:h-9 text-sm font-semibold transition-colors",
                   view === "list" ? "bg-accent text-white" : "text-muted hover:text-ink",
                 )}
               >
                 <LayoutIcon className="size-4" />
-                <span className="hidden sm:inline">List</span>
+                <span className="sr-only sm:not-sr-only">List</span>
               </button>
             </div>
             <ImportExportButton

@@ -62,7 +62,7 @@ function buildColumns(
           <div className="flex min-w-0 flex-col leading-tight">
             <Link
               to={`/companies/${c.id}`}
-              className="truncate font-semibold text-ink hover:text-accent transition-colors"
+              className="relative hit-44 truncate font-semibold text-ink hover:text-accent transition-colors"
             >
               {c.name}
             </Link>
@@ -103,6 +103,7 @@ function buildColumns(
     {
       key: "owner",
       header: "Owner",
+      mobile: "hidden",
       cellClassName: "hidden sm:table-cell",
       headerClassName: "hidden sm:table-cell",
       render: (c) => (

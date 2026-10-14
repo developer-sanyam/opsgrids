@@ -92,7 +92,7 @@ function BackLink() {
   return (
     <Link
       to="/automations"
-      className="inline-flex w-fit items-center gap-2 text-sm font-semibold text-muted transition-colors hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      className="relative hit-44 inline-flex w-fit items-center gap-2 text-sm font-semibold text-muted transition-colors hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
     >
       <ArrowLeftIcon className="size-4" />
       All automations
@@ -124,6 +124,9 @@ function BuilderView({ automation, initial }: { automation: AutomationDetailOut 
   const [confirmFailure, setConfirmFailure] = useState<string | null>(null);
   const [tab, setTab] = useState<"flow" | "runs">("flow");
   const [discarding, setDiscarding] = useState(false);
+  /* A new automation starts empty, so "Choose the event" is not a mistake yet; it is a blank. The
+     step-level problems show once the person has touched the flow or tried to save. */
+  const [touched, setTouched] = useState(automation !== null);
 
   const readOnly = status !== "draft";
   const dirty = name !== saved.name || description !== saved.description || !graphsEqual(graph, saved.graph);
@@ -154,6 +157,7 @@ function BuilderView({ automation, initial }: { automation: AutomationDetailOut 
   const localProblems = useMemo(() => validateGraph(graph, templates.catalogue), [graph, templates.catalogue]);
   const allProblems = useMemo(() => [...serverProblems, ...localProblems], [serverProblems, localProblems]);
   const grouped = useMemo(() => groupProblems(allProblems), [allProblems]);
+  const groupedServer = useMemo(() => groupProblems(serverProblems), [serverProblems]);
   const blockers = blockingProblems([...grouped.general, ...Object.values(grouped.byNode).flat()]);
   const nameMissing = name.trim() === "";
   const blockerCount = blockers.length + (nameMissing ? 1 : 0);
@@ -161,6 +165,7 @@ function BuilderView({ automation, initial }: { automation: AutomationDetailOut 
 
   function edit(next: Graph) {
     setGraph(next);
+    setTouched(true);
     /* The service's problems described the graph as it was last saved; once it changes they may no
        longer be true, and the live checks above take over until the next save. */
     setServerProblems([]);
@@ -207,6 +212,7 @@ function BuilderView({ automation, initial }: { automation: AutomationDetailOut 
   /* Save the draft as it stands. Returns the automation's id, or null if the service said no. The
      form keeps everything that was entered either way. */
   async function persist(): Promise<string | null> {
+    setTouched(true);
     if (nameMissing) {
       setNameError("Give the automation a name.");
       nameRef.current?.focus();
@@ -392,7 +398,7 @@ function BuilderView({ automation, initial }: { automation: AutomationDetailOut 
                 selectedId={selectedId}
                 numbers={numbers}
                 triggerLabels={triggerLabels}
-                problemsByNode={grouped.byNode}
+                problemsByNode={touched ? grouped.byNode : groupedServer.byNode}
                 readOnly={readOnly}
                 focusRequest={focusRequest}
                 onSelect={setSelectedId}
@@ -441,7 +447,7 @@ function BuilderView({ automation, initial }: { automation: AutomationDetailOut 
                       <li>
                         <button
                           type="button"
-                          className="text-left text-accent-ink underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                          className="relative hit-44 text-left text-accent-ink underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                           onClick={() => nameRef.current?.focus()}
                         >
                           Give the automation a name.
@@ -458,7 +464,7 @@ function BuilderView({ automation, initial }: { automation: AutomationDetailOut 
                           <li key={`${id}-${p.code}-${p.message}`}>
                             <button
                               type="button"
-                              className="text-left text-accent-ink underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                              className="relative hit-44 text-left text-accent-ink underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
                               onClick={() => {
                                 setSelectedId(id);
                                 focusStep(id);
