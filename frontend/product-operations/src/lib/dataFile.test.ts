@@ -1,3 +1,4 @@
+import { csvCell } from "@opsgrids/client";
 import { describe, expect, it } from "vitest";
 
 import type { ImportColumn } from "@/api/scan";
@@ -94,6 +95,20 @@ describe("export files are never formulas", () => {
     expect(guardCell("-5.250")).toBe("-5.250");
     expect(guardCell("-cmd|' /C calc'!A0")).toBe("'-cmd|' /C calc'!A0");
     expect(guardCell("plain")).toBe("plain");
+  });
+
+  it("applies the same rule as the shared client export", () => {
+    expect(guardCell("-1,200")).toBe("-1,200");
+    expect(guardCell("-1,20,000.50")).toBe("-1,20,000.50");
+    expect(guardCell("+SUM(A1:A2)")).toBe("'+SUM(A1:A2)");
+    expect(guardCell("+SUM()")).toBe("'+SUM()");
+    expect(guardCell("-,")).toBe("'-,");
+    expect(guardCell("-.")).toBe("'-.");
+    expect(guardCell("\t=1")).toBe("'\t=1");
+    expect(guardCell("\r=1")).toBe("'\r=1");
+    for (const value of ["=1+1", "+SUM()", "-1,200", "@x", "\tx", "\rx", "-1.2.3", "Acme"]) {
+      expect(guardCell(value)).toBe(csvCell(value).replace(/^"|"$/g, ""));
+    }
   });
 
   it("quotes only what needs it, after guarding", () => {
