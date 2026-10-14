@@ -143,7 +143,7 @@ class StuckChargeSweep:
             poll_interval=self._poll_interval,
             reclaim_after_seconds=self._reclaim_after.total_seconds(),
         )
-        wait = self._poll_interval
+        wait = min(self._poll_interval, self._max_backoff)
         while not self._stop_event.is_set():
             # The per-tick guard: in `payment-worker` this loop shares a process with the
             # consumers, and the supervisor there ends the process when any loop ends. A tick
@@ -161,7 +161,7 @@ class StuckChargeSweep:
                 wait = min(wait * 2, self._max_backoff)
                 continue
             self.consecutive_failures = 0
-            wait = self._poll_interval
+            wait = min(self._poll_interval, self._max_backoff)
             if report.acted or report.failed:
                 log.info(
                     "payment.stuck_charge.sweep.pass",

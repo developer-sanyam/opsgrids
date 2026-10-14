@@ -128,3 +128,14 @@ class TestTickFailureIsCaughtAndBackedOff:
         # final clean tick is empty too, so it resumes the idle ladder exactly where the
         # first tick left it (failures neither grow nor reset idle).
         assert sleeps == [5.0, 5.0, 10.0, 10.0]
+
+    async def test_first_retry_is_capped_when_the_poll_interval_exceeds_the_cap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Backoff starts at min(poll_interval, max_backoff), not at the poll interval: a long
+        poll interval must not make the first retry of a transient error equally long."""
+        sweep = _sweep(poll_interval=3600.0, max_backoff=30.0)
+        sleeps = await _run_and_collect(
+            sweep, monkeypatch, [RuntimeError("blip"), RuntimeError("blip"), SweepReport()]
+        )
+        assert sleeps == [30.0, 30.0, 3600.0]

@@ -106,7 +106,7 @@ class Sweep:
 
     async def run(self) -> None:
         log.info("scheduler.sweep.started", poll_interval=self._poll_interval)
-        backoff = self._poll_interval
+        backoff = min(self._poll_interval, self._max_backoff)
         # Below poll_interval, max() clamps this to poll_interval every pass — i.e. no idle
         # backoff at all, the same opt-out `OutboxRelay.run()` documents.
         idle_cap = max(self._max_idle_interval, self._poll_interval)
@@ -125,7 +125,7 @@ class Sweep:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, self._max_backoff)
                 continue
-            backoff = self._poll_interval
+            backoff = min(self._poll_interval, self._max_backoff)
             if report.fired or report.skipped or report.failed or report.purged or report.parked:
                 log.info(
                     "scheduler.sweep.pass",
