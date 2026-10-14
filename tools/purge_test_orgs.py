@@ -150,6 +150,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from _db_common import database_label
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
@@ -1928,12 +1929,6 @@ def _default_settings() -> Settings:
     return cfg
 
 
-def _database_label(dsn: str) -> str:
-    """Where the tool is aimed, without the credentials: `host:port/database`."""
-    url = make_url(dsn)
-    return f"{url.host}:{url.port}/{url.database}"
-
-
 def _read_ids(paths: Iterable[Path]) -> list[uuid.UUID]:
     """Every id in every file given (a repeated `--keep-file` keeps all of them, not the last)."""
     found: list[uuid.UUID] = []
@@ -1972,7 +1967,7 @@ def main(
     cfg = cfg or _default_settings()
     dsn = cfg.admin_dsn
     host = make_url(dsn).host
-    database = _database_label(dsn)
+    database = database_label(dsn)
 
     if args.apply:
         problems = check_apply_gates(

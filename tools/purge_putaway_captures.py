@@ -61,8 +61,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from _db_common import database_label
 from sqlalchemy import text
-from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -93,12 +93,6 @@ def _params(organization_id: uuid.UUID | None, **extra: Any) -> dict[str, Any]:
     if organization_id:
         params["org"] = organization_id
     return params
-
-
-def _database_label(dsn: str) -> str:
-    """Where the tool is pointed, without the credentials: `host:port/database`."""
-    url = make_url(dsn)
-    return f"{url.host}:{url.port}/{url.database}"
 
 
 async def _cutoff(conn: Any, retention_days: int) -> datetime:
@@ -260,7 +254,7 @@ def main(argv: list[str] | None = None) -> int:
             schema=cfg.db_schema,
             apply=args.apply,
             organization_id=args.organization_id,
-            database=_database_label(dsn),
+            database=database_label(dsn),
         )
     )
     return 0

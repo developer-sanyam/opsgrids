@@ -1055,7 +1055,7 @@ async def test_a_refusal_after_an_organisation_committed_is_a_failure_with_a_sum
 
 
 def test_the_database_label_never_carries_the_password() -> None:
-    label = purge._database_label("postgresql+asyncpg://opsgrids_admin:hunter2@db:5432/opsgrids")
+    label = purge.database_label("postgresql+asyncpg://opsgrids_admin:hunter2@db:5432/opsgrids")
     assert label == "db:5432/opsgrids" and "hunter2" not in label
 
 
