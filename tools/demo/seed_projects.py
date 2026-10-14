@@ -24,19 +24,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 import uuid
-from datetime import date
 from typing import TYPE_CHECKING, Any
+
+from _common import bootstrap, date_from_iso
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from platform_core.auth import ScopeContext
-
-
-def _date(s: str) -> date:
-    return date.fromisoformat(s)
 
 
 # ------------------------------------------------------------------ members (ref, name, role)
@@ -393,8 +389,8 @@ async def seed(session: AsyncSession, ctx: ScopeContext) -> dict[str, int]:
             phase=phase,
             health=health,
             progress_pct=progress,
-            start_date=_date(start),
-            target_date=_date(target),
+            start_date=date_from_iso(start),
+            target_date=date_from_iso(target),
             budget_minor=budget_rupees * 100,
             spent_minor=spent_rupees * 100,
             currency="INR",
@@ -440,7 +436,7 @@ async def seed(session: AsyncSession, ctx: ScopeContext) -> dict[str, int]:
             project_id=project.id,
             title=title,
             owner_id=owner.id if owner else None,
-            due_date=_date(due),
+            due_date=date_from_iso(due),
             status=status,
             progress_pct=progress,
         )
@@ -465,7 +461,7 @@ async def seed(session: AsyncSession, ctx: ScopeContext) -> dict[str, int]:
             assignee_id=assignee.id if assignee else None,
             stage=stage,
             priority=priority,
-            due_date=_date(due) if due else None,
+            due_date=date_from_iso(due) if due else None,
             points=points,
         )
         existing_tasks.add((project.id, title))
@@ -475,15 +471,6 @@ async def seed(session: AsyncSession, ctx: ScopeContext) -> dict[str, int]:
 
 
 # ------------------------------------------------------------------ standalone entry point
-
-
-def _bootstrap() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
-    """Parse argv and put the service dir on the import path — sync, before the event loop."""
-    from pathlib import Path
-
-    service_dir = Path(sys.argv[1]).resolve()
-    sys.path.insert(0, str(service_dir))
-    return uuid.UUID(sys.argv[2]), uuid.UUID(sys.argv[3]), uuid.UUID(sys.argv[4])
 
 
 async def _main(
@@ -529,5 +516,5 @@ async def _main(
 
 
 if __name__ == "__main__":
-    _org, _user, _membership = _bootstrap()
+    _org, _user, _membership = bootstrap()
     asyncio.run(_main(_org, _user, _membership))

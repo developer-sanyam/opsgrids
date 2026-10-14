@@ -44,14 +44,12 @@ from collections.abc import Awaitable, Callable
 from datetime import date
 from typing import TYPE_CHECKING, Any
 
+from _common import date_from_iso
+
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from platform_core.auth import ScopeContext
-
-
-def _date(s: str) -> date:
-    return date.fromisoformat(s)
 
 
 def person_uuid(org_id: uuid.UUID, ref: str) -> uuid.UUID:
@@ -647,8 +645,8 @@ async def seed_project(session: AsyncSession, ctx: ScopeContext) -> dict[str, in
             spent_minor=spent_minor,
             currency="USD",
             owner_id=owner.id if owner else None,
-            start_date=_date(start),
-            due_date=_date(due),
+            start_date=date_from_iso(start),
+            due_date=date_from_iso(due),
             billable=billable,
             open_tasks=open_tasks,
         )
@@ -674,7 +672,7 @@ async def seed_project(session: AsyncSession, ctx: ScopeContext) -> dict[str, in
             estimate_hours=estimate,
             priority=priority,
             tags=tags,
-            due_date=_date(due) if due else None,
+            due_date=date_from_iso(due) if due else None,
         )
         counts["tasks"] += 1
 

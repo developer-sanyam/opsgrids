@@ -25,10 +25,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
+
+from _common import bootstrap, date_from_iso, datetime_from_iso
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,10 +37,6 @@ if TYPE_CHECKING:
     from platform_core.auth import ScopeContext
 
 DEMO_NOW = datetime(2026, 8, 24, 18, 0, tzinfo=UTC)
-
-
-def _dt(s: str) -> datetime:
-    return datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
 # ------------------------------------------------------------------ assets (tag, name, type, ...)
@@ -1025,8 +1022,8 @@ async def seed(session: AsyncSession, ctx: ScopeContext) -> dict[str, int]:
             owner=owner,
             location=location,
             serial=serial,
-            purchased_at=_date(purchased),
-            warranty_expires_at=_date(warranty),
+            purchased_at=date_from_iso(purchased),
+            warranty_expires_at=date_from_iso(warranty),
             cost_minor=cost,
             cost_currency="INR",
         )
@@ -1074,10 +1071,10 @@ async def seed(session: AsyncSession, ctx: ScopeContext) -> dict[str, int]:
             sla_due_at=due,
             sla_breached=spec["sla_state"] == "breached",
             sla_minutes_remaining=minutes,
-            created_at=_dt(spec["created_at"]),
-            updated_at=_dt(spec["updated_at"]),
+            created_at=datetime_from_iso(spec["created_at"]),
+            updated_at=datetime_from_iso(spec["updated_at"]),
             worklog=[
-                {"author": a, "body": b, "kind": k, "at": _dt(at)}
+                {"author": a, "body": b, "kind": k, "at": datetime_from_iso(at)}
                 for (a, b, k, at) in spec["worklog"]
             ],
         )
@@ -1097,28 +1094,15 @@ async def seed(session: AsyncSession, ctx: ScopeContext) -> dict[str, int]:
             subject=subject,
             status=status,
             assignee=assignee,
-            created_at=_dt(created),
-            updated_at=_dt(updated),
+            created_at=datetime_from_iso(created),
+            updated_at=datetime_from_iso(updated),
         )
         counts["requests"] += 1
 
     return counts
 
 
-def _date(s: str) -> date:
-    return date.fromisoformat(s)
-
-
 # ------------------------------------------------------------------ standalone entry point
-
-
-def _bootstrap() -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
-    """Parse argv and put the service dir on the import path — sync, before the event loop."""
-    from pathlib import Path
-
-    service_dir = Path(sys.argv[1]).resolve()
-    sys.path.insert(0, str(service_dir))
-    return uuid.UUID(sys.argv[2]), uuid.UUID(sys.argv[3]), uuid.UUID(sys.argv[4])
 
 
 async def _main(
@@ -1164,5 +1148,5 @@ async def _main(
 
 
 if __name__ == "__main__":
-    _org, _user, _membership = _bootstrap()
+    _org, _user, _membership = bootstrap()
     asyncio.run(_main(_org, _user, _membership))
