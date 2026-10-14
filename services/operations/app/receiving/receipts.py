@@ -64,20 +64,12 @@ from app.receiving.schemas import GoodsReceiptIn, ReceiptLineIn
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
 from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 
 EVT_STOCK_RECEIVED = "operations.stock.received"
 
 #: A PO in one of these states takes a goods receipt.
 RECEIVABLE_PO_STATUSES = ("approved", "partially_received")
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 def _field_error(index: int, name: str, code: str, message: str) -> ValidationProblem:
@@ -623,7 +615,7 @@ def _emit_po_received(
             "unmatched_skus": unmatched,
             "matched_lines": matched,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -814,7 +806,7 @@ def _stage(
             "received_on": receipt.received_on.isoformat(),
             **summary,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 

@@ -28,6 +28,7 @@ import dns.exception
 import dns.resolver
 
 from app import domain as _rules
+from platform_core.dns import answer_text
 from platform_core.logging import get_logger
 
 log = get_logger("notification.dns_check")
@@ -70,21 +71,7 @@ class DnsPythonResolver:
             # name is logged, never its message, which can echo the input back.
             log.info("dns.lookup_failed", host=host, rtype=rtype, reason=type(exc).__name__)
             return []
-        return [_answer_text(rdata) for rdata in answer]
-
-
-def _answer_text(rdata: Any) -> str:
-    """One published value as the customer pasted it.
-
-    A TXT rdata carries `strings` because DNS caps a single character-string at 255 bytes and a
-    2048-bit DKIM key is roughly twice that — the record is published in chunks and the value is
-    their concatenation. Reading `to_text()` instead would hand back `"chunk one" "chunk two"`,
-    quotes and separator included, which matches nothing the customer was shown.
-    """
-    strings: tuple[bytes, ...] | None = getattr(rdata, "strings", None)
-    if strings is not None:
-        return b"".join(strings).decode("utf-8", "replace")
-    return str(rdata.to_text())
+        return [answer_text(rdata) for rdata in answer]
 
 
 def _default_resolver() -> Resolver:

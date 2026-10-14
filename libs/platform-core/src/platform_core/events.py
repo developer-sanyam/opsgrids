@@ -18,7 +18,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 import aio_pika
 from sqlalchemy import DateTime, Integer, String, Text, func, select
@@ -28,6 +28,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import Mapped, mapped_column
 
 from platform_core.logging import correlation_id_ctx, get_logger
+
+if TYPE_CHECKING:
+    from platform_core.auth import ScopeContext
 
 log = get_logger("events")
 
@@ -187,6 +190,34 @@ def build_envelope(row: Any, *, producer: str) -> dict[str, Any]:
         "schema_uri": f"opsgrids://contracts/{row.event_type}/v{row.event_version}",
         "payload": row.payload,
     }
+
+
+def actor_for(ctx: ScopeContext) -> dict[str, Any]:
+    """The `actor` an event published on a user's behalf carries: the user, and the membership
+    they acted through (`None` when the token names none — an operator or service principal)."""
+    return {
+        "type": "user",
+        "id": str(ctx.principal.sub),
+        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
+    }
+
+
+def parse_envelope_dt(raw: Any, log_event: str) -> datetime:
+    """A timestamp read off an event envelope or payload, falling back to "now".
+
+    For fields that are display/debugging only, or that a handler must not dead-letter an
+    otherwise-good event over: absent or falsy is "now", and so is a malformed value, which is
+    logged as a warning under `log_event` (carrying at most the first 100 characters of `raw`)
+    rather than raised. A consumer for which a timestamp is load-bearing and a bad one an error
+    does not belong here.
+    """
+    if not raw:
+        return datetime.now(UTC)
+    try:
+        return datetime.fromisoformat(raw)
+    except (TypeError, ValueError):
+        log.warning(log_event, raw=str(raw)[:100])
+        return datetime.now(UTC)
 
 
 def event_schema_path(event_type: str, version: int, *, contracts_root: Path) -> Path:

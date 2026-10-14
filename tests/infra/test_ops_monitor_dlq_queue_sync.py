@@ -14,12 +14,10 @@ file inventing a second naming convention just for one service.
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
-from typing import Any
 
-import yaml
+from _helpers import load_compose, memory_budget_json
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = REPO_ROOT / "infrastructure/edge/compose.prod.yml"
@@ -30,11 +28,6 @@ from platform_core.ops_monitor.config import (  # noqa: E402
     CORE_DLQ_QUEUES,
     PROFILE_DLQ_QUEUES,
 )
-
-
-def _budget() -> dict[str, Any]:
-    result: dict[str, Any] = json.loads(MEMORY_BUDGET.read_text())
-    return result
 
 
 def _worker_services() -> dict[str, str | None]:
@@ -55,8 +48,8 @@ def _worker_services() -> dict[str, str | None]:
     means it must also come up whenever `split-workers` is the only active profile. Its own,
     non-`split-workers` profile is still `finance` — this test picks the first profile that is
     not `split-workers` for exactly that reason, rather than assuming exactly one profile."""
-    raw: dict[str, Any] = yaml.safe_load(COMPOSE_FILE.read_text())
-    budget = _budget()
+    raw = load_compose()
+    budget = memory_budget_json()
     workers: dict[str, str | None] = {}
     for name, spec in raw["services"].items():
         if spec.get("command") != ["./bin/worker"]:

@@ -59,7 +59,7 @@ from app.registry import ProductSnapshot, take_snapshot
 from app.schemas import BespokePriceIn, FeatureIn, PlanVersionOut, PriceIn, VersionCreateIn
 from platform_core.auth import Principal, require_operator, require_service_token
 from platform_core.config import ServiceSettings
-from platform_core.db import assert_tenant, get_session, set_tenant
+from platform_core.db import assert_tenant, constraint_name, get_session, set_tenant
 from platform_core.errors import ConflictProblem, NotFoundProblem, UnauthorizedProblem
 
 #: Every product key on this platform is this shape (hrms, crm, storefront, ...). Fix for
@@ -69,19 +69,6 @@ from platform_core.errors import ConflictProblem, NotFoundProblem, UnauthorizedP
 #: Console validates the same shape at its own boundary and percent-encodes it again before
 #: interpolating it into this URL — this is the second, independent layer, not the only one.
 _PRODUCT_KEY_PATTERN = r"^[a-z][a-z0-9_-]{0,39}$"
-
-
-def _integrity_error_constraint(exc: IntegrityError) -> str | None:
-    """The name of the constraint that actually fired, when the driver surfaces one. Same
-    extraction `leave.services`/`approval.services` use, for the identical
-    asyncpg-wraps-the-driver-exception reason."""
-    orig = exc.orig
-    name = getattr(orig, "constraint_name", None)
-    if name is not None:
-        return str(name)
-    cause = getattr(orig, "__cause__", None)
-    name = getattr(cause, "constraint_name", None)
-    return str(name) if name is not None else None
 
 
 router = APIRouter(
@@ -210,7 +197,7 @@ async def ensure_bespoke_price(
                     session, operator, plan, draft_payload, request=request
                 )
         except IntegrityError as exc:
-            if _integrity_error_constraint(exc) != "uq_plan_versions_plan_version":
+            if constraint_name(exc) != "uq_plan_versions_plan_version":
                 raise
             winner = await selectors.find_bespoke_version(
                 session,

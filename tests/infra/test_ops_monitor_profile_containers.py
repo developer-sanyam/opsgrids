@@ -13,10 +13,10 @@ check.
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
-from typing import Any
+
+from _helpers import memory_budget_json
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EDGE_DIR = REPO_ROOT / "infrastructure/edge"
@@ -30,12 +30,6 @@ from platform_core.ops_monitor.config import (  # noqa: E402
     PROFILE_DLQ_QUEUES,
 )
 
-
-def _budget() -> dict[str, Any]:
-    result: dict[str, Any] = json.loads(MEMORY_BUDGET.read_text())
-    return result
-
-
 #: `api_with_worker` (the worker-folding follow-up to the memory-headroom slice, 2026-09-24) is
 #: still an ordinary API container as far as ops-monitor's readiness check is concerned — the
 #: kind split is a *pricing* distinction (it costs a little more, folding a former `*-worker`
@@ -44,7 +38,7 @@ _API_KINDS = ("api", "api_with_worker")
 
 
 def _api_containers_by_profile() -> dict[str | None, list[str]]:
-    budget = _budget()
+    budget = memory_budget_json()
     by_profile: dict[str | None, list[str]] = {}
     for name, meta in budget["containers"].items():
         if meta.get("kind") not in _API_KINDS:
@@ -92,7 +86,7 @@ def test_every_dlq_queue_names_a_real_background_container() -> None:
     container binds it, only that something does; `split-workers` (the `*-worker` containers'
     rollback profile) is deliberately not in this set, since a queue must be covered by the
     *default* configuration, not only by the rollback."""
-    budget = _budget()
+    budget = memory_budget_json()
     background_profiles = {
         meta.get("profile")
         for meta in budget["containers"].values()

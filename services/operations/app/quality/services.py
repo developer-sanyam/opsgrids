@@ -67,7 +67,7 @@ from platform_core.errors import (
     NotFoundProblem,
     ValidationProblem,
 )
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 
 EVT_HOLD = "operations.quality.hold"
 EVT_RELEASED = "operations.quality.released"
@@ -76,14 +76,6 @@ EVT_DISPOSED = "operations.quality.disposed"
 
 #: Statuses in which the inspected quantity is still sitting in `QUALITY_HOLD`.
 _STOCK_HELD_STATUSES = ("PENDING", "HOLD", "REWORK")
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 def _hash(payload: dict[str, Any]) -> str:
@@ -408,7 +400,7 @@ def _publish(
         aggregate_type="inspection",
         aggregate_id=inspection.id,
         payload={**_event_base(ctx, inspection), **payload},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 

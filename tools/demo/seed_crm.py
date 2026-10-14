@@ -39,8 +39,9 @@ import json
 import subprocess
 import sys
 import uuid
-from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
+
+from _common import date_from_iso, datetime_from_iso
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,14 +53,6 @@ def demo_id(org_id: uuid.UUID, key: str) -> uuid.UUID:
     """The deterministic id for a fixture key — the same on both sides of the schema
     boundary, so the pipeline's plain-UUID references land on the book's rows."""
     return uuid.uuid5(uuid.NAMESPACE_URL, f"opsgrids-demo-crm:{org_id}:{key}")
-
-
-def _dt(s: str) -> datetime:
-    return datetime.fromisoformat(s.replace("Z", "+00:00"))
-
-
-def _date(s: str) -> date:
-    return date.fromisoformat(s)
 
 
 def rupees(n: int) -> int:
@@ -1054,7 +1047,7 @@ async def seed_customer(session: AsyncSession, ctx: ScopeContext) -> dict[str, i
             annual_revenue_minor=rupees(revenue),
             currency="INR",
             company_id=demo_id(org, key),
-            created_at=_dt(created),
+            created_at=datetime_from_iso(created),
         )
         counts["companies"] += 1
 
@@ -1072,9 +1065,9 @@ async def seed_customer(session: AsyncSession, ctx: ScopeContext) -> dict[str, i
             company_id=demo_id(org, company),
             status=status,
             owner_id=demo_id(org, owner),
-            last_activity_at=_dt(last_at),
+            last_activity_at=datetime_from_iso(last_at),
             contact_id=demo_id(org, key),
-            created_at=_dt(created),
+            created_at=datetime_from_iso(created),
         )
         counts["contacts"] += 1
 
@@ -1120,13 +1113,13 @@ async def seed_deal(session: AsyncSession, ctx: ScopeContext) -> dict[str, int]:
             stage=stage,
             owner_id=demo_id(org, owner),
             probability=prob,
-            close_date=_date(close),
+            close_date=date_from_iso(close),
             source=source,
             # Seeded verbatim: the fixture timeline is a sample of the touches, so the
             # clock cannot be reconstructed from it alone; log_activity only ever advances.
-            last_activity_at=_dt(last_at),
+            last_activity_at=datetime_from_iso(last_at),
             deal_id=demo_id(org, key),
-            created_at=_dt(created),
+            created_at=datetime_from_iso(created),
         )
         counts["deals"] += 1
 
@@ -1145,7 +1138,7 @@ async def seed_deal(session: AsyncSession, ctx: ScopeContext) -> dict[str, int]:
             company_id=demo_id(org, company),
             contact_id=demo_id(org, contact) if contact else None,
             owner_id=demo_id(org, owner),
-            occurred_at=_dt(occurred),
+            occurred_at=datetime_from_iso(occurred),
             direction=direction,
             activity_id=activity_id,
         )

@@ -80,7 +80,7 @@ from typing import Any
 
 import httpx
 import pytest
-from test_journey import _claims, auth_header, login
+from _http import auth_header, login, token_claims
 
 pytestmark = pytest.mark.e2e
 
@@ -430,7 +430,7 @@ class TestWave0ExitJourney:
         # A fresh sign-in, not the session's refresh: `ent` is computed at sign-in from what
         # product-service says the organization has, and this asserts what auth *put in*.
         owner.expire()
-        assert PRODUCT in _claims(owner.token)["ent"], (
+        assert PRODUCT in token_claims(owner.token)["ent"], (
             "the re-issued token does not carry the product just activated, so the gateway will "
             "refuse every HRMS request with 402 — auth is not seeing product-service's "
             "activations"
@@ -687,8 +687,9 @@ class TestWave0ExitJourney:
         # link would carry no `sref` and nothing would ever tell this client to refresh it.
         for key, person in cast.items():
             token = signed_in(gateway, wave0, key).token
-            assert _claims(token).get("sref") == person["employee_id"], (
-                f"{key}'s token carries sref={_claims(token).get('sref')!r}, not their employee "
+            sref = token_claims(token).get("sref")
+            assert sref == person["employee_id"], (
+                f"{key}'s token carries sref={sref!r}, not their employee "
                 f"id {person['employee_id']}. Every OWN-scoped check below would then resolve "
                 "against nothing."
             )
@@ -1405,7 +1406,7 @@ class TestUnlinkingIsTheRevocationShape:
         # Warm the token and prove it carries the link, so what follows is a change rather than
         # an observation about a token that never had one.
         assert bystander.get("/api/v1/approvals/inbox").status_code == 200
-        assert _claims(bystander.token).get("sref") == person["employee_id"]
+        assert token_claims(bystander.token).get("sref") == person["employee_id"]
         stale = bystander.headers  # captured before the unlink, deliberately not refreshed
         refreshes_before = bystander.refreshes
 
@@ -1433,9 +1434,9 @@ class TestUnlinkingIsTheRevocationShape:
             "the client never had to refresh, so the assertion above was about a token this "
             "session had already replaced"
         )
-        assert _claims(bystander.token).get("sref") is None, (
+        assert token_claims(bystander.token).get("sref") is None, (
             "the re-minted token still carries a subject reference for a membership with no "
-            f"link: {_claims(bystander.token).get('sref')!r}"
+            f"link: {token_claims(bystander.token).get('sref')!r}"
         )
 
         relinked = owner.patch(
@@ -1451,7 +1452,7 @@ class TestUnlinkingIsTheRevocationShape:
             "shape, and ADR-0008 §7 refuses to pay a tenant-wide refresh burst for it — the "
             "asymmetry is the whole reason step 7 links before anybody signs in."
         )
-        assert _claims(bystander.token).get("sref") is None, (
+        assert token_claims(bystander.token).get("sref") is None, (
             "the held token acquired the new link without being re-minted, which no mechanism in "
             "the platform can do — `sref` is stamped into the token at issue time"
         )
@@ -1459,7 +1460,7 @@ class TestUnlinkingIsTheRevocationShape:
         # It reaches the token at the next issue, which is what "within one access-token
         # lifetime" means when a client is not forced to refresh.
         bystander.expire()
-        assert _claims(bystander.token).get("sref") == person["employee_id"], (
+        assert token_claims(bystander.token).get("sref") == person["employee_id"], (
             "the restored link never reached a freshly minted token, so it did not take effect "
             "at all — `rotate_refresh` and sign-in both re-read the directory with no cache"
         )

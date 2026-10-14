@@ -19,27 +19,12 @@ which is the actual enforcement point.
 
 from __future__ import annotations
 
-from typing import Any
-
 from app.models import Project
-from platform_core.auth import register_scope_resolver
+from platform_core.auth import column_scope_resolver, register_scope_resolver
 
 PRODUCT = "pulseboard"
 
 
-class ProjectScopeResolver:
-    """The `ScopeResolver` for engagement rows. OWN is the owner; TEAM/LOCATION unsupported."""
-
-    def owner_column(self) -> Any:
-        return Project.owner_id
-
-    def team_column(self) -> Any | None:
-        return None
-
-    def location_column(self) -> Any | None:
-        return None
-
-
 def register() -> None:
     """Register the resolver for the `pulseboard` product. Idempotent — safe at import."""
-    register_scope_resolver(PRODUCT, ProjectScopeResolver)
+    register_scope_resolver(PRODUCT, column_scope_resolver(owner=Project.owner_id))

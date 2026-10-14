@@ -61,6 +61,7 @@ from functools import cache
 from pathlib import Path
 
 import pytest
+from _helpers import committing_dependency_names, python_files
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVICE_APP_ROOTS = sorted((REPO_ROOT / "services").glob("*/app"))
@@ -310,17 +311,6 @@ class FunctionInfo:
     import_aliases: dict[str, str] = field(default_factory=dict)
 
 
-def _python_files() -> list[Path]:
-    files: list[Path] = []
-    for app_root in [*SERVICE_APP_ROOTS, PLATFORM_CORE_ROOT]:
-        for path in app_root.rglob("*.py"):
-            parts = set(path.parts)
-            if "tests" in parts or "migrations" in parts or ".venv" in parts:
-                continue
-            files.append(path)
-    return files
-
-
 @cache
 def _parsed_once() -> tuple[tuple[Path, ast.Module], ...]:
     """Every service's and platform-core's source, parsed once per process.
@@ -332,7 +322,7 @@ def _parsed_once() -> tuple[tuple[Path, ast.Module], ...]:
     own dict, because `_findings_in` adds a probe module to the one it is given.
     """
     parsed = []
-    for path in _python_files():
+    for path in python_files([*SERVICE_APP_ROOTS, PLATFORM_CORE_ROOT]):
         try:
             parsed.append((path, ast.parse(path.read_text(), filename=str(path))))
         except SyntaxError:  # pragma: no cover - defensive; every file here must parse
@@ -400,32 +390,6 @@ def _safe_unparse(node: ast.AST) -> str | None:
 
 def _calls_in(node: ast.AST) -> list[ast.Call]:
     return [n for n in ast.walk(node) if isinstance(n, ast.Call)]
-
-
-def _opens_a_transaction_and_yields(node: ast.AsyncFunctionDef) -> bool:
-    """The same predicate `tests/infra/test_session_dependency_scope.py` uses to recognise
-    `get_tenant_session` and its per-service siblings (`get_operator_session`, the internal
-    routes' own `_bind`-and-`session.begin()` idiom's dependency-shaped cousins): an
-    async-generator FastAPI dependency that opens a transaction and yields inside it. Every
-    route that takes one of these has its **entire body** run inside that one transaction — no
-    explicit `with` block appears in the route's own source, because FastAPI's dependency
-    injection is what opens it. Missing this pattern would miss most of the real route-level D3
-    instances this scan exists to find."""
-    yields = any(isinstance(n, (ast.Yield, ast.YieldFrom)) for n in ast.walk(node))
-    begins = any(
-        isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "begin"
-        for n in ast.walk(node)
-    )
-    return yields and begins
-
-
-def _committing_dependency_names(trees: dict[Path, ast.Module]) -> set[str]:
-    names: set[str] = set()
-    for tree in trees.values():
-        for node in ast.walk(tree):
-            if isinstance(node, ast.AsyncFunctionDef) and _opens_a_transaction_and_yields(node):
-                names.add(node.name)
-    return names
 
 
 def _di_wrapped_aliases(
@@ -748,7 +712,7 @@ def _find_violations(
 def _scan(trees: dict[Path, ast.Module]) -> list[Finding]:
     functions = _collect_functions(trees)
     reaches = _reaches_network(functions)
-    committing = _committing_dependency_names(trees)
+    committing = committing_dependency_names(trees, exclude_context_managers=False)
     di_aliases = _di_wrapped_aliases(trees, committing)
     return _find_violations(functions, reaches, di_aliases)
 
@@ -978,7 +942,9 @@ def test_a_near_miss_annotation_is_not_a_committing_dependency() -> None:
         "    client.register(payload)\n"
     )
     functions = [f for f in _collect_functions(trees) if f.file == probe]
-    aliases = _di_wrapped_aliases(trees, _committing_dependency_names(trees))
+    aliases = _di_wrapped_aliases(
+        trees, committing_dependency_names(trees, exclude_context_managers=False)
+    )
     wrapped = {f.name: _is_di_transaction_wrapped(f, aliases) for f in functions}
     assert wrapped == {"raw": False, "wrapped": True}
 

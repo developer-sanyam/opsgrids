@@ -34,7 +34,7 @@ from app.schemas import (
 from platform_core.audit import record_audit, record_sensitive_read
 from platform_core.auth import ScopeContext
 from platform_core.errors import BusinessRuleProblem, ConflictProblem, NotFoundProblem
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 from platform_core.logging import get_logger
 from platform_core.pii import open_sealed, seal
 
@@ -122,14 +122,6 @@ _TRACKED_FIELDS = (
     "reporting_manager_id",
     "dotted_line_manager_id",
 )
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 def _hierarchy_snapshot(employee: Employee) -> dict[str, Any]:
@@ -329,7 +321,7 @@ async def create_employee(
             # and status, so they are not repeated above.
             **_hierarchy_snapshot(employee),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return employee
 
@@ -447,7 +439,7 @@ async def update_employee(
             "pii_fields": sorted(sealed_fields),
             **_hierarchy_snapshot(employee),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return employee
 
@@ -513,7 +505,7 @@ async def transition_status(
             "to": to.value,
             **_hierarchy_snapshot(employee),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return employee
 

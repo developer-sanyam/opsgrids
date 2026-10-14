@@ -49,7 +49,7 @@ from platform_core.errors import (
     NotFoundProblem,
     ValidationProblem,
 )
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 
 EVT_REQ_CREATED = "operations.procurement.purchase_requisition.created"
 EVT_REQ_SUBMITTED = "operations.procurement.purchase_requisition.submitted"
@@ -57,14 +57,6 @@ EVT_REQ_APPROVED = "operations.procurement.purchase_requisition.approved"
 EVT_REQ_REJECTED = "operations.procurement.purchase_requisition.rejected"
 EVT_REQ_CONVERTED = "operations.procurement.purchase_requisition.converted"
 EVT_REQ_CANCELLED = "operations.procurement.purchase_requisition.cancelled"
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 async def _next_number(session: AsyncSession, org_id: uuid.UUID) -> str:
@@ -112,7 +104,7 @@ def _stage(
             "requisition_id": str(req.id),
             **detail,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 

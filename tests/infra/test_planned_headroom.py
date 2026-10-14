@@ -28,6 +28,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from _helpers import edge_budget, sellable_profiles
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EDGE_DIR = REPO_ROOT / "infrastructure/edge"
 BUDGET_FILE = EDGE_DIR / "memory-budget.json"
@@ -36,27 +38,15 @@ LIB_DIR = EDGE_DIR / "lib"
 sys.path.insert(0, str(LIB_DIR))
 from memory_budget_totals import (  # noqa: E402
     expected_total_mb,
-    load_budget,
     planned_entries,
     planned_total_mb,
 )
 
 
-def _budget() -> dict:
-    return load_budget(BUDGET_FILE)
-
-
-def _real_production_profiles(budget: dict) -> set[str]:
-    """Every profile the box's own `COMPOSE_PROFILES` enables today (B1: all ten products this
-    platform catalogues `available`) — `memory-budget.json`'s own `profiles` list names exactly
-    this set, so there is nothing box-specific left to hardcode here."""
-    return set(budget["profiles"])
-
-
 def test_planned_entries_all_name_a_priced_kind() -> None:
     """Every placeholder must resolve to a real `kinds` entry — a `planned` item with a typo'd
     or missing `kind` would silently price at 0 MB, which is worse than not tracking it at all."""
-    budget = _budget()
+    budget = edge_budget()
     kinds = set(budget["kinds"])
     for name, meta in planned_entries(budget).items():
         assert meta.get("kind") in kinds, (
@@ -69,8 +59,8 @@ def test_planned_is_not_double_counted_into_the_enforced_budget() -> None:
     """`expected_total_mb` (what preflight.sh actually refuses a deploy over) must never move
     just because a `planned` entry was added — a placeholder for code that does not exist yet
     must not be able to fail a real deploy."""
-    budget = _budget()
-    profiles = _real_production_profiles(budget)
+    budget = edge_budget()
+    profiles = set(sellable_profiles(budget))
     before = expected_total_mb(budget, profiles)
     # planned_total_mb reads the same budget; if expected_total_mb ever grew from summing
     # `planned` too, this would drift from `before` on the next call for no reason.
@@ -90,8 +80,8 @@ def test_current_production_is_tight_but_under_the_hard_line_since_the_worker_fo
     sell is still a tight fit, honestly, not a bug. If this ever drops clearly under the soft
     line too, or climbs back to the hard one, update this test and reconsider whether the
     RUNBOOK's owner-decision section (EDGE_BUDGET_ACCEPTED_MB) is still needed."""
-    budget = _budget()
-    profiles = _real_production_profiles(budget)
+    budget = edge_budget()
+    profiles = set(sellable_profiles(budget))
     current = expected_total_mb(budget, profiles)
     host = budget["host"]
     percent = current * 100 // host["mem_total_mb_reference"]
@@ -108,7 +98,7 @@ def test_runbook_ceiling_example_is_the_number_preflight_would_print() -> None:
     projection printed" and gives the ten-profile figure as the worked example. If a budget entry
     moves and that example does not, an owner copying it would set a ceiling one deploy away from
     refusing (too low) or quietly accepting more overcommit than was decided (too high)."""
-    budget = _budget()
+    budget = edge_budget()
     total = expected_total_mb(budget, set(budget["profiles"]))
     runbook = (EDGE_DIR / "RUNBOOK.md").read_text()
     assert f"EDGE_BUDGET_ACCEPTED_MB={total}" in runbook, (
@@ -125,8 +115,8 @@ def test_realistic_today_plus_every_planned_service_projection() -> None:
     product" is a decision that has to be made before all of this backlog ships, not a test this
     slice's own consolidation work was expected to make pass. See ADR-0013's memory-headroom
     addendum for what was and was not done about it in this fix round."""
-    budget = _budget()
-    profiles = _real_production_profiles(budget)
+    budget = edge_budget()
+    profiles = set(sellable_profiles(budget))
     current = expected_total_mb(budget, profiles)
     planned = planned_total_mb(budget)
     projected = current + planned
@@ -149,7 +139,7 @@ def test_planned_and_containers_never_overlap() -> None:
     Names differ between the two lists (`lead-api` vs `lead`), so this checks each planned
     entry's own name, its declared eventual `container`, and the name with an `-api` suffix
     stripped — the convention every compose service name here follows."""
-    budget = _budget()
+    budget = edge_budget()
     containers = set(budget["containers"])
     for name, meta in planned_entries(budget).items():
         candidates = {name, meta.get("container", name), name.removesuffix("-api")}
@@ -163,7 +153,7 @@ def test_planned_and_containers_never_overlap() -> None:
 def test_planned_api_entries_name_the_container_they_will_become() -> None:
     """The overlap test above is only as good as the names it can compare. An `-api` planned entry
     without a `container` field is guessing at the compose name; declare it."""
-    budget = _budget()
+    budget = edge_budget()
     for name, meta in planned_entries(budget).items():
         if name.endswith("-api"):
             assert "container" in meta, f"planned.{name} does not say what compose will call it"
@@ -172,6 +162,6 @@ def test_planned_api_entries_name_the_container_they_will_become() -> None:
 def test_the_accepted_ceiling_cap_is_above_the_hard_line_and_documented() -> None:
     """`host.max_accepted_percent` is what preflight bounds `EDGE_BUDGET_ACCEPTED_MB` with. A cap at
     or below the hard line would make the ceiling meaningless (nothing could ever be accepted)."""
-    host = _budget()["host"]
+    host = edge_budget()["host"]
     assert host["max_accepted_percent"] > host["hard_budget_percent"]
     assert host["max_accepted_percent"] == 125

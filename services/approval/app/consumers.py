@@ -37,7 +37,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,7 +58,7 @@ from app.services import (
     withdraw_request,
 )
 from platform_core.db import assert_app_role, init_engine, session_scope
-from platform_core.events import EventConsumer, already_processed, mark_processed
+from platform_core.events import EventConsumer, already_processed, mark_processed, parse_envelope_dt
 from platform_core.logging import get_logger
 
 log = get_logger("approval.consumers")
@@ -208,14 +208,7 @@ def _occurred_at(envelope: dict[str, Any]) -> datetime:
     warning, the same "logged and dropped rather than raised" discipline `_hierarchy_state` uses
     for the fields that *are* load-bearing.
     """
-    raw = envelope.get("occurred_at")
-    if not raw:
-        return datetime.now(UTC)
-    try:
-        return datetime.fromisoformat(raw)
-    except (TypeError, ValueError):
-        log.warning("hierarchy.event.malformed_occurred_at", raw=str(raw)[:100])
-        return datetime.now(UTC)
+    return parse_envelope_dt(envelope.get("occurred_at"), "hierarchy.event.malformed_occurred_at")
 
 
 @consumer.on(EVT_EMPLOYEE_ONBOARDED)

@@ -92,6 +92,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
+from _db_common import all_organization_ids
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -379,37 +380,6 @@ async def reconcile_fleet(
     return results
 
 
-async def _all_organization_ids() -> list[uuid.UUID]:
-    """Every live organization, read on the directory (BYPASSRLS, SELECT-only) engine.
-
-    `organizations` carries row-level security keyed on its own `id`, so no tenant-bound
-    session can enumerate more than the one it is bound to — discovering the fleet is a
-    platform read by construction. It does not need `admin_dsn` (BYPASSRLS *and* owner of
-    every schema) for one column of one table: `directory_dsn` is the SELECT-only role built
-    for exactly this shape. The engine is opened and disposed for this one read; every write
-    that follows reconnects through the NOBYPASSRLS app role, one organization at a time.
-    """
-    from sqlalchemy import select
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
-    from app.config import settings  # type: ignore[import-not-found]
-    from app.models import Organization  # type: ignore[import-not-found]
-
-    cfg = settings()
-    engine = create_async_engine(cfg.directory_dsn)
-    try:
-        maker = async_sessionmaker(engine, expire_on_commit=False)
-        async with maker() as session:
-            rows = await session.execute(
-                select(Organization.id)
-                .where(Organization.deleted_at.is_(None))
-                .order_by(Organization.created_at)
-            )
-            return [row[0] for row in rows.all()]
-    finally:
-        await engine.dispose()
-
-
 def _fleet_summary(results: list[dict[str, Any]], *, dry_run: bool) -> dict[str, Any]:
     links_written = sum(r["links_written"] for r in results)
     summary: dict[str, Any] = {
@@ -468,7 +438,7 @@ def _main() -> None:
     # run: every service exposes a top-level `app`, so one process holds exactly one.
     sys.path.insert(0, str(ROOT / "services" / "account"))
 
-    from app.config import settings
+    from app.config import settings  # type: ignore[import-not-found]
     from platform_core.db import dispose_engine, init_engine
 
     async def _run() -> int:
@@ -480,7 +450,7 @@ def _main() -> None:
         source = HttpEmployeeLinkSource(cfg.employee_service_url, cfg)
 
         try:
-            org_ids = [args.org] if args.org else await _all_organization_ids()
+            org_ids = [args.org] if args.org else await all_organization_ids()
             if not org_ids:
                 print(json.dumps({"organizations": 0}))
                 return 0

@@ -55,7 +55,7 @@ from app.schemas import (
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
 from platform_core.errors import BusinessRuleProblem, ConflictProblem, NotFoundProblem
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 
 # Event names. `hrms.time.*` because these are the product's own, not the platform's.
 EVT_CHECKED_IN = "hrms.time.attendance.checked_in"
@@ -74,14 +74,6 @@ EVT_SHIFT_DELETED = "hrms.time.shift.deleted"
 EVT_GEOFENCE_CREATED = "hrms.time.geofence.created"
 EVT_GEOFENCE_UPDATED = "hrms.time.geofence.updated"
 EVT_GEOFENCE_DELETED = "hrms.time.geofence.deleted"
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 def _subject_employee(ctx: ScopeContext) -> uuid.UUID:
@@ -221,7 +213,7 @@ async def check_in(
             "work_mode": record.work_mode,
             "location_code": record.location_code,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return record
 
@@ -285,7 +277,7 @@ async def check_out(
             "work_date": record.work_date.isoformat(),
             "check_out_at": record.check_out_at.isoformat(),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return record
 
@@ -342,7 +334,7 @@ async def regularize_attendance(
             "from": current.value,
             "to": to.value,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return record
 
@@ -430,7 +422,7 @@ async def request_regularization(
             "reason": reg.reason,
             "date": record.work_date.isoformat(),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return reg
 
@@ -717,7 +709,7 @@ async def create_shift(
             "shift_id": str(shift.id),
             "code": shift.code,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return shift
 
@@ -764,7 +756,7 @@ async def update_shift(
             "shift_id": str(shift.id),
             "changed": sorted(changes),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return shift
 
@@ -814,7 +806,7 @@ async def delete_shift(
             "shift_id": str(shift.id),
             "code": shift.code,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -865,7 +857,7 @@ async def create_geofence(
             "geofence_id": str(fence.id),
             "location_code": fence.location_code,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return fence
 
@@ -912,7 +904,7 @@ async def update_geofence(
             "geofence_id": str(fence.id),
             "changed": sorted(changes),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return fence
 
@@ -961,5 +953,5 @@ async def delete_geofence(
             "geofence_id": str(fence.id),
             "location_code": fence.location_code,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )

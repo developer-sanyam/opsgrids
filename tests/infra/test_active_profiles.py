@@ -8,9 +8,10 @@ only prove the copy agrees with itself.
 
 from __future__ import annotations
 
-import json
 import subprocess
 from pathlib import Path
+
+from _helpers import memory_budget_json, sellable_profiles
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EDGE_DIR = REPO_ROOT / "infrastructure/edge"
@@ -54,10 +55,6 @@ def activated_profiles(*product_keys: str) -> list[str]:
     return [line for line in result.stdout.splitlines() if line]
 
 
-def _every_sellable_profile() -> list[str]:
-    return list(json.loads(BUDGET_FILE.read_text())["profiles"])
-
-
 class TestProfileFor:
     def test_operations_maps_to_inventory(self) -> None:
         assert profile_for("operations") == "inventory"
@@ -94,7 +91,7 @@ class TestProfileForAndKeyForProfileCoverExactlyTheSameProfiles:
     `case` statements eventually would."""
 
     def test_every_sellable_profile_round_trips_through_key_for_profile_and_back(self) -> None:
-        for profile in _every_sellable_profile():
+        for profile in sellable_profiles(memory_budget_json()):
             key = key_for_profile(profile)
             assert key, f"key_for_profile has no entry for {profile!r}"
             assert profile_for(key) == profile, (
@@ -103,7 +100,7 @@ class TestProfileForAndKeyForProfileCoverExactlyTheSameProfiles:
             )
 
     def test_no_sellable_profile_is_missing_from_the_reverse_mapping(self) -> None:
-        covered = {key_for_profile(p) for p in _every_sellable_profile()}
+        covered = {key_for_profile(p) for p in sellable_profiles(memory_budget_json())}
         assert "" not in covered, "at least one profile in memory-budget.json has no catalogue key"
 
 

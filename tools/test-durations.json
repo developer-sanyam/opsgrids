@@ -121,7 +121,6 @@
   "console/tests/test_mrr_cadence.py": 0.6,
   "console/tests/test_org_identity.py": 1.2,
   "console/tests/test_org_users.py": 1.2,
-  "console/tests/test_pagination.py": 0.2,
   "console/tests/test_plan_change.py": 7.8,
   "console/tests/test_plan_names.py": 0.9,
   "console/tests/test_pricing.py": 2.3,

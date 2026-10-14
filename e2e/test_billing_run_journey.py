@@ -23,7 +23,7 @@ from typing import Any
 
 import httpx
 import pytest
-from test_journey import auth_header, login
+from _http import auth_header, owner_token
 
 PRODUCT = "operations"
 #: Past the longest trial a plan version may grant by default (14 days) — the pass must see it
@@ -34,10 +34,6 @@ FIFTEEN_DAYS = 15 * 24 * 3600
 @pytest.fixture(scope="session")
 def billing_journey() -> dict[str, Any]:
     return {}
-
-
-def _token(client: httpx.Client, tenant: dict[str, Any]) -> str:
-    return login(client, tenant["owner"]["email"], tenant["password"], tenant["org_id"])
 
 
 def _mine(client: httpx.Client, token: str) -> dict[str, Any]:
@@ -56,7 +52,7 @@ class TestBillingRunJourney:
         billing_journey: dict,
         internal_get: Any,
     ) -> None:
-        token = _token(client, billing_tenant)
+        token = owner_token(client, billing_tenant)
         headers = auth_header(token)
         plans = client.get("/api/v1/plans", params={"product_key": PRODUCT}, headers=headers)
         assert plans.status_code == 200, plans.text[:300]
@@ -112,7 +108,7 @@ class TestBillingRunJourney:
     def test_04_the_subscription_is_active_on_its_first_paid_period(
         self, client: httpx.Client, billing_tenant: dict[str, Any], billing_journey: dict
     ) -> None:
-        mine = _mine(client, _token(client, billing_tenant))
+        mine = _mine(client, owner_token(client, billing_tenant))
         assert mine["state"] == "active", (
             f"expected the trial to convert with a usable mandate, got {mine['state']}: {mine}"
         )
@@ -186,4 +182,4 @@ class TestBillingRunJourney:
         time.sleep(2.0)  # give a (wrong) second finalized event time to reach payment
         charges = commerce_probe("payment", billing_tenant["org_id"])["charges"]
         assert len(charges) == 1, charges
-        assert _mine(client, _token(client, billing_tenant))["state"] == "active"
+        assert _mine(client, owner_token(client, billing_tenant))["state"] == "active"

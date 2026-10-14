@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
-from typing import Any
 
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,7 +28,7 @@ from app.schemas import PersonIn, PersonPatch, ProjectIn, ProjectUpdate, TaskIn,
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
 from platform_core.errors import ConflictProblem, NotFoundProblem
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 from platform_core.models import utcnow
 
 # Event names. `pulseboard.*` because these are the product's own, not the platform's.
@@ -42,14 +41,6 @@ EVT_TASK_DELETED = "pulseboard.board.task.deleted"
 EVT_PERSON_CREATED = "pulseboard.team.person.created"
 EVT_PERSON_UPDATED = "pulseboard.team.person.updated"
 EVT_PERSON_DELETED = "pulseboard.team.person.deleted"
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 # ------------------------------------------------------------------ people
@@ -116,7 +107,7 @@ async def create_person(
             "person_id": str(person.id),
             "ref": ref,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return person
 
@@ -189,7 +180,7 @@ async def update_person(
             "person_id": str(person.id),
             "ref": person.ref,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return person
 
@@ -252,7 +243,7 @@ async def delete_person(
             "person_id": str(person.id),
             "ref": person.ref,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -342,7 +333,7 @@ async def create_project(
             "code": code,
             "status": status,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return project
 
@@ -444,7 +435,7 @@ async def update_project(
             "code": project.code,
             "status": project.status,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return project
 
@@ -505,7 +496,7 @@ async def delete_project(
             "project_id": str(project.id),
             "code": project.code,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -575,7 +566,7 @@ async def create_task(
             "key": key,
             "stage": stage,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return task
 
@@ -672,7 +663,7 @@ async def update_task(
             "key": task.key,
             "stage": task.stage,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return task
 
@@ -719,5 +710,5 @@ async def delete_task(
             "task_id": str(task.id),
             "key": task.key,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )

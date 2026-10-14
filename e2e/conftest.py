@@ -58,6 +58,7 @@ from typing import Any
 
 import httpx
 import pytest
+from _http import auth_header
 from sqlalchemy.engine import make_url
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -502,10 +503,6 @@ def platform(tmp_path_factory: pytest.TempPathFactory) -> Any:
                 print(f"{name} did not stop on SIGINT and was killed", file=sys.stderr)
 
 
-def _auth_header(token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
-
-
 def _signup(http: httpx.Client, *, org_name: str, slug: str, full_name: str, email: str) -> str:
     """`POST /api/v1/account/signup`. Returns the new organization's id.
 
@@ -594,7 +591,7 @@ def _find_member(http: httpx.Client, token: str, email: str) -> dict[str, Any]:
     carries neither) — read back the same way any other client would have to: list the
     organization's own members and match on the address this fixture just created.
     """
-    response = http.get("/api/v1/members", headers=_auth_header(token), params={"size": 200})
+    response = http.get("/api/v1/members", headers=auth_header(token), params={"size": 200})
     if response.status_code != 200:
         raise RuntimeError(f"listing members failed: {response.status_code} {response.text[:400]}")
     for item in response.json()["items"]:
@@ -648,7 +645,7 @@ def tenants(platform: Platform) -> dict[str, Any]:
                 admin_email = f"e2e-{org_key}-admin-{run}@example.com"
                 invited = http.post(
                     "/api/v1/invitations",
-                    headers=_auth_header(owner_token),
+                    headers=auth_header(owner_token),
                     json={"email": admin_email, "role_codes": ["ORG_ADMIN"], "product_codes": []},
                 )
                 if invited.status_code != 201:

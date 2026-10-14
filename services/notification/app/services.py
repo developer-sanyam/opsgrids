@@ -85,6 +85,8 @@ from platform_core import pii
 from platform_core.audit import record_audit, record_sensitive_read
 from platform_core.auth import Principal, Scope, ScopeContext
 from platform_core.cache import enforce_rate_limit
+from platform_core.db import constraint_name
+from platform_core.db import sqlstate as driver_sqlstate
 from platform_core.errors import (
     BusinessRuleProblem,
     ConflictProblem,
@@ -92,7 +94,7 @@ from platform_core.errors import (
     UpstreamUnavailableProblem,
     ValidationProblem,
 )
-from platform_core.events import publish_event, schedule_event
+from platform_core.events import actor_for, publish_event, schedule_event
 from platform_core.logging import get_logger
 
 log = get_logger("notification.services")
@@ -133,14 +135,6 @@ class OutsideServiceWindowProblem(ConflictProblem):
         body = super().to_problem(request)
         body["remedy"] = "template"
         return body
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 # --------------------------------------------------------------------- templates & rules
@@ -894,7 +888,7 @@ async def send_direct(
         subject=subject,
         body=body,
         created_by=str(ctx.principal.sub),
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     if message is None:  # pragma: no cover - a direct send carries no dedupe key
         raise ConflictProblem("That message has already been staged")
@@ -1748,37 +1742,6 @@ _DEAD_LETTER_DEDUPE_CONSTRAINT: Final = "uq_inbound_dead_letters_org_kind_provid
 _DEAD_LETTER_PROVIDER_ID_MAX: Final = 200
 
 
-def _dbapi_constraint(exc: DBAPIError) -> str | None:
-    """The name of the constraint that actually fired, when the driver surfaces one.
-
-    asyncpg's own exception carries `constraint_name` directly, but SQLAlchemy's asyncpg dialect
-    re-raises it as a driver-shaped exception first, so the structured attribute can survive on
-    `exc.orig.__cause__` rather than on `exc.orig` itself. Both are checked, in that order — the
-    same helper `account/app/services.py` uses for its own unique-constraint check, for the same
-    reason.
-    """
-    orig = exc.orig
-    name = getattr(orig, "constraint_name", None)
-    if name is not None:
-        return str(name)
-    cause = getattr(orig, "__cause__", None)
-    name = getattr(cause, "constraint_name", None)
-    return str(name) if name is not None else None
-
-
-def _dbapi_sqlstate(exc: DBAPIError) -> str | None:
-    """The Postgres SQLSTATE the driver attached, by the same two-hop lookup `_dbapi_constraint`
-    uses — enough for an operator to tell a serialization failure from a data exception without
-    opening a sealed column or ever seeing a parameter value."""
-    orig = exc.orig
-    state = getattr(orig, "sqlstate", None)
-    if state is not None:
-        return str(state)
-    cause = getattr(orig, "__cause__", None)
-    state = getattr(cause, "sqlstate", None)
-    return str(state) if state is not None else None
-
-
 #: Postgres SQLSTATE class/codes that mean "this exact statement will fail identically forever" —
 #: a value or shape the database itself rejects, not a momentary condition. Class 22 (`22*`) is
 #: "data exception" (a string too long, a value out of range, an invalid input syntax); `23502`
@@ -1812,7 +1775,7 @@ def is_inbound_dedupe_conflict(exc: BaseException) -> bool:
     duplicate would be park-and-never-replay-away, since replaying it would only hit this same
     conflict again.
     """
-    return isinstance(exc, IntegrityError) and _dbapi_constraint(exc) == _INBOUND_DEDUPE_CONSTRAINT
+    return isinstance(exc, IntegrityError) and constraint_name(exc) == _INBOUND_DEDUPE_CONSTRAINT
 
 
 def is_permanent_fold_error(exc: BaseException) -> bool:
@@ -1836,7 +1799,7 @@ def is_permanent_fold_error(exc: BaseException) -> bool:
     `isinstance(exc, OperationalError)` therefore never matches anything real in production and
     silently classified every genuine data error as the unmatched, transient default instead —
     accepted forever, 503, retried forever, since the identical oversized value never becomes any
-    smaller on redelivery. The SQLSTATE the driver attaches (`_dbapi_sqlstate`) survives that
+    smaller on redelivery. The SQLSTATE the driver attaches (`driver_sqlstate`) survives that
     translation regardless of which Python exception class wraps it, so it is what this function
     reads instead.
 
@@ -1861,7 +1824,7 @@ def is_permanent_fold_error(exc: BaseException) -> bool:
         seen is exactly the case where guessing "safe to drop" is the more expensive mistake.
     """
     if isinstance(exc, DBAPIError):
-        sqlstate = _dbapi_sqlstate(exc)
+        sqlstate = driver_sqlstate(exc)
         if sqlstate is None:
             return False
         if sqlstate.startswith(_PERMANENT_SQLSTATE_PREFIXES) or sqlstate in _PERMANENT_SQLSTATES:
@@ -1940,10 +1903,10 @@ def _dead_letter_error_text(error: BaseException) -> str:
     own message. See `record_dead_letter`'s docstring for why."""
     parts = [type(error).__name__]
     if isinstance(error, DBAPIError):
-        sqlstate = _dbapi_sqlstate(error)
+        sqlstate = driver_sqlstate(error)
         if sqlstate:
             parts.append(f"sqlstate={sqlstate}")
-        constraint = _dbapi_constraint(error)
+        constraint = constraint_name(error)
         if constraint:
             parts.append(f"constraint={constraint}")
     return " ".join(parts)[:500]
@@ -2367,7 +2330,7 @@ async def reply_to_conversation(
         body=body,
         created_by=str(ctx.principal.sub),
         dedupe_key=dedupe_key,
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     if message is None:
         # The same idempotency key was used before — the caller gets back what that first call
@@ -2732,7 +2695,7 @@ async def create_connection(
             "kind": kind,
             "daily_cap": connection.daily_cap,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return connection
 
@@ -2899,7 +2862,7 @@ async def replace_connection(
             "kind": kind,
             "daily_cap": existing.daily_cap,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return existing
 
@@ -3013,7 +2976,7 @@ async def create_whatsapp_connection(
             "provider_account_id": str(account.id),
             "channel": "whatsapp",
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return account
 
@@ -3119,7 +3082,7 @@ async def replace_whatsapp_connection(
             "provider_account_id": str(existing.id),
             "channel": "whatsapp",
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return existing
 
@@ -3182,7 +3145,7 @@ async def create_domain(
             "domain": name,
             "status": row.status,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return row
 
@@ -3276,7 +3239,7 @@ async def record_domain_check(
                 "domain_id": str(row.id),
                 "domain": row.domain,
             },
-            actor=_actor(ctx),
+            actor=actor_for(ctx),
         )
     return row
 
@@ -3526,7 +3489,7 @@ async def create_sender(
             "domain_id": str(email_domain.id),
             "address": sender_address,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return sender
 
@@ -3713,7 +3676,7 @@ async def send_test(
             "provider": receipt.provider,
             "provider_message_id": receipt.provider_message_id,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return sender
 
@@ -5414,7 +5377,7 @@ async def request_send(
         aggregate_type="campaign",
         aggregate_id=row.id,
         payload={"organization_id": str(ctx.organization_id), "campaign_id": str(row.id)},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return row
 
@@ -5484,7 +5447,7 @@ async def schedule_send(
             "campaign_id": str(row.id),
             "scheduled_for": scheduled_at.astimezone(UTC).isoformat(),
         },
-        target_actor=_actor(ctx),
+        target_actor=actor_for(ctx),
     )
     return row
 
@@ -5631,7 +5594,7 @@ async def cancel_campaign(
         aggregate_type="campaign",
         aggregate_id=row.id,
         payload={"organization_id": str(ctx.organization_id), "campaign_id": str(row.id)},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return row
 

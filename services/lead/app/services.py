@@ -51,7 +51,7 @@ from app.schemas import LeadPatch, RevealField
 from platform_core.audit import record_audit, record_sensitive_read
 from platform_core.auth import Principal, Scope, ScopeContext
 from platform_core.cache import get_redis
-from platform_core.db import assert_tenant, set_tenant
+from platform_core.db import assert_tenant, constraint_name, set_tenant
 from platform_core.errors import (
     ConflictProblem,
     ForbiddenProblem,
@@ -60,7 +60,7 @@ from platform_core.errors import (
     UpstreamUnavailableProblem,
     ValidationProblem,
 )
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 from platform_core.logging import get_logger
 from platform_core.models import utcnow
 from platform_core.pii import PiiError, blind_index, open_sealed, seal
@@ -86,14 +86,6 @@ EVT_LEAD_CONVERSION_ABORTED = "crm.lead.conversion_aborted"
 _DEFAULT_CLOSE_HORIZON_DAYS = 30
 
 
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
-
-
 async def _bind_tenant(session: AsyncSession, organization_id: uuid.UUID) -> None:
     """Bind a transaction to the caller's organization — the same tenancy chokepoint
     `get_tenant_session` applies for every other route's one transaction, done by hand here
@@ -103,20 +95,6 @@ async def _bind_tenant(session: AsyncSession, organization_id: uuid.UUID) -> Non
     await set_tenant(session, organization_id)
     if not settings().is_production:
         await assert_tenant(session, organization_id)
-
-
-def _integrity_error_constraint(exc: IntegrityError) -> str | None:
-    """The name of the constraint that actually fired, when the driver surfaces one. Same
-    extraction `approval.services._integrity_error_constraint` and
-    `leave.services._integrity_error_constraint` use, for the identical
-    asyncpg-wraps-the-driver-exception reason."""
-    orig = exc.orig
-    name = getattr(orig, "constraint_name", None)
-    if name is not None:
-        return str(name)
-    cause = getattr(orig, "__cause__", None)
-    name = getattr(cause, "constraint_name", None)
-    return str(name) if name is not None else None
 
 
 async def _ensure_owners_active(organization_id: uuid.UUID, owner_ids: list[uuid.UUID]) -> None:
@@ -510,7 +488,7 @@ async def create_lead(
             session.add(lead)
             await session.flush()
     except IntegrityError as exc:
-        if _integrity_error_constraint(exc) != "uq_leads_org_email_index":
+        if constraint_name(exc) != "uq_leads_org_email_index":
             raise
         # The race the pre-check above cannot see: two concurrent captures of the same email
         # in this organization. The pre-check reduces this to a rare event; it does not
@@ -541,7 +519,7 @@ async def create_lead(
             "source": source,
             "owner_id": str(resolved_owner_id) if resolved_owner_id else None,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return lead
 
@@ -649,7 +627,7 @@ async def update_lead(
             "lead_id": str(lead.id),
             "changed": sorted(changes),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return lead
 
@@ -1096,7 +1074,7 @@ def _stage_conversion_aborted(
             "contact_id": str(contact_id) if contact_id else None,
             "deal_id": str(deal_id),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -1254,7 +1232,7 @@ async def finalize_conversion(
                         "contact_id": str(contact_id) if contact_id else None,
                         "deal_id": str(deal_id),
                     },
-                    actor=_actor(ctx),
+                    actor=actor_for(ctx),
                 )
 
     if missing_claim:

@@ -19,27 +19,12 @@ names; every selector still passes its own owner column to `ctx.apply`, the enfo
 
 from __future__ import annotations
 
-from typing import Any
-
 from app.models import PurchaseOrder
-from platform_core.auth import register_scope_resolver
+from platform_core.auth import column_scope_resolver, register_scope_resolver
 
 PRODUCT = "operations"
 
 
-class PurchaseOrderScopeResolver:
-    """The `ScopeResolver` for operations rows. OWN is the raiser; TEAM/LOCATION unsupported."""
-
-    def owner_column(self) -> Any:
-        return PurchaseOrder.raised_by_id
-
-    def team_column(self) -> Any | None:
-        return None
-
-    def location_column(self) -> Any | None:
-        return None
-
-
 def register() -> None:
     """Register the resolver for the `operations` product. Idempotent — safe to call at import."""
-    register_scope_resolver(PRODUCT, PurchaseOrderScopeResolver)
+    register_scope_resolver(PRODUCT, column_scope_resolver(owner=PurchaseOrder.raised_by_id))

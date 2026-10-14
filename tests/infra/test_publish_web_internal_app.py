@@ -8,16 +8,14 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from _helpers import read_text
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "infrastructure/edge/publish-web.sh"
 
 
-def _text() -> str:
-    return SCRIPT.read_text()
-
-
 def test_internal_is_a_case_in_the_app_table() -> None:
-    text = _text()
+    text = read_text(SCRIPT)
     match = re.search(r"\ninternal\)\n(.*?)\n\t;;\n", text, re.DOTALL)
     assert match, "publish-web.sh has no `internal)` case in its app table"
     block = match.group(1)
@@ -29,7 +27,7 @@ def test_internal_is_a_case_in_the_app_table() -> None:
 
 
 def test_internal_is_named_in_the_unknown_app_error() -> None:
-    text = _text()
+    text = read_text(SCRIPT)
     assert "unknown APP" in text
     unknown_line = next(line for line in text.splitlines() if "unknown APP" in line)
     assert "internal" in unknown_line, (
@@ -52,7 +50,7 @@ def test_internal_case_sets_no_app_host() -> None:
     script start treating `admin.opsgrids.com` as a tenant SPA host that has to appear in that
     app-gateway-only allow-list, which it must never do (see `test_internal_is_excluded_...`
     below)."""
-    text = _text()
+    text = read_text(SCRIPT)
     match = re.search(r"\ninternal\)\n(.*?)\n\t;;\n", text, re.DOTALL)
     assert match, "publish-web.sh has no `internal)` case in its app table"
     assert "app_host=" not in match.group(1)
@@ -70,7 +68,7 @@ def test_internal_is_excluded_from_the_auth_origin_and_cors_allowlist_checks() -
     would make the script refuse to publish the console at all (or, worse, teach someone to
     "fix" that refusal by adding admin.opsgrids.com to a tenant CORS allow-list it must never be
     in)."""
-    text = _text()
+    text = read_text(SCRIPT)
     pattern = r"^\tcase \"\$app\" in\n\tbuyer \| dashboard(?:\s*\|\s*internal)?\) ;;\n"
     match = re.search(pattern, text, re.MULTILINE)
     assert match, (

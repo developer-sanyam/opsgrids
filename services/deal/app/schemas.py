@@ -20,19 +20,7 @@ from typing import Annotated, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from app.pipeline import KEY_PATTERN, Outcome, Tone
-
-
-def _reject_explicit_null(instance: BaseModel, fields: tuple[str, ...]) -> None:
-    """A PATCH field typed `X | None` is optional two different ways: omitted (leave alone) or
-    explicitly `null` (the caller's own JSON says so). For a field the database column never
-    allows NULL, only the first meaning is valid — the second is a malformed request (422),
-    not a value that should reach an `IntegrityError` or a silent no-op write.
-    `primary_contact_id` is genuinely nullable (a deal may have no primary contact) and is
-    never passed here. Same helper `operations.app.schemas._reject_explicit_null` uses."""
-    for field in fields:
-        if field in instance.model_fields_set and getattr(instance, field) is None:
-            raise ValueError(f"{field} cannot be set to null")
-
+from platform_core.validation import reject_explicit_null
 
 # ------------------------------------------------------------------ vocabularies (match the SPA)
 
@@ -93,7 +81,7 @@ class DealPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     company_id: uuid.UUID | None = None
     #: Genuinely nullable in the domain (a deal may have no primary contact), so this one is
-    #: deliberately not passed to `_reject_explicit_null` below.
+    #: deliberately not passed to `reject_explicit_null` below.
     primary_contact_id: uuid.UUID | None = None
     owner_id: uuid.UUID | None = None
     value_minor: int | None = Field(default=None, ge=0)
@@ -104,7 +92,7 @@ class DealPatch(BaseModel):
 
     @model_validator(mode="after")
     def _no_explicit_nulls(self) -> Self:
-        _reject_explicit_null(
+        reject_explicit_null(
             self,
             (
                 "name",

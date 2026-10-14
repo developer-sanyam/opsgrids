@@ -42,7 +42,7 @@ import asyncio
 import uuid
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,7 +50,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models import ProcessedEvent
 from platform_core.db import assert_app_role, init_engine, session_scope
-from platform_core.events import EventConsumer, already_processed, mark_processed
+from platform_core.events import EventConsumer, already_processed, mark_processed, parse_envelope_dt
 from platform_core.logging import get_logger
 
 log = get_logger("attendance.consumers")
@@ -95,13 +95,9 @@ def _decided_at(payload: dict[str, Any]) -> datetime:
     malformed value must not dead-letter an otherwise-good decision — the same "logged and
     dropped rather than raised" discipline approval's own hierarchy consumer uses for
     `occurred_at`, which is display-only there but cannot be here, so this falls back to now."""
-    raw = payload.get("decided_at")
-    if raw:
-        try:
-            return datetime.fromisoformat(raw)
-        except (TypeError, ValueError):
-            log.warning("regularization.decided.malformed_decided_at", raw=str(raw)[:100])
-    return datetime.now(UTC)
+    return parse_envelope_dt(
+        payload.get("decided_at"), "regularization.decided.malformed_decided_at"
+    )
 
 
 def _opened_at(envelope: dict[str, Any]) -> datetime:
@@ -112,13 +108,9 @@ def _opened_at(envelope: dict[str, Any]) -> datetime:
     (`platform_core.events.build_envelope`) — is the nearest fact available, and is display-only
     here (nothing CHECKs it), so a malformed value is logged and dropped rather than raised, the
     same discipline `_decided_at` uses for its own field."""
-    raw = envelope.get("occurred_at")
-    if raw:
-        try:
-            return datetime.fromisoformat(raw)
-        except (TypeError, ValueError):
-            log.warning("regularization.opened.malformed_occurred_at", raw=str(raw)[:100])
-    return datetime.now(UTC)
+    return parse_envelope_dt(
+        envelope.get("occurred_at"), "regularization.opened.malformed_occurred_at"
+    )
 
 
 def _display_name(payload: dict[str, Any], key: str) -> str | None:

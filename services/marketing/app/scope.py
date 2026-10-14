@@ -13,27 +13,12 @@ unchanged, and a narrower grant with no subject reference matches nothing rather
 
 from __future__ import annotations
 
-from typing import Any
-
 from app.models import Campaign
-from platform_core.auth import register_scope_resolver
+from platform_core.auth import column_scope_resolver, register_scope_resolver
 
 PRODUCT = "marketing"
 
 
-class CampaignScopeResolver:
-    """The `ScopeResolver` for marketing rows. Only the owner column is meaningful here."""
-
-    def owner_column(self) -> Any:
-        return Campaign.id
-
-    def team_column(self) -> Any | None:
-        return None
-
-    def location_column(self) -> Any | None:
-        return None
-
-
 def register() -> None:
     """Register the resolver for the `marketing` product. Idempotent — safe to call at import."""
-    register_scope_resolver(PRODUCT, CampaignScopeResolver)
+    register_scope_resolver(PRODUCT, column_scope_resolver(owner=Campaign.id))

@@ -57,4 +57,7 @@ def test_the_last_route_is_the_not_found_page() -> None:
     source = MAIN.read_text(encoding="utf-8")
     routes = list(_ROUTE_PATH.finditer(source))
     assert routes and routes[-1].group(1) == "*", "the catch-all must be the last route"
-    assert "<NotFoundPage />" in source[routes[-1].end() :], "the catch-all must be the 404 page"
+    tail = source[routes[-1].end() :]
+    assert "<NotFoundScreen" in tail or "<NotFoundPage" in tail, (
+        "the catch-all must be the 404 page"
+    )

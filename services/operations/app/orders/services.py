@@ -49,7 +49,7 @@ from platform_core.audit import record_audit
 from platform_core.auth import Principal, Scope, ScopeContext
 from platform_core.db import assert_tenant, set_tenant
 from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 from platform_core.logging import get_logger
 
 log = get_logger("operations.orders")
@@ -107,14 +107,6 @@ _INVOICE_REQUIRED_BY_HANDOVER_TIMINGS = frozenset({"on_accept", "on_dispatch"})
 #: does it cover a catalogue price (`InventoryItem.selling_price_minor` carries no upper bound) —
 #: this is the guard on the actual product, checked once it is computed.
 _MAX_LINE_TOTAL_MINOR = MAX_ABS_MILLI
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 async def _bind_tenant(session: AsyncSession, organization_id: uuid.UUID) -> None:
@@ -400,7 +392,7 @@ async def place_order(
             "total_minor": subtotal,
             "currency": order.currency,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return order
 
@@ -631,7 +623,7 @@ async def accept_order(
                 "currency": order.currency,
                 "settings_snapshot": settings_snapshot,
             },
-            actor=_actor(ctx),
+            actor=actor_for(ctx),
         )
     return order
 
@@ -698,7 +690,7 @@ async def hold_order(
             "number": order.number,
             "reason": reason,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return order
 
@@ -861,7 +853,7 @@ async def cancel_order(
             "from_status": before_status,
             "released_reservations": released_ids,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return order
 
@@ -1008,7 +1000,7 @@ def queue_invoice_request(
             "order_id": str(order.id),
             "crm_contact_id": str(order.customer_id),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -1079,7 +1071,7 @@ async def request_invoice_for_order(
         aggregate_type="order",
         aggregate_id=order.id,
         payload=payload,
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     record_audit(
         session,
@@ -1326,7 +1318,7 @@ async def complete_handover(
             "order_id": str(order.id),
             "number": order.number,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 

@@ -54,7 +54,7 @@ from platform_core.errors import (
     ProblemError,
     UpstreamUnavailableProblem,
 )
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 from platform_core.logging import get_logger
 from platform_core.pii import mask as mask_pii
 
@@ -242,7 +242,7 @@ async def start_signup(
             aggregate_type="w1_setup_run",
             aggregate_id=run.id,
             payload={"organization_id": str(org), "setup_id": str(run.id)},
-            actor=services._actor(ctx),
+            actor=actor_for(ctx),
         )
     return run_id
 
@@ -992,7 +992,7 @@ async def stage_test_message(
         created_by=str(ctx.principal.sub),
         rule_code="w1.test_message",
         dedupe_key=f"w1-test:{uuid.uuid4()}",
-        actor=services._actor(ctx),
+        actor=actor_for(ctx),
         # The row's code is what `consent.purpose_for_send` reads the template's category from:
         # a marketing template needs an opt-in on record, here and again when it is claimed.
         provider_template_code=row.code,

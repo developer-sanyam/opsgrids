@@ -48,6 +48,7 @@ from app.models import (
     OutboxEvent,
 )
 from platform_core.audit import record_audit
+from platform_core.db import constraint_name
 from platform_core.errors import (
     ConflictProblem,
     ForbiddenProblem,
@@ -1039,27 +1040,6 @@ async def withdraw_request(
 # --------------------------------------------------------------------- delegation (slice 3, §5)
 
 
-def _integrity_error_constraint(exc: IntegrityError) -> str | None:
-    """The name of the constraint that actually fired, when the driver surfaces one — or `None`
-    when it does not (a constraint with no name, or an `IntegrityError` that is not a constraint
-    violation at all).
-
-    asyncpg's own exception carries `constraint_name` directly, but SQLAlchemy's asyncpg dialect
-    re-raises it as a driver-shaped exception first (`AsyncAdapt_asyncpg_dbapi.IntegrityError`,
-    raised `from` the original — see `sqlalchemy.dialects.postgresql.asyncpg._handle_exception`),
-    so the structured attribute survives on `exc.orig.__cause__`, not on `exc.orig` itself. Both
-    are checked, in that order, so this keeps working if a future SQLAlchemy version stops
-    wrapping and starts surfacing the driver exception as `.orig` directly.
-    """
-    orig = exc.orig
-    name = getattr(orig, "constraint_name", None)
-    if name is not None:
-        return str(name)
-    cause = getattr(orig, "__cause__", None)
-    name = getattr(cause, "constraint_name", None)
-    return str(name) if name is not None else None
-
-
 def _validate_delegation_window(
     *,
     delegator_employee_id: uuid.UUID,
@@ -1228,7 +1208,7 @@ async def create_delegation(
         # which the platform's own `IntegrityError` handler (`platform_core/errors.py`) turns
         # into a generic, non-leaking 409 — the same shape every other unanticipated constraint
         # violation in this service gets.
-        if _integrity_error_constraint(exc) != "ex_delegations_no_overlap":
+        if constraint_name(exc) != "ex_delegations_no_overlap":
             raise
         # The race the pre-check above cannot see (the same shape `billing/app/services.py`'s
         # credit-reversal race uses): another transaction created an overlapping delegation

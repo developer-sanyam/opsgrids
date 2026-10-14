@@ -19,7 +19,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
@@ -34,7 +33,7 @@ from app.orders.services import attest_payment_if_confirmed, check_billing_gate,
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
 from platform_core.errors import ConflictProblem
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 from platform_core.logging import get_logger
 
 log = get_logger("operations.dispatch")
@@ -71,14 +70,6 @@ _TRANSITION_EVENTS: dict[str, str] = {
     "FAILED": EVT_SHIPMENT_FAILED,
     "RETURNED": EVT_SHIPMENT_RETURNED,
 }
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 async def dispatch_order(
@@ -212,7 +203,7 @@ async def dispatch_order(
             "carrier_name": carrier_name,
             "tracking_reference": tracking_reference,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
     # Security review cheap-fix: finance's real e-Way check is against the tax-*inclusive*
@@ -243,7 +234,7 @@ async def dispatch_order(
                 "tracking_reference": tracking_reference,
                 "dispatched_at": datetime.now(UTC).isoformat(),
             },
-            actor=_actor(ctx),
+            actor=actor_for(ctx),
         )
     return shipment
 
@@ -331,6 +322,6 @@ async def transition_shipment(
             **({"reason": reason} if reason else {}),
             **failure_contact,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return shipment

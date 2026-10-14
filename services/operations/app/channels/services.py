@@ -96,14 +96,6 @@ def service_ctx(organization_id: uuid.UUID) -> ScopeContext:
     )
 
 
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
-
-
 async def _bind_tenant(session: AsyncSession, organization_id: uuid.UUID) -> None:
     """The same by-hand tenancy chokepoint `app.orders.services._bind_tenant` uses, needed here
     for the same reason: import and sync open more than one transaction on one raw session."""

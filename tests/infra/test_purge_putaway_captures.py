@@ -32,9 +32,12 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+from _helpers import DisposableEngine
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOL = REPO_ROOT / "tools" / "purge_putaway_captures.py"
+# The tool imports its sibling `_db_common`, which is on `sys.path` when run as a script.
+sys.path.insert(0, str(TOOL.parent))
 
 
 def _load() -> ModuleType:
@@ -81,7 +84,7 @@ class _Result:
 
 
 @dataclass
-class FakeDb:
+class FakeDb(DisposableEngine):
     rows: list[Capture]
     #: One entry per transaction, each the SQL text of its statements in order.
     transactions: list[list[str]] = field(default_factory=list)
@@ -90,9 +93,6 @@ class FakeDb:
 
     def begin(self) -> _Txn:
         return _Txn(self)
-
-    async def dispose(self) -> None:
-        self.disposed = True
 
     @property
     def statements(self) -> list[str]:
@@ -331,7 +331,7 @@ def test_the_retention_window_is_not_a_command_line_option() -> None:
 
 
 def test_the_database_label_never_carries_the_password() -> None:
-    label = purge._database_label("postgresql+asyncpg://opsgrids_admin:hunter2@db:5432/opsgrids")
+    label = purge.database_label("postgresql+asyncpg://opsgrids_admin:hunter2@db:5432/opsgrids")
     assert label == "db:5432/opsgrids"
 
 

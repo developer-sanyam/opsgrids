@@ -23,7 +23,7 @@ import app.worker as worker
 from app.checkout.cron import ChargePoller
 from app.collections.cron import CollectionExpirySweep
 from app.cron import StuckChargeSweep
-from app.supervise import LoopExited, run_supervised
+from platform_core.supervise import LoopExited, run_supervised
 
 
 def _idle_sweep(**over: Any) -> StuckChargeSweep:

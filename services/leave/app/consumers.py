@@ -25,7 +25,7 @@ import uuid
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models import ProcessedEvent
 from platform_core.db import assert_app_role, init_engine, session_scope
-from platform_core.events import EventConsumer, already_processed, mark_processed
+from platform_core.events import EventConsumer, already_processed, mark_processed, parse_envelope_dt
 from platform_core.logging import get_logger
 
 log = get_logger("leave.consumers")
@@ -179,14 +179,7 @@ async def _apply_directory_event(envelope: dict[str, Any]) -> None:
 
 
 def _occurred_at(envelope: dict[str, Any]) -> datetime:
-    raw = envelope.get("occurred_at")
-    if not raw:
-        return datetime.now(UTC)
-    try:
-        return datetime.fromisoformat(raw)
-    except (TypeError, ValueError):
-        log.warning("directory.event.malformed_occurred_at", raw=str(raw)[:100])
-        return datetime.now(UTC)
+    return parse_envelope_dt(envelope.get("occurred_at"), "directory.event.malformed_occurred_at")
 
 
 @consumer.on(EVT_EMPLOYEE_ONBOARDED)
@@ -213,13 +206,7 @@ REQUEST_TYPE_LEAVE = "hrms.time.leave"
 
 
 def _decided_at(payload: dict[str, Any]) -> datetime:
-    raw = payload.get("decided_at")
-    if raw:
-        try:
-            return datetime.fromisoformat(raw)
-        except (TypeError, ValueError):
-            log.warning("leave.decided.malformed_decided_at", raw=str(raw)[:100])
-    return datetime.now(UTC)
+    return parse_envelope_dt(payload.get("decided_at"), "leave.decided.malformed_decided_at")
 
 
 def _display_name(payload: dict[str, Any], key: str) -> str | None:
