@@ -92,6 +92,8 @@ export { PageHeader } from "./components/PageHeader";
 export { PasswordField } from "./components/PasswordField";
 export { Pagination } from "./components/Pagination";
 export { Pill } from "./components/Pill";
+export { GrantsStatusBanner, ProductShell } from "./components/ProductShell";
+export type { ProductBannerCopy, ProductQuickAction, ProductShellModule } from "./components/ProductShell";
 export { ProductLoginScreen } from "./components/ProductLoginScreen";
 export type { LoginOrganization } from "./components/ProductLoginScreen";
 export { QrCode } from "./components/QrCode";
