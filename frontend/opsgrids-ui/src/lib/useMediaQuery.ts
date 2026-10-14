@@ -6,6 +6,9 @@ import { useCallback, useSyncExternalStore } from "react";
  */
 export const TABLET_QUERY = "(min-width: 768px)";
 
+/** Tailwind's `sm`: where `PageHeader` stops collapsing its secondary actions into "More actions". */
+export const SM_QUERY = "(min-width: 640px)";
+
 /**
  * Whether a media query matches, kept current as the viewport changes.
  *

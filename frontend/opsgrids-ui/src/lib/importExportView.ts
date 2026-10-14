@@ -137,4 +137,16 @@ export interface ImportExportButtonProps {
   canImport: boolean;
   /** The caller may read the list. Hides Export. */
   canExport: boolean;
+  /**
+   * Control the dialog from outside, so a menu item ("More actions" on a phone) can open it. Give
+   * `open` and `onOpenChange` together; without them the button keeps its own state.
+   */
+  open?: boolean | undefined;
+  onOpenChange?: ((open: boolean) => void) | undefined;
+  /**
+   * Render the dialog without its button, for when another control launches it. The button the
+   * dialog would return focus to is then not here, so the launching control's own focus handling
+   * applies.
+   */
+  hideTrigger?: boolean | undefined;
 }

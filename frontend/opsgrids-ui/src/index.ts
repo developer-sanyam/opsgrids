@@ -186,7 +186,7 @@ export { ICON_TILE } from "./lib/tones";
 export type { Tone } from "./lib/tones";
 export { useDebouncedValue } from "./lib/useDebouncedValue";
 export { useFormDirty } from "./lib/useFormDirty";
-export { TABLET_QUERY, useMediaQuery } from "./lib/useMediaQuery";
+export { SM_QUERY, TABLET_QUERY, useMediaQuery } from "./lib/useMediaQuery";
 export { useScrollFade } from "./lib/useScrollFade";
 export type { ScrollFade } from "./lib/useScrollFade";
 export { useUnsavedChangesWarning } from "./lib/useUnsavedChangesWarning";

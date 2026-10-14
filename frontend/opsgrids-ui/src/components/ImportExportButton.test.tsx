@@ -87,6 +87,42 @@ async function openWith(props: Partial<HarnessProps> = {}, options?: Parameters<
   return { user, actions, show };
 }
 
+describe("ImportExportButton: launched from another control", () => {
+  function launched(open: boolean, onOpenChange = vi.fn(), canImport = true, canExport = true) {
+    return (
+      <ImportExportButton
+        meta={META}
+        state={MENU_STATE}
+        actions={makeActions()}
+        canImport={canImport}
+        canExport={canExport}
+        open={open}
+        onOpenChange={onOpenChange}
+        hideTrigger
+      />
+    );
+  }
+
+  it("opens when told to, without a button of its own, and reports the close", async () => {
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    const view = render(launched(false, onOpenChange));
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    view.rerender(launched(true, onOpenChange));
+    expect(dialog("Import / Export companies")).toBeTruthy();
+
+    await user.keyboard("{Escape}");
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("still renders nothing when the person may neither import nor export", () => {
+    const { container } = render(launched(true, vi.fn(), false, false));
+    expect(container.firstChild).toBeNull();
+  });
+});
+
 describe("ImportExportButton: the button", () => {
   it("is one secondary button that opens a dialog and nothing else", async () => {
     const user = userEvent.setup();

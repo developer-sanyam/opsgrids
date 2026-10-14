@@ -174,3 +174,33 @@ describe("EmployeesPage: loading more", () => {
     expect(gateway.screenLists().map((params) => params.get("page"))).toEqual(["1", "2"]);
   });
 });
+
+describe("EmployeesPage: Import / Export on a phone", () => {
+  function stubPhone(): void {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    }));
+  }
+
+  it("moves into More actions, and opens the same dialog from there", async () => {
+    const gateway = stubGateway(2);
+    stubPhone();
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText("Person 0002");
+    expect(gateway.screenLists()).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Import / Export" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "More actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Import / Export" }));
+
+    expect(await screen.findByRole("dialog", { name: "Import / Export employees" })).toBeTruthy();
+  });
+});

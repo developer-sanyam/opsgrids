@@ -331,3 +331,24 @@ export const CouldNotReadFile: Story = {
     }),
   },
 };
+
+function LaunchedFromTheMenu(args: ImportExportButtonProps) {
+  const [open, setOpen] = useState(false);
+  return (
+    <PageHeader
+      eyebrow="Records"
+      title="Companies"
+      secondaryActions={[{ label: "Import / Export", onSelect: () => setOpen(true) }]}
+      actions={<ImportExportButton {...args} open={open} onOpenChange={setOpen} hideTrigger />}
+    />
+  );
+}
+
+/** Another control launches the dialog (a phone's "More actions" item); the button itself is not drawn. */
+export const LaunchedFromAMenuItem: Story = {
+  render: (args) => <LaunchedFromTheMenu {...args} />,
+  play: async ({ canvas, userEvent }) => {
+    await userEvent.click(canvas.getByRole("button", { name: "Import / Export" }));
+    await screen.findByRole("dialog");
+  },
+};
