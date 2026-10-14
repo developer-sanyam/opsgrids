@@ -63,7 +63,7 @@ from app.models import (
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
 from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 
 #: What a move can be. `count` is the only kind whose line may be a zero change.
 MOVE_KINDS = ("opening", "receipt", "adjustment", "count", "relocation", "issue")
@@ -170,14 +170,6 @@ class PostedMove:
 
 
 # ------------------------------------------------------------------ helpers
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 def _is_int(value: object) -> bool:
@@ -899,7 +891,7 @@ async def post_move(
             "lines": summary,
             "reservation_transfers": reservation_transfers,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     await _refresh_items(session, items)
     return posted
@@ -1067,7 +1059,7 @@ async def reserve(
         aggregate_type="inventory_reservation",
         aggregate_id=reservation.id,
         payload={"organization_id": str(org_id), **detail},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     await _refresh_items(session, [item_id])
     return ReservationResult(reservation)
@@ -1298,7 +1290,7 @@ async def reserve_many(
         aggregate_type="inventory_reservation_batch",
         aggregate_id=reference_id,
         payload={"organization_id": str(org_id), **detail},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     await _refresh_items(session, items)
     return ReservedBatch(reservations=reservations)
@@ -1454,7 +1446,7 @@ async def release(
         aggregate_type="inventory_reservation",
         aggregate_id=reservation.id,
         payload={"organization_id": str(org_id), **detail},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     await _refresh_items(session, [reservation.inventory_item_id])
     return reservation

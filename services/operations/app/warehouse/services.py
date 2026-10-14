@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Any
 
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,7 +32,7 @@ from app.warehouse import selectors
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
 from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 
 EVT_FLOOR_CREATED = "operations.warehouse.floor.created"
 EVT_FLOOR_UPDATED = "operations.warehouse.floor.updated"
@@ -41,14 +40,6 @@ EVT_LAYOUT_VERSION_OPENED = "operations.warehouse.layout_version.opened"
 EVT_LAYOUT_VERSION_DISCARDED = "operations.warehouse.layout_version.discarded"
 EVT_LAYOUT_GEOMETRY_SAVED = "operations.warehouse.layout_version.geometry_saved"
 EVT_LAYOUT_PUBLISHED = "operations.warehouse.layout_version.published"
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 # ------------------------------------------------------------------ floors
@@ -100,7 +91,7 @@ async def create_floor(
             "warehouse_id": str(warehouse.id),
             "floor_number": floor_number,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return floor
 
@@ -150,7 +141,7 @@ async def update_floor(
         aggregate_type="warehouse_floor",
         aggregate_id=floor.id,
         payload={"organization_id": str(org_id), "warehouse_floor_id": str(floor.id), **changes},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return floor
 
@@ -280,7 +271,7 @@ async def open_draft_version(
             "warehouse_floor_id": str(floor.id),
             "version_number": number,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return version
 
@@ -323,7 +314,7 @@ async def discard_draft_version(
         aggregate_type="layout_version",
         aggregate_id=version.id,
         payload={"organization_id": str(org_id), "layout_version_id": str(version.id)},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -461,7 +452,7 @@ async def save_draft_geometry(
             "walk_nodes": len(payload.walk_nodes),
             "walk_edges": len(payload.walk_edges),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return version
 
@@ -568,6 +559,6 @@ async def publish_layout_version(
             "version_number": version.version_number,
             "rollback": was_rollback,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return version

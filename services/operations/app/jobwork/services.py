@@ -54,7 +54,7 @@ from platform_core.errors import (
     NotFoundProblem,
     ValidationProblem,
 )
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 from platform_core.logging import get_logger
 
 log = get_logger("operations.jobwork")
@@ -84,14 +84,6 @@ class ReconciliationNotBalanced(ConflictProblem):
 
     problem_type = "jobwork-reconciliation-not-balanced"
     title = "Reconciliation does not balance"
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 def _hash(payload: dict[str, Any]) -> str:
@@ -172,7 +164,7 @@ def _emit(
         aggregate_type=aggregate_type,
         aggregate_id=aggregate_id,
         payload={"organization_id": str(ctx.organization_id), **payload},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 

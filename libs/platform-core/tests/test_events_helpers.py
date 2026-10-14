@@ -1,15 +1,42 @@
-"""`platform_core.events.parse_envelope_dt` — the tolerant timestamp read every consumer service
-used to carry its own copy of."""
+"""`platform_core.events.actor_for` and `parse_envelope_dt` — the two small helpers every
+consumer/producer service used to carry its own copy of."""
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 from structlog.testing import capture_logs
 
-from platform_core.events import parse_envelope_dt
+from platform_core.auth import Principal, Scope, ScopeContext
+from platform_core.events import actor_for, parse_envelope_dt
+
+
+def _ctx(membership_id: uuid.UUID | None) -> ScopeContext:
+    return ScopeContext(
+        principal=Principal(
+            sub=uuid.UUID(int=1),
+            organization_id=uuid.UUID(int=2),
+            membership_id=membership_id,
+        ),
+        permission="x.y.z",
+        scope=Scope.ORG,
+    )
+
+
+class TestActorFor:
+    def test_names_the_user_and_the_membership(self) -> None:
+        membership = uuid.uuid4()
+        assert actor_for(_ctx(membership)) == {
+            "type": "user",
+            "id": str(uuid.UUID(int=1)),
+            "membership_id": str(membership),
+        }
+
+    def test_a_principal_without_a_membership_emits_null_not_the_string_none(self) -> None:
+        assert actor_for(_ctx(None))["membership_id"] is None
 
 
 class TestParseEnvelopeDt:

@@ -43,21 +43,13 @@ from app.schemas import (
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
 from platform_core.errors import ConflictProblem, NotFoundProblem
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 
 EVT_TICKET_CREATED = "support.desk.ticket.created"
 EVT_TICKET_REPLIED = "support.desk.ticket.replied"
 EVT_TICKET_ASSIGNED = "support.desk.ticket.assigned"
 EVT_TICKET_STATUS_CHANGED = "support.desk.ticket.status_changed"
 EVT_TICKET_UPDATED = "support.desk.ticket.updated"
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 def _next_message_ref(count: int) -> str:
@@ -399,7 +391,7 @@ async def create_ticket(
             "status": ticket.status,
             "channel": ticket.channel,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return ticket
 
@@ -501,7 +493,7 @@ async def update_ticket(
             "number": ticket.number,
             "changed": sorted(changes),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return ticket
 
@@ -557,7 +549,7 @@ async def change_status(
             "from": before_status,
             "to": ticket.status,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return ticket
 
@@ -639,7 +631,7 @@ async def add_message(
             "author_type": author_type,
             "internal": internal,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return message
 
@@ -689,6 +681,6 @@ async def assign_ticket(
             "number": ticket.number,
             "assignee_id": assignee_ref,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return ticket

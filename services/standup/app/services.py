@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
-from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
@@ -27,18 +26,10 @@ from app.schemas import StandupEntryIn
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
 from platform_core.errors import ValidationProblem
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 
 # Event names. `pulseboard.*` because these are the product's own, not the platform's.
 EVT_ENTRY_POSTED = "pulseboard.standup.entry.posted"
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 async def post_entry(
@@ -111,7 +102,7 @@ async def post_entry(
             "date": entry_date.isoformat(),
             "blocked": blockers is not None,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return entry
 

@@ -50,7 +50,7 @@ from platform_core.errors import (
     NotFoundProblem,
     ValidationProblem,
 )
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 
 # Event names. `operations.*` because these are the product's own, not the platform's.
 EVT_SUPPLIER_CREATED = "operations.procurement.supplier.created"
@@ -63,14 +63,6 @@ EVT_PO_APPROVED = "operations.procurement.purchase_order.approved"
 EVT_PO_RECEIVED = "operations.procurement.purchase_order.received"
 EVT_PO_CLOSED = "operations.procurement.purchase_order.closed"
 EVT_PO_CANCELLED = "operations.procurement.purchase_order.cancelled"
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 async def _bump_supplier(
@@ -187,7 +179,7 @@ async def create_supplier(
             "code": code,
             "category": category,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return supplier
 
@@ -247,7 +239,7 @@ async def update_supplier(
             "supplier_id": str(supplier.id),
             "changed": sorted(changes),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return supplier
 
@@ -296,7 +288,7 @@ async def delete_supplier(
         aggregate_type="supplier",
         aggregate_id=supplier.id,
         payload={"organization_id": str(ctx.organization_id), "supplier_id": str(supplier.id)},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -407,7 +399,7 @@ async def create_purchase_order(
             "supplier_id": str(supplier.id),
             "status": status,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return po
 
@@ -628,7 +620,7 @@ async def update_purchase_order(
             "purchase_order_id": str(po.id),
             "changed": sorted(set(changes) | ({"lines"} if lines_payload is not None else set())),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return po
 
@@ -676,7 +668,7 @@ async def delete_purchase_order(
         aggregate_type="purchase_order",
         aggregate_id=po.id,
         payload={"organization_id": str(ctx.organization_id), "purchase_order_id": str(po.id)},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -730,7 +722,7 @@ async def approve_purchase_order(
             "number": po.number,
             "spend_applied": spend_applied,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return po
 
@@ -813,7 +805,7 @@ async def close_purchase_order(
             "purchase_order_id": str(po.id),
             "number": po.number,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return po
 
@@ -887,6 +879,6 @@ async def cancel_purchase_order(
             "number": po.number,
             "reason": reason,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return po

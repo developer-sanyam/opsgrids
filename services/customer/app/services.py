@@ -26,7 +26,6 @@ import re
 import time
 import uuid
 from datetime import datetime
-from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,7 +46,7 @@ from platform_core.errors import (
     UpstreamUnavailableProblem,
     ValidationProblem,
 )
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 from platform_core.logging import get_logger
 from platform_core.models import utcnow
 from platform_core.pii import blind_index, open_sealed, seal
@@ -122,14 +121,6 @@ EVT_COMPANY_DELETED = "crm.book.company.deleted"
 EVT_CONTACT_CREATED = "crm.book.contact.created"
 EVT_CONTACT_UPDATED = "crm.book.contact.updated"
 EVT_CONTACT_DELETED = "crm.book.contact.deleted"
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 #: The permission the pipeline's `activity.logged` consumer runs under. `touch_contact_activity`
@@ -486,7 +477,7 @@ async def create_company(
             "status": status,
             "owner_id": str(owner_id),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return company
 
@@ -554,7 +545,7 @@ async def update_company(
             "company_id": str(company.id),
             "changed": sorted(changes),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return company
 
@@ -608,7 +599,7 @@ async def delete_company(
         aggregate_type="company",
         aggregate_id=company.id,
         payload={"organization_id": str(ctx.organization_id), "company_id": str(company.id)},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -706,7 +697,7 @@ async def create_contact(
             "full_name": full_name,
             "status": status,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return contact
 
@@ -772,7 +763,7 @@ async def update_contact(
             "contact_id": str(contact.id),
             "changed": sorted(changes),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return contact
 
@@ -818,7 +809,7 @@ async def delete_contact(
         aggregate_type="contact",
         aggregate_id=contact.id,
         payload={"organization_id": str(ctx.organization_id), "contact_id": str(contact.id)},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 

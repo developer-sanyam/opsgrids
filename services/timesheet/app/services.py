@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
-from typing import Any
 
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,19 +28,11 @@ from app.schemas import TimesheetWeekIn
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
 from platform_core.errors import ConflictProblem, ForbiddenProblem, ValidationProblem
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 
 # Event names. `pulseboard.*` because these are the product's own, not the platform's.
 EVT_WEEK_RECORDED = "pulseboard.time.timesheet.recorded"
 EVT_STATUS_CHANGED = "pulseboard.time.timesheet.status_changed"
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 async def record_week(
@@ -162,7 +153,7 @@ async def record_week(
             "status": status,
             "billable_minutes": total_billable,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return sheet
 
@@ -254,6 +245,6 @@ async def set_status(
             "week_start": sheet.week_start.isoformat(),
             "status": target_status,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return sheet

@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, date, datetime
-from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,7 +42,7 @@ from app.models import (
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
 from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 
 EVT_SESSION_OPENED = "operations.inventory.count_session.opened"
 EVT_SESSION_REVIEW_STARTED = "operations.inventory.count_session.review_started"
@@ -57,14 +56,6 @@ EVT_DISCREPANCY_REJECTED = "operations.inventory.count_line.discrepancy_rejected
 #: `CreatePickTasksIn`-adjacent payloads are — a plainly abusive request size, not a real
 #: warehouse's location count.
 _MAX_SCOPE_LOCATIONS = 5000
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 async def lock_warehouse(
@@ -233,7 +224,7 @@ async def open_session(
             "scope_kind": scope_kind,
             "line_count": len(balances),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return count_session
 
@@ -279,7 +270,7 @@ async def _transition(
         aggregate_type="count_session",
         aggregate_id=count_session.id,
         payload={"organization_id": str(ctx.organization_id), "session_id": str(count_session.id)},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return count_session
 
@@ -424,7 +415,7 @@ async def submit_count(
             "counted_milli": counted_milli,
             "expected_milli": line.expected_milli,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return line
 
@@ -555,7 +546,7 @@ async def add_unlisted_line(
             "expected_milli": 0,
             "is_unlisted": True,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return line
 
@@ -661,6 +652,6 @@ async def review_line(
             "expected_milli": line.expected_milli,
             **({"posted_move_id": str(posted_move_id)} if posted_move_id else {}),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return line

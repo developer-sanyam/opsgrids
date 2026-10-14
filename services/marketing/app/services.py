@@ -23,7 +23,7 @@ from app.schemas import AudienceIn, AudiencePatch, CampaignIn, CampaignPatch
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
 from platform_core.errors import BusinessRuleProblem, ConflictProblem, NotFoundProblem
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 from platform_core.models import utcnow
 
 # Event names. `marketing.*` because these are the product's own, not the platform's.
@@ -33,14 +33,6 @@ EVT_AUDIENCE_DELETED = "marketing.analytics.audience.deleted"
 EVT_CAMPAIGN_CREATED = "marketing.analytics.campaign.created"
 EVT_CAMPAIGN_UPDATED = "marketing.analytics.campaign.updated"
 EVT_CAMPAIGN_DELETED = "marketing.analytics.campaign.deleted"
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 async def create_audience(
@@ -88,7 +80,7 @@ async def create_audience(
             "name": audience.name,
             "size": audience.size,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return audience
 
@@ -156,7 +148,7 @@ async def update_audience(
             "audience_id": str(audience.id),
             "name": audience.name,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return audience
 
@@ -204,7 +196,7 @@ async def delete_audience(
         aggregate_type="audience",
         aggregate_id=audience.id,
         payload={"organization_id": str(ctx.organization_id), "audience_id": str(audience.id)},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -277,7 +269,7 @@ async def create_campaign(
             "status": campaign.status,
             "audience_id": str(campaign.audience_id),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return campaign
 
@@ -356,7 +348,7 @@ async def update_campaign(
             "changed": sorted(changes),
             "status": campaign.status,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return campaign
 
@@ -396,7 +388,7 @@ async def delete_campaign(
         aggregate_type="campaign",
         aggregate_id=campaign.id,
         payload={"organization_id": str(ctx.organization_id), "campaign_id": str(campaign.id)},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 

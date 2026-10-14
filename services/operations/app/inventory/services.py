@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, date, datetime
-from typing import Any
 
 from sqlalchemy import BigInteger, cast, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -59,7 +58,7 @@ from platform_core.errors import (
     NotFoundProblem,
     ValidationProblem,
 )
-from platform_core.events import publish_event
+from platform_core.events import actor_for, publish_event
 
 EVT_WAREHOUSE_CREATED = "operations.inventory.warehouse.created"
 EVT_WAREHOUSE_UPDATED = "operations.inventory.warehouse.updated"
@@ -84,14 +83,6 @@ EVT_ITEM_VARIANT_UPDATED = "operations.inventory.item_variant.updated"
 EVT_ITEM_VARIANT_DELETED = "operations.inventory.item_variant.deleted"
 EVT_STOCK_ADJUSTED = "operations.inventory.stock.adjusted"
 EVT_DISCREPANCY_RESOLVED = "operations.inventory.discrepancy.resolved"
-
-
-def _actor(ctx: ScopeContext) -> dict[str, Any]:
-    return {
-        "type": "user",
-        "id": str(ctx.principal.sub),
-        "membership_id": str(ctx.principal.membership_id) if ctx.principal.membership_id else None,
-    }
 
 
 def _duplicate(field: str, message: str) -> ConflictProblem:
@@ -313,7 +304,7 @@ async def create_warehouse(
             "warehouse_id": str(warehouse.id),
             "code": code,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return warehouse
 
@@ -398,7 +389,7 @@ async def update_warehouse(
             "warehouse_id": str(warehouse.id),
             "changed": sorted(changes),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return warehouse
 
@@ -461,7 +452,7 @@ async def delete_warehouse(
         aggregate_type="warehouse",
         aggregate_id=warehouse.id,
         payload={"organization_id": str(org_id), "warehouse_id": str(warehouse.id)},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -537,7 +528,7 @@ async def create_location(
             "warehouse_id": str(warehouse.id),
             "kind": kind,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return location
 
@@ -624,7 +615,7 @@ async def update_location(
             "location_id": str(location.id),
             "changed": sorted(changes),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return location
 
@@ -729,7 +720,7 @@ async def delete_location(
             "location_id": str(location.id),
             "warehouse_id": str(location.warehouse_id),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -862,7 +853,7 @@ async def create_item_category(
         aggregate_type="item_category",
         aggregate_id=category.id,
         payload={"organization_id": str(ctx.organization_id), "item_category_id": str(category.id)},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return category
 
@@ -917,7 +908,7 @@ async def update_item_category(
             "item_category_id": str(category.id),
             "changed": sorted(changes),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return category
 
@@ -972,7 +963,7 @@ async def delete_item_category(
         aggregate_type="item_category",
         aggregate_id=category.id,
         payload={"organization_id": str(org_id), "item_category_id": str(category.id)},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -1156,7 +1147,7 @@ async def create_inventory_item(
             "inventory_item_id": str(item.id),
             "sku": sku,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return item
 
@@ -1266,7 +1257,7 @@ async def update_inventory_item(
             "inventory_item_id": str(item.id),
             "changed": sorted(changes),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return item
 
@@ -1377,7 +1368,7 @@ async def delete_inventory_item(
         aggregate_type="inventory_item",
         aggregate_id=item.id,
         payload={"organization_id": str(ctx.organization_id), "inventory_item_id": str(item.id)},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -1459,7 +1450,7 @@ async def set_item_attribute(
             "key": key,
             **{k: (v.isoformat() if isinstance(v, date) else v) for k, v in after.items()},
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return attribute
 
@@ -1499,7 +1490,7 @@ async def delete_item_attribute(
         aggregate_type="item_attribute",
         aggregate_id=attribute_id,
         payload={"organization_id": str(org_id), "inventory_item_id": str(item.id), "key": key},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -1558,7 +1549,7 @@ async def create_item_variant(
             "inventory_item_id": str(item.id),
             "sku": sku,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return variant
 
@@ -1602,7 +1593,7 @@ async def update_item_variant(
             "item_variant_id": str(variant.id),
             "changed": sorted(changes),
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return variant
 
@@ -1639,7 +1630,7 @@ async def delete_item_variant(
         aggregate_type="item_variant",
         aggregate_id=variant.id,
         payload={"organization_id": str(ctx.organization_id), "item_variant_id": str(variant.id)},
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
 
 
@@ -1742,7 +1733,7 @@ async def adjust_stock(
             "on_hand_after": item.on_hand,
             "kind": kind,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return item
 
@@ -1817,6 +1808,6 @@ async def resolve_discrepancy(
             "kind": discrepancy.kind,
             "note": note,
         },
-        actor=_actor(ctx),
+        actor=actor_for(ctx),
     )
     return discrepancy
