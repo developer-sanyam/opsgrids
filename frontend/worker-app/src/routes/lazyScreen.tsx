@@ -1,9 +1,8 @@
 import { Component, Suspense, lazy, useState } from "react";
 import type { ComponentType, ReactNode } from "react";
 
-import { Card, ErrorState } from "@opsgrids/ui";
+import { Card, ErrorState, RouteFallback } from "@opsgrids/ui";
 
-import { RouteFallback } from "./RouteFallback";
 
 interface ScreenBoundaryProps {
   /** What the screen is called, for the heading: "Put away". */

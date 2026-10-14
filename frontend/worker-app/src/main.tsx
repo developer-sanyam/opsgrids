@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
 import { RedirectToCentralLogin, configureAuthOrigin, configureSession } from "@opsgrids/client";
-import { ThemeProvider, Toaster } from "@opsgrids/ui";
+import { NotFoundScreen, RouteFallback, ThemeProvider, Toaster } from "@opsgrids/ui";
 import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
@@ -11,8 +11,6 @@ import { RequireAuth } from "./auth/RequireAuth";
 import { HomePage } from "./routes/Home";
 import { LoginPage } from "./routes/Login";
 import { lazyScreen } from "./routes/lazyScreen";
-import { NotFoundPage } from "./routes/NotFound";
-import { RouteFallback } from "./routes/RouteFallback";
 import { LogoMark } from "./ui/LogoMark";
 import { WorkerProvider } from "./worker/WorkerProvider";
 
@@ -147,7 +145,7 @@ const router = createBrowserRouter([
               </Suspense>
             ),
           },
-          { path: "*", element: <NotFoundPage /> },
+          { path: "*", element: <NotFoundScreen description="The page you were looking for isn't here. Head back to your tasks." backLabel="Back to tasks" /> },
         ],
       },
     ],

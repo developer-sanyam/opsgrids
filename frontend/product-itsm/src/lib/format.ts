@@ -24,16 +24,7 @@ export function formatDateTime(iso: string | null): string {
 }
 
 /** "2021-03-15" -> "15 Mar 2021". */
-export function formatDate(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return d.toLocaleDateString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "UTC",
-  });
-}
+export { formatCalendarDate as formatDate } from "@opsgrids/ui";
 
 /**
  * A compact relative label against the real clock (`@/lib/clock`'s `now()` — pinned only in

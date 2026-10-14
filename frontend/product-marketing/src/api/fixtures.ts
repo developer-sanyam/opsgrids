@@ -13,7 +13,7 @@
  * refuses to delete.
  */
 
-import { ApiError } from "@opsgrids/client";
+import { ApiError, paginateFixture as paginate } from "@opsgrids/client";
 
 import { channelPerformance, overviewTotals } from "@/data/derive";
 import type {
@@ -60,12 +60,6 @@ function fixtureId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`;
 }
 
-function paginate<T>(items: T[], page: number, size: number): Page<T> {
-  const total = items.length;
-  const pages = total === 0 ? 0 : Math.ceil(total / size);
-  const start = (page - 1) * size;
-  return { items: items.slice(start, start + size), total, page, size, pages };
-}
 
 /** The lifecycle graph — a byte-for-byte mirror of `app.domain.CAMPAIGN_TRANSITIONS`. */
 const CAMPAIGN_TRANSITIONS: Record<CampaignStatus, ReadonlySet<CampaignStatus>> = {

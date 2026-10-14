@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { RequirePermission } from "@opsgrids/client";
 import type { Scope } from "@opsgrids/client";
 
-import { PermissionDenied } from "@/ui/PermissionDenied";
+import { PermissionDenied } from "@opsgrids/ui";
 
 /**
  * A screen gated on one Operations permission. Copied from `product-engage`'s
@@ -24,7 +24,7 @@ export function RequireGrant({
   children: ReactNode;
 }) {
   return (
-    <RequirePermission perm={permission} scope={scope} fallback={<PermissionDenied what={what} />}>
+    <RequirePermission perm={permission} scope={scope} fallback={<PermissionDenied what={what} remedy="ask your supervisor to add the permission." />}>
       {children}
     </RequirePermission>
   );

@@ -12,7 +12,7 @@ import { ApiError } from "@opsgrids/client";
 import type { WarehouseMapOut } from "@/api/types";
 import { resetReports } from "@/lib/clientReport";
 import { renderRoutes } from "@/test-utils/renderRoutes";
-import { stubViewport } from "@/test-utils/viewport";
+import { stubViewport } from "@opsgrids/ui/test-media";
 import { WarehousesMapPage } from "./WarehousesMap";
 
 const getWarehousesMap = vi.fn();

@@ -3,7 +3,7 @@
  * everywhere else in this app.
  */
 
-import { ApiError, apiRequest, settle } from "@opsgrids/client";
+import { ApiError, apiRequest, paginateFixture, settle } from "@opsgrids/client";
 
 import { USE_FIXTURES } from "@/api/client";
 import { ENQUIRY_TRANSITIONS } from "./types";
@@ -57,10 +57,7 @@ const SEED: EnquiryOut[] = [
 let fixtureEnquiries: EnquiryOut[] = SEED.map((e) => ({ ...e }));
 
 function paginate<T>(items: T[], page: number, size: number): PagedResult<T> {
-  const total = items.length;
-  const pages = Math.max(1, Math.ceil(total / size));
-  const start = (page - 1) * size;
-  return { items: items.slice(start, start + size), total, page, pages, size };
+  return paginateFixture(items, page, size, { pagesWhenEmpty: 1 });
 }
 
 export async function listEnquiries(params: ListEnquiriesParams = {}): Promise<PagedResult<EnquiryOut>> {

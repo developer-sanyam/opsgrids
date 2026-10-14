@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
 import { RedirectToCentralLogin, configureAuthOrigin, configureSession } from "@opsgrids/client";
-import { ThemeProvider } from "@opsgrids/ui";
+import { NotFoundScreen, ThemeProvider } from "@opsgrids/ui";
 import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
@@ -15,7 +15,6 @@ import { BoardPage } from "./routes/Board";
 import { MilestonesPage } from "./routes/Milestones";
 import { TeamPage } from "./routes/Team";
 import { LoginPage } from "./routes/Login";
-import { NotFoundPage } from "./routes/NotFound";
 import { LogoMark } from "./ui/LogoMark";
 
 // ADR-0003 addendum: sign-in only ever happens on the dashboard, the one host the refresh
@@ -59,7 +58,7 @@ const router = createBrowserRouter([
           { path: "portfolio", element: <PortfolioPage /> },
           { path: "milestones", element: <MilestonesPage /> },
           { path: "team", element: <TeamPage /> },
-          { path: "*", element: <NotFoundPage /> },
+          { path: "*", element: <NotFoundScreen /> },
         ],
       },
     ],

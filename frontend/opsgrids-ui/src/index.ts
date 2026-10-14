@@ -108,6 +108,7 @@ export { KanbanBoard } from "./components/KanbanBoard";
 export type { KanbanBoardProps, KanbanCardState, KanbanColumn, KanbanMoveResult } from "./components/KanbanBoard";
 export { SampleChip } from "./components/SampleChip";
 export { SearchInput } from "./components/SearchInput";
+export { ComingSoonPage, NotFoundScreen, PermissionDenied, RouteFallback } from "./components/RouteScreens";
 export { Select } from "./components/Select";
 export type { SelectOption } from "./components/Select";
 export { Sidebar } from "./components/Sidebar";
@@ -163,7 +164,7 @@ export type {
   ZoneLookup,
   ZoneResolution,
 } from "./lib/datetime";
-export { currencyExponent, formatDelta, formatMoney, initials, minorToInput, parseMinor, toMajor } from "./lib/format";
+export { currencyExponent, formatCalendarDate, formatDelta, formatMoney, initials, minorToInput, parseMinor, toMajor } from "./lib/format";
 export type { MoneyOptions, MoneyParse } from "./lib/format";
 export { moduleIcon } from "./lib/moduleIcons";
 export { encodeQr, qrPathData } from "./lib/qr";
@@ -172,6 +173,7 @@ export { useTheme } from "./lib/theme";
 export type { Theme, ThemeControls } from "./lib/theme";
 export { useToast } from "./lib/toast";
 export type { ToastControls, ToastOptions, ToastTone } from "./lib/toast";
+export { lazyRoute } from "./lib/lazyRoute";
 export { ICON_TILE } from "./lib/tones";
 export type { Tone } from "./lib/tones";
 export { useDebouncedValue } from "./lib/useDebouncedValue";
