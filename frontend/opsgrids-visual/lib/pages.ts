@@ -112,7 +112,12 @@ export const PAGES: PageSpec[] = [
     routes: [...CRM.routes],
     surface: "page/crm/deals-list",
     path: "/deals",
-    ready: (page) => page.getByRole("table", { name: "All deals in the pipeline" }),
+    // A table from the tablet breakpoint up; below it `DataTable` draws a list of cards under the
+    // same caption (mobile shared layer), so either is the loaded list.
+    ready: (page) =>
+      page
+        .getByRole("table", { name: "All deals in the pipeline" })
+        .or(page.getByRole("list", { name: "All deals in the pipeline" })),
     act: async (page) => {
       // By position, not by name: below `sm` the tab's label is hidden and it has no name at all
       // (which the a11y baseline records).

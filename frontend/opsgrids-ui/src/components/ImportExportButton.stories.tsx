@@ -348,7 +348,14 @@ function LaunchedFromTheMenu(args: ImportExportButtonProps) {
 export const LaunchedFromAMenuItem: Story = {
   render: (args) => <LaunchedFromTheMenu {...args} />,
   play: async ({ canvas, userEvent }) => {
-    await userEvent.click(canvas.getByRole("button", { name: "Import / Export" }));
+    // From 640px the action is a button in the header row; below it, an item in "More actions".
+    const button = canvas.queryByRole("button", { name: "Import / Export" });
+    if (button) {
+      await userEvent.click(button);
+    } else {
+      await userEvent.click(canvas.getByRole("button", { name: "More actions" }));
+      await userEvent.click(await screen.findByRole("menuitem", { name: "Import / Export" }));
+    }
     await screen.findByRole("dialog");
   },
 };
