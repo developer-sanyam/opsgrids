@@ -111,7 +111,7 @@ def _txt_strings(rdata: Any) -> str:
     """One TXT answer's text, joined — a DNS TXT record is one or more <=255-byte chunks, and
     reading `to_text()` instead would hand back the chunks still quoted and separated, which
     matches nothing the merchant was told to publish (mirrors
-    `services/notification/app/dns_check.py:_answer_text`)."""
+    `platform_core.dns.answer_text`)."""
     strings: tuple[bytes, ...] | None = getattr(rdata, "strings", None)
     if strings is not None:
         return b"".join(strings).decode("utf-8", "replace")
