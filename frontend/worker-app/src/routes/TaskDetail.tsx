@@ -17,7 +17,7 @@ import { RequireGrant } from "@/auth/RequireGrant";
 import { acceptOffer, declineOffer, getTask, releaseTask, resolveException } from "@/api/client";
 import type { PickExceptionOut } from "@/api/types";
 import { formatQty, qtyToMilli } from "@/lib/quantity";
-import { shortId } from "@/lib/shortId";
+import { itemTitle, orderLabel, qtyWithUnit, sourceLabel } from "@/lib/display";
 import { AssignmentOfferStatusPill, PickTaskStatusPill } from "@/ui/StatusPill";
 import { useMyWorker } from "@/worker/context";
 import { findMyLiveOffer } from "@/worker/offers";
@@ -101,7 +101,7 @@ function TaskDetailContent() {
     <div className="rise flex flex-col gap-6">
       <PageHeader
         eyebrow={`Round ${task.round} of ${task.max_rounds}`}
-        title={`Order ${shortId(task.order_id)}`}
+        title={`Order ${orderLabel(task)}`}
         actions={<PickTaskStatusPill status={task.status} />}
       />
 
@@ -149,21 +149,24 @@ function TaskDetailContent() {
           return (
             <div key={line.id} className="flex items-center gap-3 p-4">
               <div className="flex min-w-0 flex-1 flex-col gap-1">
-                <span className="truncate font-mono text-sm font-semibold text-ink">{line.sku}</span>
+                <span className="truncate text-sm font-semibold text-ink">{itemTitle(line)}</span>
+                {line.item_name ? (
+                  <span className="truncate font-mono text-xs text-muted">{line.sku}</span>
+                ) : null}
                 <span className="text-xs text-muted">
-                  {formatQty(line.quantity)} requested
-                  {qtyMilliZero(line.picked) ? "" : ` · ${formatQty(line.picked)} picked`}
-                  {qtyMilliZero(line.short) ? "" : ` · ${formatQty(line.short)} short`}
+                  {qtyWithUnit(line.quantity, line.item_unit)} requested
+                  {qtyMilliZero(line.picked) ? "" : ` · ${qtyWithUnit(line.picked, line.item_unit)} picked`}
+                  {qtyMilliZero(line.short) ? "" : ` · ${qtyWithUnit(line.short, line.item_unit)} short`}
                 </span>
                 <span className="text-xs text-faint">
-                  {LINE_STATUS_LABEL[line.status]} · from {shortId(line.source_location_id)}
+                  {LINE_STATUS_LABEL[line.status]} · from {sourceLabel(line)}
                   {line.sequence !== null ? ` · stop ${line.sequence}` : ""}
                 </span>
               </div>
               {canPick ? (
                 <Link
                   to={`/tasks/${task.id}/lines/${line.id}/pick`}
-                  className="flex h-10 shrink-0 items-center gap-1 rounded-tile border border-field-edge px-3 text-sm font-semibold text-ink hover:bg-sunken"
+                  className="flex h-12 shrink-0 items-center gap-1 rounded-tile border border-field-edge px-4 text-sm font-semibold text-ink hover:bg-sunken"
                 >
                   Confirm
                   <ChevronRightIcon className="size-4" aria-hidden />

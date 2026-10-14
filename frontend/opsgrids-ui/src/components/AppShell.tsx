@@ -104,6 +104,11 @@ export interface AppShellProps {
    * Whatever the source, the bar holds five at most and More is always the last.
    */
   bottomNavExtra?: NavEntry[] | undefined;
+  /**
+   * Destinations that belong to the person rather than the product (a worker's Profile), listed in
+   * the account menu in the header above "Sign out" instead of taking a bottom-nav slot.
+   */
+  accountLinks?: NavEntry[] | undefined;
   /** Grants/directory status banners — rendered once, at the top of the routed content, replacing
    *  the near-identical copy eleven apps used to render above the shell. */
   banner?: ReactNode | undefined;
@@ -121,13 +126,24 @@ export interface AppShellProps {
 function AccountMenu({
   user,
   onSignOut,
+  accountLinks,
+  onNavigate,
   bare = false,
 }: {
   user: AppShellUser;
   onSignOut: () => void;
+  accountLinks?: NavEntry[] | undefined;
+  onNavigate: (to: string) => void;
   bare?: boolean | undefined;
 }) {
-  const items = [{ label: "Sign out", icon: <LogOutIcon className="size-5" aria-hidden />, onSelect: onSignOut }];
+  const items = [
+    ...(accountLinks ?? []).map((entry) => ({
+      label: entry.label,
+      icon: <entry.icon className="size-5" aria-hidden />,
+      onSelect: () => onNavigate(entry.to),
+    })),
+    { label: "Sign out", icon: <LogOutIcon className="size-5" aria-hidden />, onSelect: onSignOut },
+  ];
   if (bare) {
     return (
       <Menu label={`Account menu — ${user.name}`} trigger="icon" icon={<Avatar name={user.name} size="sm" />} align="end" items={items} />
@@ -223,6 +239,7 @@ export function AppShell({
   helpHref,
   quickActions,
   bottomNavExtra,
+  accountLinks,
   banner,
   layout = "default",
   badgeTone,
@@ -464,14 +481,14 @@ export function AppShell({
             onOpenNav={() => setNavDrawerOpen(true)}
             {...(search ? { search: { placeholder: search.placeholder, onOpen: () => setCommandOpen(true) } } : {})}
             notifications={notifications}
-            profile={<AccountMenu user={user} onSignOut={onSignOut} bare />}
+            profile={<AccountMenu user={user} onSignOut={onSignOut} accountLinks={accountLinks} onNavigate={(to) => navigate(to)} bare />}
           />
           <TopBar
             search={search}
             onOpenSearch={() => setCommandOpen(true)}
             notifications={notifications}
             helpHref={helpHref}
-            profile={<AccountMenu user={user} onSignOut={onSignOut} />}
+            profile={<AccountMenu user={user} onSignOut={onSignOut} accountLinks={accountLinks} onNavigate={(to) => navigate(to)} />}
           />
 
           <main

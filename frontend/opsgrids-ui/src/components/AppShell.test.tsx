@@ -274,3 +274,24 @@ describe("AppShell — sign out", () => {
     expect(onSignOut).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("AppShell — account links", () => {
+  it("lists a person-level destination in the account menu and navigates to it", async () => {
+    const user = userEvent.setup();
+    renderShell({ accountLinks: [{ to: "/two", label: "Profile", icon: UsersIcon }] });
+    const trigger = screen.getAllByRole("button", { name: /Account menu/ })[0];
+    if (!trigger) throw new Error("account menu trigger not found");
+    await user.click(trigger);
+    await user.click(screen.getByRole("menuitem", { name: "Profile" }));
+    expect(await screen.findByRole("heading", { name: "Page two" })).toBeTruthy();
+  });
+
+  it("adds nothing to the account menu when none are given", async () => {
+    const user = userEvent.setup();
+    renderShell();
+    const trigger = screen.getAllByRole("button", { name: /Account menu/ })[0];
+    if (!trigger) throw new Error("account menu trigger not found");
+    await user.click(trigger);
+    expect(screen.queryByRole("menuitem", { name: "Profile" })).toBeNull();
+  });
+});

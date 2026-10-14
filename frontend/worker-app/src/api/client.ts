@@ -90,13 +90,15 @@ export interface ListTasksParams {
   status?: PickTaskStatus | undefined;
   warehouse_id?: string | undefined;
   order_id?: string | undefined;
+  /** Only tasks the caller holds a live offer on, filtered by the server. */
+  assigned_to_me?: boolean | undefined;
   page?: number | undefined;
   size?: number | undefined;
 }
 
-/** `GET /operations/fulfilment/tasks` — `operations.fulfilment.task.read:ORG`. There is no
- *  `mine`/`worker_id` filter on this endpoint, so "my tasks" is resolved client-side from each
- *  task's own `offers` against the caller's own worker id (`useMyWorker`). */
+/** `GET /operations/fulfilment/tasks` — `operations.fulfilment.task.read:ORG`. `assigned_to_me`
+ *  asks the server for only the caller's own live offers (`OFFERED`/`ACCEPTED`), so "my tasks" is
+ *  not a client-side filter over the whole board. */
 export async function listTasks(params: ListTasksParams = {}): Promise<Page<PickTaskOut>> {
   const query = buildQuery({
     page: params.page ?? 1,
@@ -104,6 +106,7 @@ export async function listTasks(params: ListTasksParams = {}): Promise<Page<Pick
     status: params.status,
     warehouse_id: params.warehouse_id,
     order_id: params.order_id,
+    assigned_to_me: params.assigned_to_me,
   });
   return apiRequest<Page<PickTaskOut>>(`/operations/fulfilment/tasks${query}`);
 }

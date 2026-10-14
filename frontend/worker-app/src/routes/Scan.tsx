@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { ApiError, problemMessage, useAsync } from "@opsgrids/client";
-import { Button, Card, ErrorState, InlineAlert, PageHeader, Skeleton, Tabs, TextField } from "@opsgrids/ui";
+import { Button, Card, ErrorState, InlineAlert, PageHeader, Skeleton, Tabs } from "@opsgrids/ui";
 
 import { getTask, resolveLocationByBarcode } from "@/api/client";
 import type { PickTaskLineOut } from "@/api/types";
@@ -10,7 +10,8 @@ import { RequireGrant } from "@/auth/RequireGrant";
 import { useBarcodeScanner } from "@/lib/useBarcodeScanner";
 import type { CameraScanStatus } from "@/lib/useBarcodeScanner";
 import { useScanQueue } from "@/lib/useScanQueue";
-import { shortId } from "@/lib/shortId";
+import { locationCode, orderLabel } from "@/lib/display";
+import { ScanInput } from "@/ui/ScanInput";
 import { CameraIcon, WifiOffIcon } from "@/ui/icons";
 
 type Mode = "item" | "location";
@@ -63,10 +64,10 @@ function ScanContent() {
     );
   }
 
-  return <Scanner taskId={taskId} lines={state.data.lines} />;
+  return <Scanner taskId={taskId} lines={state.data.lines} order={orderLabel(state.data)} />;
 }
 
-function Scanner({ taskId, lines }: { taskId: string; lines: PickTaskLineOut[] }) {
+function Scanner({ taskId, lines, order }: { taskId: string; lines: PickTaskLineOut[]; order: string }) {
   const [mode, setMode] = useState<Mode>("item");
   const [manualValue, setManualValue] = useState("");
   const [feedback, setFeedback] = useState<Feedback | null>(null);
@@ -115,8 +116,8 @@ function Scanner({ taskId, lines }: { taskId: string; lines: PickTaskLineOut[] }
       );
       setFeedback(
         expected
-          ? { tone: "success", message: `Confirmed ${location.code || shortId(location.id)}.` }
-          : { tone: "danger", message: `${location.code || shortId(location.id)} isn't a pick location for this task.` },
+          ? { tone: "success", message: `Confirmed ${locationCode(location.code, location.id)}.` }
+          : { tone: "danger", message: `${locationCode(location.code, location.id)} isn't a pick location for this task.` },
       );
       queue.enqueue({ barcode: value, location_id: location.id });
     } catch (err) {
@@ -144,7 +145,7 @@ function Scanner({ taskId, lines }: { taskId: string; lines: PickTaskLineOut[] }
 
   return (
     <div className="rise flex flex-col gap-6">
-      <PageHeader title="Scan" description={`Task ${shortId(taskId)}`} />
+      <PageHeader title="Scan" description={`Order ${order}`} />
 
       {!queue.online ? (
         <InlineAlert tone="warning" title="You're offline">
@@ -199,25 +200,22 @@ function Scanner({ taskId, lines }: { taskId: string; lines: PickTaskLineOut[] }
           </div>
         )}
 
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            void handleValue(manualValue);
-          }}
-          className="flex items-end gap-2"
+        <ScanInput
+          ref={inputRef}
+          label={mode === "item" ? "Item barcode or SKU" : "Location barcode"}
+          value={manualValue}
+          onChange={setManualValue}
+          onSubmit={() => void handleValue(manualValue)}
+          placeholder="Scan, or tap Type instead"
+        />
+        <Button
+          className="min-h-12"
+          onClick={() => void handleValue(manualValue)}
+          disabled={resolving || manualValue.trim() === ""}
+          loading={resolving}
         >
-          <TextField
-            ref={inputRef}
-            label={mode === "item" ? "Item barcode or SKU" : "Location barcode"}
-            containerClassName="flex-1"
-            value={manualValue}
-            onChange={(event) => setManualValue(event.target.value)}
-            autoComplete="off"
-          />
-          <Button type="submit" disabled={resolving || manualValue.trim() === ""} loading={resolving}>
-            Log
-          </Button>
-        </form>
+          Log
+        </Button>
       </Card>
 
       {feedback ? (
@@ -227,9 +225,9 @@ function Scanner({ taskId, lines }: { taskId: string; lines: PickTaskLineOut[] }
       {matchedLine ? (
         <Link
           to={`/tasks/${taskId}/lines/${matchedLine.id}/pick`}
-          className="flex h-12 items-center justify-center rounded-tile bg-accent px-4 font-semibold text-on-accent transition-colors hover:bg-accent-strong"
+          className="flex min-h-12 items-center justify-center rounded-tile bg-accent px-4 font-semibold text-on-accent transition-colors hover:bg-accent-strong"
         >
-          Confirm pick for {matchedLine.sku}
+          Confirm pick for {matchedLine.item_name ?? matchedLine.sku}
         </Link>
       ) : null}
     </div>

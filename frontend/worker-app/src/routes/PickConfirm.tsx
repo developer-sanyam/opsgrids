@@ -9,7 +9,8 @@ import { confirmPick, getTask } from "@/api/client";
 import type { PickExceptionReason } from "@/api/types";
 import { RequireGrant } from "@/auth/RequireGrant";
 import { formatQty, milliToQty, qtyToMilli } from "@/lib/quantity";
-import { shortId } from "@/lib/shortId";
+import { itemTitle, orderLabel, qtyWithUnit, sourceLabel } from "@/lib/display";
+import { StickyAction } from "@/ui/StickyAction";
 import { remainingMilli } from "@/worker/taskLines";
 
 const REASON_OPTIONS: RadioOption[] = [
@@ -109,8 +110,11 @@ function PickConfirmContent() {
     <PickForm
       taskId={taskId}
       lineId={lineId}
-      sku={line.sku}
-      sourceLocationId={line.source_location_id}
+      title={itemTitle(line)}
+      sku={line.item_name ? line.sku : null}
+      unit={line.item_unit}
+      orderNumber={orderLabel(task)}
+      source={sourceLabel(line)}
       remainingMilli={remaining}
       onDone={() => navigate(`/tasks/${taskId}`)}
     />
@@ -120,15 +124,22 @@ function PickConfirmContent() {
 function PickForm({
   taskId,
   lineId,
+  title,
   sku,
-  sourceLocationId,
+  unit,
+  orderNumber,
+  source,
   remainingMilli: remaining,
   onDone,
 }: {
   taskId: string;
   lineId: string;
-  sku: string;
-  sourceLocationId: string;
+  title: string;
+  /** Shown under the title when the title is the item's name rather than the SKU itself. */
+  sku: string | null;
+  unit: string | null;
+  orderNumber: string;
+  source: string;
   remainingMilli: number;
   onDone: () => void;
 }) {
@@ -185,12 +196,13 @@ function PickForm({
 
   return (
     <div className="rise flex flex-col gap-6">
-      <PageHeader title="Confirm pick" description={`From ${shortId(sourceLocationId)}`} />
+      <PageHeader title="Confirm pick" description={`Order ${orderNumber} · from ${source}`} />
 
       <Card className="flex flex-col gap-4 p-4">
         <div className="flex flex-col gap-1">
-          <span className="font-mono text-base font-semibold text-ink">{sku}</span>
-          <span className="text-sm text-muted">{formatQty(milliToQty(remaining))} remaining on this line</span>
+          <span className="text-base font-semibold text-ink">{title}</span>
+          {sku ? <span className="font-mono text-xs text-muted">{sku}</span> : null}
+          <span className="text-sm text-muted">{qtyWithUnit(milliToQty(remaining), unit)} remaining on this line</span>
         </div>
 
         {confirm.error ? (
@@ -233,10 +245,13 @@ function PickForm({
           maxLength={500}
         />
 
-        <Button onClick={submit} loading={confirm.pending} disabled={confirm.pending}>
+      </Card>
+
+      <StickyAction>
+        <Button className="min-h-12 w-full" onClick={submit} loading={confirm.pending} disabled={confirm.pending}>
           {isShortEntry ? "Confirm short pick" : "Confirm pick"}
         </Button>
-      </Card>
+      </StickyAction>
     </div>
   );
 }

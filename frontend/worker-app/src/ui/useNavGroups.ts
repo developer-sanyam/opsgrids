@@ -18,8 +18,10 @@ const PROFILE: NavEntry = { to: "/profile", label: "Profile", icon: UserIcon };
 
 /**
  * This app's navigation: `groups` for `AppShell`'s `nav` prop, and `bottomExtra` for the phone's
- * bottom bar (`bottomNavExtra`), which `App.tsx` ends with Profile — one tap away rather than
- * behind "More". The bottom bar is Home, Put away (when permitted), Profile, More.
+ * bottom bar (`bottomNavExtra`). The bottom bar is Home, Counts, Put away (when permitted), More:
+ * the work destinations a worker moves between all day. Profile is a person-level destination, so
+ * it lives in the header's account menu (`accountLinks`, `App.tsx`) and in the full menu under
+ * More, not in a bottom slot.
  */
 export function useNavGroups(): { groups: NavGroup[]; pinned: NavEntry[]; bottomExtra: NavEntry[] } {
   const canPutAway = useCan("operations.inventory.stock.transfer", "ORG");
@@ -29,10 +31,10 @@ export function useNavGroups(): { groups: NavGroup[]; pinned: NavEntry[]; bottom
     return {
       groups: [{ title: "Main Menu", items }],
       pinned: [],
-      bottomExtra: canPutAway ? [PUTAWAY] : [],
+      bottomExtra: canPutAway ? [COUNTS, PUTAWAY] : [COUNTS],
     };
   }, [canPutAway]);
 }
 
-/** Profile — the last tab on the bottom bar. */
+/** Profile — listed in the header's account menu. */
 export const PROFILE_NAV_ENTRY = PROFILE;

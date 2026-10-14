@@ -1688,6 +1688,16 @@ class PickTaskLineOut(BaseModel):
     short: Qty
     sequence: int | None
     status: PickTaskLineStatus
+    #: Display fields (ADR-0024 §7 addendum). Resolved server-side inside operations
+    #: and `null` unless the caller may see them: they hold the matching org-wide read
+    #: (`inventory.item.read` / `inventory.location.read`) or this task is assigned to them
+    #: (a live `OFFERED`/`ACCEPTED` offer to their own worker row). A client falls back to the
+    #: ids when one is `null`.
+    item_name: str | None = None
+    item_unit: str | None = None
+    source_location_code: str | None = None
+    source_location_name: str | None = None
+    destination_location_code: str | None = None
 
 
 class PickExceptionOut(BaseModel):
@@ -1709,6 +1719,10 @@ class PickTaskOut(BaseModel):
 
     id: str
     order_id: str
+    #: The human order number (`ORD-…`), under the same visibility rule as the line display
+    #: fields: `orders.order.read` at ORG, or this task is assigned to the caller. `null`
+    #: otherwise.
+    order_number: str | None = None
     warehouse_id: str
     zone_location_id: str | None
     status: PickTaskStatus
@@ -1809,6 +1823,10 @@ class PackageLineOut(BaseModel):
     inventory_item_id: str
     sku: str
     quantity: Qty
+    #: `null` unless the caller holds `inventory.item.read` at ORG or is assigned a pick task on
+    #: this package's order (see `PickTaskLineOut`).
+    item_name: str | None = None
+    item_unit: str | None = None
 
 
 class PackageLineIn(BaseModel):

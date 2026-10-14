@@ -11389,6 +11389,28 @@
             "title": "Inventory Item Id",
             "type": "string"
           },
+          "item_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Name"
+          },
+          "item_unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Unit"
+          },
           "pick_task_line_id": {
             "title": "Pick Task Line Id",
             "type": "string"
@@ -12938,6 +12960,17 @@
       },
       "PickTaskLineOut": {
         "properties": {
+          "destination_location_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Destination Location Code"
+          },
           "destination_location_id": {
             "title": "Destination Location Id",
             "type": "string"
@@ -12949,6 +12982,28 @@
           "inventory_item_id": {
             "title": "Inventory Item Id",
             "type": "string"
+          },
+          "item_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Name"
+          },
+          "item_unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Unit"
           },
           "order_line_id": {
             "title": "Order Line Id",
@@ -12993,9 +13048,31 @@
             "title": "Sku",
             "type": "string"
           },
+          "source_location_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Location Code"
+          },
           "source_location_id": {
             "title": "Source Location Id",
             "type": "string"
+          },
+          "source_location_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Location Name"
           },
           "status": {
             "enum": [
@@ -13075,6 +13152,17 @@
           "order_id": {
             "title": "Order Id",
             "type": "string"
+          },
+          "order_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order Number"
           },
           "round": {
             "title": "Round",
@@ -25414,6 +25502,18 @@
                 }
               ],
               "title": "Order Id"
+            }
+          },
+          {
+            "description": "Only tasks the caller holds a live (`OFFERED`/`ACCEPTED`) offer on, through the worker row linked to their membership. A caller with no worker row gets an empty page. This narrows the list; it never widens what `task.read` allows.",
+            "in": "query",
+            "name": "assigned_to_me",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Only tasks the caller holds a live (`OFFERED`/`ACCEPTED`) offer on, through the worker row linked to their membership. A caller with no worker row gets an empty page. This narrows the list; it never widens what `task.read` allows.",
+              "title": "Assigned To Me",
+              "type": "boolean"
             }
           },
           {

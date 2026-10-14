@@ -4,9 +4,11 @@
  * backend `frontend/product-operations/src/api/types.ts` already mirrors, so the shapes below are
  * the same contract, not a fork of it.
  *
- * Three fields the backend contract does not carry, worth stating once rather than at every call
+ * Fields the backend contract does not carry, worth stating once rather than at every call
  * site that wants them:
- * - `PickTaskLineOut` has no product name, unit or variant — only `sku` and a bare `Qty` string.
+ * - `PickTaskLineOut` has no variant. Its item name/unit, bin code/name and the task's order number
+ *   are display fields the server fills in only for a task assigned to the caller (ADR-0024 §7
+ *   addendum) and are `null` otherwise — the screens fall back to the shortened id.
  * - Neither `OrderOut` nor `PickTaskOut` has a priority field.
  * - `PickConfirmIn`/`PackageIn`/`ScanIn` take no client idempotency key (contrast
  *   `POST /inventory/{id}/adjustments`, which does, in the same backend router).
@@ -58,8 +60,8 @@ export type OfferState = "OFFERED" | "ACCEPTED" | "DECLINED" | "EXPIRED" | "WITH
 
 export type PickTaskLineStatus = "pending" | "partial" | "picked" | "short";
 
-/** One order line's worth of picking inside a task. No product name, unit or variant on the
- *  wire (see this file's header) — only `sku` and a bare `Qty`. */
+/** One order line's worth of picking inside a task. The five display fields are `null` unless
+ *  this task is assigned to the caller (or they hold the matching org-wide read). */
 export interface PickTaskLineOut {
   id: string;
   order_line_id: string;
@@ -72,6 +74,11 @@ export interface PickTaskLineOut {
   short: Qty;
   sequence: number | null;
   status: PickTaskLineStatus;
+  item_name: string | null;
+  item_unit: string | null;
+  source_location_code: string | null;
+  source_location_name: string | null;
+  destination_location_code: string | null;
 }
 
 /** Mirrors `assignment_offers` — one row per offer, kept as history. */
@@ -105,6 +112,8 @@ export interface PickExceptionOut {
 export interface PickTaskOut {
   id: string;
   order_id: string;
+  /** The human order number; `null` unless this task is assigned to the caller. */
+  order_number: string | null;
   warehouse_id: string;
   zone_location_id: string | null;
   status: PickTaskStatus;
@@ -159,6 +168,8 @@ export interface PackageLineOut {
   inventory_item_id: string;
   sku: string;
   quantity: Qty;
+  item_name: string | null;
+  item_unit: string | null;
 }
 
 export interface PackageLineIn {

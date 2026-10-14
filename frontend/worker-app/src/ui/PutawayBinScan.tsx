@@ -3,60 +3,8 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@opsgrids/ui";
 
 import { barcodeProblem, cleanBarcode } from "@/lib/putawayForm";
-import { useBarcodeScanner } from "@/lib/useBarcodeScanner";
-import type { CameraScanStatus } from "@/lib/useBarcodeScanner";
-import { CameraIcon } from "@/ui/icons";
+import { ScanCamera } from "@/ui/ScanCamera";
 import { ScanInput } from "@/ui/ScanInput";
-
-function cameraMessage(status: CameraScanStatus, errorMessage: string | null): string {
-  switch (status) {
-    case "unsupported":
-      return "This browser can't scan with the camera. Type the label below instead.";
-    case "requesting":
-      return "Asking for camera access…";
-    case "denied":
-      return "Camera access was denied. Type the label below instead.";
-    case "no-camera":
-      return "No camera was found. Type the label below instead.";
-    case "error":
-      return errorMessage ?? "Couldn't start the camera. Type the label below instead.";
-    default:
-      return "Point the camera at the bin's label, or use a scanner or the keyboard below.";
-  }
-}
-
-/** Mounted only while a label is being looked for, so the camera is released the moment one is
- *  accepted (the scanner hook stops its stream when it unmounts). */
-function Camera({ onDetected }: { onDetected: (value: string) => void }) {
-  const scanner = useBarcodeScanner(onDetected);
-  return (
-    <div className="flex flex-col gap-2">
-      {scanner.status === "active" ? (
-        <video
-          ref={scanner.videoRef}
-          aria-label="Camera view for scanning the bin label"
-          className="aspect-video w-full rounded-tile bg-ink object-cover"
-          muted
-          playsInline
-        />
-      ) : (
-        <div className="flex aspect-video w-full flex-col items-center justify-center gap-2 rounded-tile bg-sunken text-center">
-          <CameraIcon className="size-6 text-faint" aria-hidden />
-          <p className="max-w-xs px-4 text-xs text-muted">{cameraMessage(scanner.status, scanner.errorMessage)}</p>
-        </div>
-      )}
-      {scanner.status === "active" ? (
-        <Button variant="secondary" size="sm" onClick={scanner.stop}>
-          Turn camera off
-        </Button>
-      ) : scanner.status === "requesting" ? null : (
-        <Button variant="secondary" size="sm" onClick={scanner.start} leadingIcon={<CameraIcon className="size-4" />}>
-          Scan with camera
-        </Button>
-      )}
-    </div>
-  );
-}
 
 interface PutawayBinScanProps {
   /** The accepted label, or `null` while one is still being looked for. */
@@ -111,7 +59,7 @@ export function PutawayBinScan({ label, onAccept, onClear }: PutawayBinScanProps
           <p className="text-xs font-semibold text-muted">Bin label</p>
           <p className="truncate font-mono text-lg font-bold text-ink">{label}</p>
         </div>
-        <Button variant="secondary" size="sm" aria-label="Change bin label" onClick={onClear}>
+        <Button variant="secondary" className="min-h-12" aria-label="Change bin label" onClick={onClear}>
           Change
         </Button>
       </div>
@@ -120,7 +68,7 @@ export function PutawayBinScan({ label, onAccept, onClear }: PutawayBinScanProps
 
   return (
     <div className="flex flex-col gap-3">
-      <Camera onDetected={accept} />
+      <ScanCamera onDetected={accept} subject="the bin's label" videoLabel="Camera view for scanning the bin label" />
       <ScanInput
         ref={fieldRef}
         label="Bin label"
@@ -133,7 +81,7 @@ export function PutawayBinScan({ label, onAccept, onClear }: PutawayBinScanProps
         placeholder="Scan the bin label, or type it and press enter"
         {...(problem !== undefined ? { error: problem } : {})}
       />
-      <Button variant="secondary" onClick={() => accept(draft)} disabled={draft.trim() === ""}>
+      <Button variant="secondary" className="min-h-12" onClick={() => accept(draft)} disabled={draft.trim() === ""}>
         Use this label
       </Button>
     </div>
