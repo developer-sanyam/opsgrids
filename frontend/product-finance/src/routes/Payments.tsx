@@ -33,7 +33,7 @@ function Allocations({ payment }: { payment: Payment }) {
           key={a.invoice_id}
           to={`/invoices/${a.invoice_id}`}
           onClick={(e) => e.stopPropagation()}
-          className="inline-flex items-center gap-1 rounded-full bg-ground px-2.5 py-1 text-xs font-semibold text-ink-soft hover:bg-accent-soft hover:text-accent-ink transition-colors tnum"
+          className="relative hit-44 inline-flex items-center gap-1 rounded-full bg-ground px-2.5 py-1 text-xs font-semibold text-ink-soft hover:bg-accent-soft hover:text-accent-ink transition-colors tnum"
         >
           {a.invoice_number}
         </Link>
@@ -67,6 +67,7 @@ export function PaymentsPage() {
     {
       key: "reference",
       header: "Reference",
+      mobile: "title",
       render: (p) => (
         <div className="flex flex-col leading-tight">
           <span className="font-semibold text-ink tnum">{p.reference}</span>
@@ -104,6 +105,7 @@ export function PaymentsPage() {
       key: "amount",
       header: "Amount",
       align: "right",
+      mobile: "status",
       cellClassName: "whitespace-nowrap",
       render: (p) => (
         <span className="money font-semibold text-positive">{formatMoney(p.amount_minor)}</span>
@@ -116,20 +118,20 @@ export function PaymentsPage() {
       <PageHeader
         eyebrow="Cash received"
         title="Payments"
+        meta={
+          payments.status === "success" ? (
+            <span className="inline-flex items-center gap-2 text-sm">
+              <span className="text-muted">Received on this page</span>
+              <span className="money font-semibold text-ink">{formatMoney(totalReceived)}</span>
+            </span>
+          ) : undefined
+        }
         actions={
-          <div className="flex flex-wrap items-center gap-2">
-            {payments.status === "success" ? (
-              <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
-                <span className="text-muted font-medium">Received</span>
-                <span className="money">{formatMoney(totalReceived)}</span>
-              </span>
-            ) : null}
-            <Can permission="finance.billing.payment.record" scope="ORG">
-              <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setRecording(true)}>
-                Record payment
-              </Button>
-            </Can>
-          </div>
+          <Can permission="finance.billing.payment.record" scope="ORG">
+            <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setRecording(true)}>
+              Record payment
+            </Button>
+          </Can>
         }
       />
 

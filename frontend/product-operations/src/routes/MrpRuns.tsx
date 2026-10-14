@@ -58,6 +58,7 @@ export function MrpRunsPage() {
     {
       key: "number",
       header: "Run",
+      mobile: "title",
       render: (r) => (
         <Link to={`/manufacturing/mrp/${r.id}`} className="font-semibold text-ink tnum hover:underline">
           {r.number}
@@ -75,6 +76,7 @@ export function MrpRunsPage() {
     {
       key: "demands",
       header: "Demand lines",
+      mobile: "hidden",
       align: "right",
       cellClassName: "hidden sm:table-cell",
       headerClassName: "hidden sm:table-cell",

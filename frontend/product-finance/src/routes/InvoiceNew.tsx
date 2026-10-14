@@ -385,7 +385,7 @@ function IssueForm({
           </div>
 
           <details className="rounded-tile border border-line p-4">
-            <summary className="cursor-pointer text-sm font-bold text-ink">Advanced GST fields</summary>
+            <summary className="relative hit-44 cursor-pointer text-sm font-bold text-ink">Advanced GST fields</summary>
             <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
               <Select
                 label="Supply type"
@@ -437,7 +437,7 @@ function IssueForm({
             An issued invoice cannot be edited or deleted. A mistake is corrected with a credit
             note.
           </p>
-          <div className="flex flex-col gap-2 pt-2">
+          <div className="hidden flex-col gap-2 pt-2 md:flex">
             <Button onClick={submit} disabled={issue.pending}>
               {isCreditNote ? "Review credit note" : "Review invoice"}
             </Button>
@@ -455,6 +455,22 @@ function IssueForm({
             />
           ) : null}
         </Card>
+      </div>
+
+      {/* Below md the review button lives in a bar that stays above the bottom navigation, with the
+          estimate beside it: the long form never scrolls the one action out of reach. */}
+      <div
+        className="sticky z-10 -mx-3 flex items-center justify-between gap-3 border-t border-line bg-surface px-4 py-3 shadow-card md:hidden"
+        style={{ bottom: "var(--shell-bottom-inset)" }}
+        data-action-bar=""
+      >
+        <div className="flex min-w-0 flex-col leading-tight">
+          <span className="text-xs text-muted">Total (est.)</span>
+          <span className="money text-base font-extrabold text-ink">{formatMoney(previewTotalMinor)}</span>
+        </div>
+        <Button onClick={submit} disabled={issue.pending}>
+          {isCreditNote ? "Review credit note" : "Review invoice"}
+        </Button>
       </div>
 
       <ConfirmDialog

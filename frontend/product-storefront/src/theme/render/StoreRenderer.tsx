@@ -81,6 +81,7 @@ function ChromeNav({
             <NavLink
               to={storeHref(page.route, basePath)}
               end
+              data-st-target=""
               style={({ isActive }) => ({
                 fontFamily: T.fontBody,
                 fontSize: primary ? "0.875rem" : "0.8125rem",
@@ -221,9 +222,12 @@ export function StoreRenderer({
                       display: "grid",
                       placeItems: "center",
                       minWidth: step(2),
-                      padding: `0 ${step(0.25)}`,
+                      // Room on every side and a floor rather than a fixed height: three capitals
+                      // in a heavy face against a 2-step circle sat tight on the edge and read as
+                      // clipped, and a taller wordmark would have grown out of a fixed box.
+                      padding: `${step(0.25)} ${step(0.4)}`,
                       flexShrink: 0,
-                      height: step(2),
+                      minHeight: step(2),
                       borderRadius: T.radius,
                       background: T.accent,
                       color: T.accentText,

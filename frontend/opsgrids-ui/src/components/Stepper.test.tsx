@@ -92,6 +92,13 @@ describe("StepperActions", () => {
     expect(save.getAttribute("aria-busy")).toBe("true");
   });
 
+  it("sticks above the bottom navigation on a phone, not behind it", () => {
+    render(<StepperActions />);
+    const bar = screen.getByRole("button", { name: "Continue" }).parentElement;
+    expect(bar?.className).toContain("sticky");
+    expect(bar?.style.bottom).toBe("var(--shell-bottom-inset)");
+  });
+
   it("runs onContinue instead of submitting when given one", async () => {
     const user = userEvent.setup();
     const onContinue = vi.fn();

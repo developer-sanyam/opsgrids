@@ -341,7 +341,7 @@ export function OverviewPage() {
               <button
                 type="button"
                 onClick={() => navigate("/purchase-orders")}
-                className="text-sm font-semibold text-accent-ink transition-colors hover:text-accent"
+                className="relative hit-44 text-sm font-semibold text-accent-ink transition-colors hover:text-accent"
               >
                 View All
               </button>
@@ -370,7 +370,7 @@ export function OverviewPage() {
               <button
                 type="button"
                 onClick={() => navigate("/inventory?low_stock=true")}
-                className="text-sm font-semibold text-accent-ink transition-colors hover:text-accent"
+                className="relative hit-44 text-sm font-semibold text-accent-ink transition-colors hover:text-accent"
               >
                 View All
               </button>
@@ -441,7 +441,7 @@ export function OverviewPage() {
                 <button
                   type="button"
                   onClick={() => navigate("/suppliers")}
-                  className="text-sm font-semibold text-accent-ink transition-colors hover:text-accent"
+                  className="relative hit-44 text-sm font-semibold text-accent-ink transition-colors hover:text-accent"
                 >
                   View All
                 </button>

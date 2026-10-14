@@ -278,9 +278,9 @@ export function SupplierDetailPage() {
                 <MailIcon className="size-4 shrink-0 text-faint" />
                 <a
                   href={`mailto:${supplier.contact_email}`}
-                  className="truncate text-accent hover:text-accent-strong transition-colors"
+                  className="inline-flex min-h-11 min-w-0 items-center text-accent hover:text-accent-strong transition-colors"
                 >
-                  {supplier.contact_email}
+                  <span className="truncate">{supplier.contact_email}</span>
                 </a>
               </div>
             ) : null}
@@ -332,7 +332,7 @@ function BackLink() {
   return (
     <Link
       to="/suppliers"
-      className="inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors"
+      className="relative hit-44 inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors"
     >
       <ArrowRightIcon className="size-4 rotate-180" />
       Back to suppliers

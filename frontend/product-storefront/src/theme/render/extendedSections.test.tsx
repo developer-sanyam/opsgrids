@@ -23,6 +23,8 @@ import { SectionRenderer } from "./SectionRenderer";
 
 /** The phone the retail work is designed at, and the desktop canvas. */
 const PHONE = 390;
+/** A phone wide enough that the merchant's own column count still fits. */
+const WIDE_PHONE = 430;
 const DESKTOP = 1200;
 
 function renderSection(
@@ -55,7 +57,7 @@ describe("category tiles on a phone", () => {
   it("takes its column count from mobileColumns below the stacking width and columns above it", () => {
     const settings = { columns: 3, mobileColumns: 4 };
 
-    const phone = renderSection("category-tiles", settings, PHONE);
+    const phone = renderSection("category-tiles", settings, WIDE_PHONE);
     expect(phone.container.querySelector("ul")?.style.gridTemplateColumns).toBe(
       "repeat(4, minmax(0, 1fr))",
     );
@@ -68,9 +70,16 @@ describe("category tiles on a phone", () => {
   });
 
   it("never forces a single column on a phone, which is the bug it was fixing", () => {
-    const { container } = renderSection("category-tiles", {}, PHONE);
+    const { container } = renderSection("category-tiles", {}, WIDE_PHONE);
     expect(container.querySelector("ul")?.style.gridTemplateColumns).toBe(
       "repeat(4, minmax(0, 1fr))",
+    );
+  });
+
+  it.each([320, 360, 390])("is two across at %ipx, where four would be an 80px tile", (width) => {
+    const { container } = renderSection("category-tiles", { mobileColumns: 4 }, width);
+    expect(container.querySelector("ul")?.style.gridTemplateColumns).toBe(
+      "repeat(2, minmax(0, 1fr))",
     );
   });
 

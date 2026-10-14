@@ -73,6 +73,7 @@ export function InventoryPage() {
   const [deleting, setDeleting] = useState<InventoryItemOut | null>(null);
   const canWrite = useCan("operations.inventory.item.write", "ORG");
   const canAdjust = useCan("operations.inventory.stock.adjust", "ORG");
+  const canReadStock = useCan("operations.inventory.stock.read", "ORG");
   const warehouses = useWarehouseOptions();
   const itemCategories = useItemCategoryOptions();
 
@@ -132,11 +133,12 @@ export function InventoryPage() {
     {
       key: "item",
       header: "Item",
+      mobile: "title",
       render: (it) => (
         <button
           type="button"
           onClick={() => navigate(`/inventory/${it.id}`)}
-          className="flex flex-col text-left leading-tight"
+          className="flex min-h-11 flex-col justify-center text-left leading-tight"
         >
           <span className="font-semibold text-ink hover:text-accent transition-colors">
             {it.name}
@@ -166,6 +168,7 @@ export function InventoryPage() {
     {
       key: "reorder",
       header: "Reorder",
+      mobile: "hidden",
       align: "right",
       cellClassName: "hidden sm:table-cell",
       headerClassName: "hidden sm:table-cell",
@@ -185,6 +188,7 @@ export function InventoryPage() {
     {
       key: "status",
       header: "Status",
+      mobile: "status",
       align: "right",
       render: (it) => (
         <div className="flex justify-end">
@@ -195,6 +199,7 @@ export function InventoryPage() {
     {
       key: "actions",
       header: "",
+      mobile: "actions",
       align: "right",
       render: (it) => (
         <RowActions
@@ -227,20 +232,13 @@ export function InventoryPage() {
       <PageHeader
         eyebrow="Inventory"
         title="Stock on Hand"
+        meta={`Page value ${formatMoneyCompact(totalValue)}`}
+        secondaryActions={[
+          { label: "Labels", onSelect: () => navigate("/inventory/labels/item") },
+          { label: "Scan", onSelect: () => navigate("/inventory/scan"), hidden: !canReadStock },
+        ]}
         actions={
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full bg-surface shadow-card px-4 h-11 hidden sm:inline-flex items-center gap-2 text-sm font-semibold">
-              <span className="text-muted font-medium">Page value</span>
-              <span className="tnum">{formatMoneyCompact(totalValue)}</span>
-            </span>
-            <Button variant="secondary" onClick={() => navigate("/inventory/labels/item")}>
-              Labels
-            </Button>
-            <Can permission="operations.inventory.stock.read" scope="ORG">
-              <Button variant="secondary" onClick={() => navigate("/inventory/scan")}>
-                Scan
-              </Button>
-            </Can>
+          <>
             <ImportExportButton
               meta={dx.meta}
               state={dx.state}
@@ -253,7 +251,7 @@ export function InventoryPage() {
                 Add item
               </Button>
             </Can>
-          </div>
+          </>
         }
       />
 

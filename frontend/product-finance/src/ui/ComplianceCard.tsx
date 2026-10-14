@@ -179,18 +179,18 @@ export function ComplianceCard({
             : "E-invoicing, and what suppliers filed against you"
         }
         action={
-          <span className="flex items-center gap-3">
-            <SampleDataChip />
-            <Link
-              to="/compliance/ims"
-              className="inline-flex items-center gap-1.5 text-sm font-semibold text-accent transition-colors hover:text-accent-strong"
-            >
-              <ShieldCheckIcon className="size-4" />
-              Reconciliation queue
-            </Link>
-          </span>
+          <Link
+            to="/compliance/ims"
+            className="relative hit-44 inline-flex items-center gap-1.5 text-sm font-semibold text-accent transition-colors hover:text-accent-strong"
+          >
+            <ShieldCheckIcon className="size-4" />
+            Reconciliation queue
+          </Link>
         }
       />
+      <div>
+        <SampleDataChip />
+      </div>
       <PortalSimulatedNotice />
 
       {position.status === "loading" ? (

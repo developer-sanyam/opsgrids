@@ -254,7 +254,7 @@ export function GstReturnDetailPage() {
     <div className="rise flex flex-col gap-6">
       <Link
         to="/compliance/returns"
-        className="inline-flex items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors self-start"
+        className="relative hit-44 inline-flex items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors self-start"
       >
         <ArrowLeftIcon className="size-4" />
         Back to GST returns

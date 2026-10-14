@@ -670,8 +670,7 @@
     "spacing": 1
   },
   "product-storefront/src/delivery/DeliveryPage.tsx": {
-    "colour": 1,
-    "spacing": 1
+    "colour": 1
   },
   "product-storefront/src/delivery/DemandReport.tsx": {
     "spacing": 2
@@ -716,10 +715,6 @@
     "arbitrary": 1,
     "spacing": 1
   },
-  "product-storefront/src/routes/Gallery.tsx": {
-    "colour": 1,
-    "spacing": 3
-  },
   "product-storefront/src/routes/Login.tsx": {
     "arbitrary": 2,
     "spacing": 7
@@ -732,9 +727,7 @@
     "spacing": 1
   },
   "product-storefront/src/routes/Storefront.tsx": {
-    "colour": 1,
-    "arbitrary": 1,
-    "spacing": 1
+    "arbitrary": 1
   },
   "product-storefront/src/routes/editor/EditorShell.tsx": {
     "arbitrary": 1,

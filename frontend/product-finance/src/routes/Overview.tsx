@@ -248,7 +248,7 @@ function InvoicesByStatusCard({
       }
       action={
         state === "success" && data && data.total > 0 ? (
-          <Link to="/invoices" className="text-sm font-semibold text-accent hover:text-accent-strong transition-colors">
+          <Link to="/invoices" className="relative hit-44 text-sm font-semibold text-accent hover:text-accent-strong transition-colors">
             View all
           </Link>
         ) : undefined
@@ -452,7 +452,7 @@ export function OverviewPage() {
             subtitle="Latest receipts, most recent first"
             action={
               recentPayments.status === "success" && recentPayments.data.total > 0 ? (
-                <Link to="/payments" className="text-sm font-semibold text-accent hover:text-accent-strong transition-colors">
+                <Link to="/payments" className="relative hit-44 text-sm font-semibold text-accent hover:text-accent-strong transition-colors">
                   View all
                 </Link>
               ) : undefined
@@ -496,7 +496,7 @@ export function OverviewPage() {
             action={
               <Link
                 to="/invoices?status=overdue"
-                className="text-sm font-semibold text-accent hover:text-accent-strong transition-colors"
+                className="relative hit-44 text-sm font-semibold text-accent hover:text-accent-strong transition-colors"
               >
                 View all
               </Link>

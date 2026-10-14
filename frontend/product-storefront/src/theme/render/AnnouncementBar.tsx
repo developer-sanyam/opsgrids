@@ -6,6 +6,7 @@ import { useLineList } from "@/store/lineList";
 import { BLEED_SETTING, STACK_WIDTH } from "../schema";
 import { isExternalHref } from "./linkList";
 import { pageGutter } from "./pageGrid";
+import { CartButton } from "./CartButton";
 import { ActionButton, ActionLink } from "./primitives";
 import { bool, optional, str } from "./settings";
 import { T, step } from "./tokens";
@@ -31,9 +32,9 @@ const TIGHT_WIDTH = 420;
  * `LineListProvider` the hook hands back an empty list, so a miniature or the editor's canvas shows
  * a zero that is honestly zero rather than a number belonging to some other store.
  *
- * Still text and still not a link. The list lives in this page and nothing else: there is no basket
- * route to send anyone to, and a control that looks like a destination and goes nowhere costs a
- * buyer more than the control is worth.
+ * A button that opens the lines in place (`CartButton`), never a link. The list lives in this page
+ * and nothing else: there is no basket route to send anyone to, and a control that looks like a
+ * destination and goes nowhere costs a buyer more than the control is worth.
  */
 
 /** A magnifier drawn from `currentColor`, so it takes the button's own foreground in every theme. */
@@ -144,6 +145,7 @@ export function AnnouncementBar({ settings, width, mode }: SectionRenderProps) {
         name="q"
         type="search"
         aria-label={searchLabel}
+        data-st-field=""
         placeholder={searchPlaceholder}
         value={query}
         onChange={(event) => setQuery(event.target.value)}
@@ -209,32 +211,7 @@ export function AnnouncementBar({ settings, width, mode }: SectionRenderProps) {
             {accountLabel}
           </ActionLink>
         ) : null}
-        {showCart ? (
-          /*
-           * Text, not a link. There is no basket page on this build, and a control that looks like
-           * a destination and goes nowhere costs a buyer more than the control is worth.
-           * `aria-live` is here already so the count can start changing without the markup moving.
-           */
-          <p
-            aria-live="polite"
-            style={{
-              margin: 0,
-              display: "flex",
-              alignItems: "baseline",
-              gap: step(0.3),
-              fontFamily: T.fontBody,
-              fontSize: "0.8125rem",
-              fontWeight: 700,
-              color: T.text,
-              whiteSpace: "nowrap",
-            }}
-          >
-            <span>{cartLabel}</span>
-            <span style={{ color: T.muted, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
-              {count} {count === 1 ? countNoun : `${countNoun}s`}
-            </span>
-          </p>
-        ) : null}
+        {showCart ? <CartButton label={cartLabel} count={count} noun={countNoun} /> : null}
       </div>
     ) : null;
 

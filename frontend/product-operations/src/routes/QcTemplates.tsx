@@ -64,6 +64,7 @@ export function QcTemplatesPage() {
     {
       key: "template",
       header: "Template",
+      mobile: "title",
       render: (t) => (
         <div className="flex flex-col leading-tight">
           <span className="font-semibold text-ink">{t.name}</span>
@@ -96,11 +97,13 @@ export function QcTemplatesPage() {
     {
       key: "active",
       header: "Status",
+      mobile: "status",
       render: (t) => <Tag>{t.is_active ? "Active" : "Inactive"}</Tag>,
     },
     {
       key: "actions",
       header: "",
+      mobile: "actions",
       align: "right",
       render: (t) => (
         <RowActions

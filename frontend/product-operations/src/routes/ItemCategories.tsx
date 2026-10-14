@@ -106,6 +106,7 @@ export function ItemCategoriesPage() {
     {
       key: "name",
       header: "Name",
+      mobile: "title",
       render: ({ category, depth, needsRepair }) => (
         <div style={{ paddingLeft: depth * 20 }} className="flex items-center gap-2">
           {depth > 0 ? <span aria-hidden className="text-muted">└</span> : null}
@@ -129,6 +130,7 @@ export function ItemCategoriesPage() {
     {
       key: "actions",
       header: "",
+      mobile: "actions",
       align: "right",
       render: ({ category }) => (
         <RowActions

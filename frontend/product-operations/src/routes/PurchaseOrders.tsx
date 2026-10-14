@@ -58,6 +58,7 @@ export function PurchaseOrdersPage() {
     {
       key: "po_number",
       header: "PO Number",
+      mobile: "title",
       sortKey: "number",
       render: (po) => (
         <div className="flex flex-col leading-tight">
@@ -74,6 +75,7 @@ export function PurchaseOrdersPage() {
     {
       key: "items",
       header: "Items",
+      mobile: "hidden",
       align: "right",
       cellClassName: "hidden md:table-cell",
       headerClassName: "hidden md:table-cell",
@@ -92,6 +94,7 @@ export function PurchaseOrdersPage() {
     {
       key: "status",
       header: "Status",
+      mobile: "status",
       render: (po) => <PoStatusPill status={po.status} />,
     },
     {

@@ -12,7 +12,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import type { Category, Page, Product, StoreResponse } from "@/api/types";
@@ -25,6 +25,7 @@ const listThemes = vi.fn<() => Promise<Theme[]>>();
 const listProducts = vi.fn<() => Promise<Page<Product>>>();
 const listCategories = vi.fn<() => Promise<Category[]>>();
 const getStore = vi.fn<() => Promise<StoreResponse>>();
+const removeStore = vi.fn<() => Promise<void>>();
 
 vi.mock("@/api/client", () => ({
   listThemes: () => listThemes(),
@@ -32,7 +33,7 @@ vi.mock("@/api/client", () => ({
   listCategories: () => listCategories(),
   getStore: () => getStore(),
   adoptTheme: vi.fn(),
-  removeStore: vi.fn(),
+  removeStore: () => removeStore(),
   // Live mode: the storefront service and `/storefront/theme` both exist (R28), so this screen
   // must never claim otherwise. `false` is the production default — `USE_FIXTURES` is compiled
   // out entirely once `import.meta.env.DEV` is false.
@@ -49,6 +50,8 @@ beforeEach(() => {
   listProducts.mockResolvedValue({ items: [], total: 0 });
   listCategories.mockResolvedValue([]);
   getStore.mockResolvedValue(null);
+  removeStore.mockReset();
+  removeStore.mockResolvedValue(undefined);
 });
 
 function renderGallery(state?: unknown) {
@@ -111,7 +114,7 @@ describe("the two ways to look at the store", () => {
     expect(console_.getAttribute("href")).toBe("/store");
   });
 
-  it("points the adopted-theme banner at the live store, which by then has something to show", async () => {
+  it("names the live store once, in the header, even after a theme is adopted", async () => {
     const theme = THEMES[0];
     if (!theme) throw new Error("the theme library is empty");
     listThemes.mockResolvedValue([theme]);
@@ -128,8 +131,44 @@ describe("the two ways to look at the store", () => {
     const links = screen
       .getAllByRole("link", { name: "Open the live store" })
       .map((link) => link.getAttribute("href"));
-    expect(links).toContain("/live");
-    expect(links.length).toBeGreaterThan(1);
+    expect(links).toEqual(["/live"]);
+  });
+});
+
+describe("removing the store", () => {
+  async function renderAdopted() {
+    const theme = THEMES[0];
+    if (!theme) throw new Error("the theme library is empty");
+    listThemes.mockResolvedValue([theme]);
+    getStore.mockResolvedValue({ themeKey: theme.key, mode: "trade", tokens: theme.tokens, pages: [] });
+    renderGallery();
+    await screen.findByText(`Your store is running the ${theme.name} theme`);
+  }
+
+  it("keeps the destructive action out of the header row, in an overflow menu", async () => {
+    await renderAdopted();
+    expect(screen.queryByRole("button", { name: "Remove this store" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Store options" }));
+    const item = screen.getByRole("menuitem", { name: "Remove this store" });
+    expect(item.className).toContain("text-negative");
+  });
+
+  it("asks first, says what is lost, and removes nothing until it is confirmed", async () => {
+    await renderAdopted();
+    fireEvent.click(screen.getByRole("button", { name: "Store options" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove this store" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/Every page in your store is deleted/)).toBeTruthy();
+    expect(removeStore).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(removeStore).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Store options" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove this store" }));
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Remove this store" }));
+    await waitFor(() => expect(removeStore).toHaveBeenCalledOnce());
   });
 });
 

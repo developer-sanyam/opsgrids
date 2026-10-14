@@ -108,12 +108,20 @@ describe("the announcement bar", () => {
     expect(screen.queryByRole("search")).toBeNull();
   });
 
-  it("states the basket as text, not as a link to a page that does not exist", () => {
+  it("offers the basket as a button that opens its lines, not a link to a page that does not exist", async () => {
     renderSection(AnnouncementBar, "announcement-bar");
 
-    expect(screen.getByText("My cart")).not.toBeNull();
+    const cart = screen.getByRole("button", { name: /My cart/ });
+    expect(cart.getAttribute("aria-expanded")).toBe("false");
     expect(screen.getByText("0 items")).not.toBeNull();
     expect(screen.queryByRole("link", { name: /cart/i })).toBeNull();
+
+    await userEvent.click(cart);
+    expect(cart.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("Nothing here yet. Add a line from the catalogue.")).not.toBeNull();
+
+    await userEvent.keyboard("{Escape}");
+    expect(cart.getAttribute("aria-expanded")).toBe("false");
   });
 
   it("uses the trade vocabulary on a trade store", () => {

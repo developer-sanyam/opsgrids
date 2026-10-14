@@ -74,7 +74,7 @@ export function InventoryLabelsPage() {
         <div className="flex flex-wrap items-center justify-between gap-4">
           <Link
             to="/inventory"
-            className="inline-flex w-fit items-center gap-2 text-sm font-semibold text-muted transition-colors hover:text-ink"
+            className="relative hit-44 inline-flex w-fit items-center gap-2 text-sm font-semibold text-muted transition-colors hover:text-ink"
           >
             <ArrowRightIcon className="size-4 rotate-180" />
             Back to inventory

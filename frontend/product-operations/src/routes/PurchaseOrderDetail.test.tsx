@@ -87,6 +87,27 @@ describe("PurchaseOrderDetailPage receiving", () => {
     await waitFor(() => expect(router.state.location.pathname).toBe("/purchase-orders/po-1/receive"));
   });
 
+  it("keeps Receive goods in a bar above the bottom navigation on a phone, exactly once", async () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    }));
+    try {
+      getPurchaseOrder.mockResolvedValue(order("approved"));
+      renderDetail([RECEIPT_WRITE, STOCK_RECEIVE]);
+
+      const button = await screen.findByRole("button", { name: "Receive goods" });
+      expect(screen.getAllByRole("button", { name: "Receive goods" })).toHaveLength(1);
+      const bar = button.closest("div.sticky");
+      expect(bar).not.toBeNull();
+      expect((bar as HTMLElement).style.bottom).toBe("var(--shell-bottom-inset)");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("hides Receive goods from someone missing either permission", async () => {
     getPurchaseOrder.mockResolvedValue(order("approved"));
     renderDetail([RECEIPT_WRITE]);

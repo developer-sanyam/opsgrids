@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { RequirePermission } from "@opsgrids/client";
-import { Card, EmptyState } from "@/ui";
+import { Card, EmptyState, GoBackButton } from "@/ui";
 import { ArrowRightIcon, ShieldIcon } from "@opsgrids/ui";
 
 /** The screen's own answer to a missing grant, in place of an empty page. A UI gate, not
@@ -14,6 +14,7 @@ export function NoAccess({ what }: { what: string }) {
         icon={<ShieldIcon className="size-6" />}
         title={`You don't have access to ${what}`}
         description="Ask an administrator for the stock read permission, or reload if you were just given it."
+        action={<GoBackButton />}
       />
     </Card>
   );
@@ -32,7 +33,7 @@ export function BackLink({ to, children }: { to: string; children: ReactNode }) 
   return (
     <Link
       to={to}
-      className="inline-flex w-fit items-center gap-2 text-sm font-semibold text-muted hover:text-ink transition-colors"
+      className="relative hit-44 inline-flex w-fit items-center gap-2 text-sm font-semibold text-muted hover:text-ink transition-colors"
     >
       <ArrowRightIcon className="size-4 rotate-180" />
       {children}

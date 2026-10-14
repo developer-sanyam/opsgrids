@@ -37,6 +37,7 @@ export function BomsPage() {
     {
       key: "code",
       header: "Code",
+      mobile: "title",
       render: (b) => (
         <Link to={`/manufacturing/boms/${b.id}`} className="font-semibold text-ink hover:underline">
           {b.code}
@@ -67,6 +68,7 @@ export function BomsPage() {
     {
       key: "versions",
       header: "Versions",
+      mobile: "hidden",
       align: "right",
       cellClassName: "hidden sm:table-cell",
       headerClassName: "hidden sm:table-cell",
@@ -75,6 +77,7 @@ export function BomsPage() {
     {
       key: "active",
       header: "Status",
+      mobile: "status",
       render: (b) => (b.is_active ? <StatusBadge status="active" /> : <StatusBadge status="inactive" />),
     },
   ];

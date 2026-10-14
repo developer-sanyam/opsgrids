@@ -553,7 +553,7 @@ export function ImsDetailPage() {
     <div className="rise flex flex-col gap-6">
       <Link
         to="/compliance/ims"
-        className="inline-flex items-center gap-1.5 self-start text-sm font-semibold text-muted transition-colors hover:text-ink"
+        className="relative hit-44 inline-flex items-center gap-1.5 self-start text-sm font-semibold text-muted transition-colors hover:text-ink"
       >
         <ArrowLeftIcon className="size-4" />
         Back to the reconciliation queue

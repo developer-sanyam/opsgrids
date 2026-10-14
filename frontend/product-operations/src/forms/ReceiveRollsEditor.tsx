@@ -61,7 +61,7 @@ export function ReceiveRollsEditor({
                 Remove roll {index + 1}
               </Button>
             </div>
-            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <div className="grid grid-cols-1 gap-3 min-[400px]:grid-cols-2 lg:grid-cols-4">
               <TextField
                 label="Roll number"
                 value={roll.rollNo}

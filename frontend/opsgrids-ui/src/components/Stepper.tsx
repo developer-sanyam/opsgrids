@@ -202,8 +202,12 @@ export function StepperActions({
 }: StepperActionsProps) {
   return (
     <div
+      // Lifted above the fixed bottom navigation on a phone (`--shell-bottom-inset` is 0 from 768px,
+      // where the bar is static anyway). At `bottom-0` the bar parked behind the nav, out of sight.
+      style={{ bottom: "var(--shell-bottom-inset)" }}
+      data-action-bar=""
       className={cn(
-        "sticky bottom-0 z-10 flex items-center gap-3 border-t border-line bg-surface py-3",
+        "sticky z-10 flex items-center gap-3 border-t border-line bg-surface py-3",
         "md:static md:justify-end md:border-0 md:bg-transparent md:py-0",
         className,
       )}

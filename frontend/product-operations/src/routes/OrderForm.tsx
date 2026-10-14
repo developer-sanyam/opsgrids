@@ -109,7 +109,7 @@ function OrderLineEditor({
       />
       {line.itemName ? <p className="text-xs text-muted">{line.itemName}</p> : null}
 
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 gap-3 min-[400px]:grid-cols-2">
         <TextField
           label="Quantity"
           inputMode="decimal"

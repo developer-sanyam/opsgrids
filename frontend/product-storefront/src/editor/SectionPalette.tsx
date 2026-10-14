@@ -1,10 +1,11 @@
 import { useState } from "react";
-import type { DragEvent, KeyboardEvent } from "react";
+import type { DragEvent, KeyboardEvent, ReactNode } from "react";
 
-import { cn, GripIcon, SearchInput } from "@opsgrids/ui";
+import { ArrowDown, ArrowUp, CloseIcon, cn, GripIcon, SearchInput } from "@opsgrids/ui";
 
 import type { PageDoc, SectionDef } from "@/theme/schema";
 import { SECTION_GROUPS } from "@/theme/sections";
+import { useCoarsePointer } from "@/ui/useCoarsePointer";
 
 import { SECTION_DRAG_MIME, sectionDragHint } from "./dragTypes";
 import { findDef } from "./sectionLibrary";
@@ -12,10 +13,11 @@ import { findDef } from "./sectionLibrary";
 /**
  * The left pane: every section the theme offers, and the order of the ones already on the page.
  *
- * Both halves work without a pointer. A palette entry is a button — Enter adds it to the bottom of
+ * Both halves work without a mouse. A palette entry is a button — Enter adds it to the bottom of
  * the page — as well as a drag source, and the page order list moves a section with Alt and an
- * arrow key. Drag-and-drop as the *only* way to build a page would put this whole product out of
- * reach of anyone who does not use a mouse.
+ * arrow key. On a touch device there is no Alt key, so each row carries Move up, Move down and
+ * Remove buttons a finger can hit. Drag-and-drop as the *only* way to build a page would put this
+ * whole product out of reach of anyone who does not use a mouse.
  */
 
 interface SectionPaletteProps {
@@ -26,6 +28,7 @@ interface SectionPaletteProps {
   onAdd: (def: SectionDef) => void;
   onSelect: (id: string) => void;
   onDepth: (id: string, direction: "forward" | "backward") => void;
+  onRemove: (id: string) => void;
 }
 
 export function SectionPalette({
@@ -36,7 +39,9 @@ export function SectionPalette({
   onAdd,
   onSelect,
   onDepth,
+  onRemove,
 }: SectionPaletteProps) {
+  const touch = useCoarsePointer();
   const [query, setQuery] = useState("");
   const needle = query.trim().toLowerCase();
   const matches =
@@ -53,7 +58,9 @@ export function SectionPalette({
               Sections
             </h2>
             <p className="text-xs text-muted">
-              Drag one onto the page, or press Enter to add it at the bottom.
+              {touch
+                ? "Tap one to add it at the bottom of the page."
+                : "Drag one onto the page, or press Enter to add it at the bottom."}
             </p>
           </div>
 
@@ -98,7 +105,9 @@ export function SectionPalette({
           </h2>
           <p className="text-xs text-muted">
             {canEdit
-              ? "Alt with up or down moves a section through the order. On a phone, sections stack in this order."
+              ? touch
+                ? "Use Move up and Move down to change the order. On a phone, sections stack in this order."
+                : "Alt with up or down moves a section through the order. On a phone, sections stack in this order."
               : "The sections on this page, in the order they stack on a phone."}
           </p>
         </div>
@@ -109,8 +118,9 @@ export function SectionPalette({
           <ol className="flex flex-col gap-1">
             {page.sections.map((section, index) => {
               const def = findDef(library, section.type);
+              const name = def?.name ?? section.type;
               return (
-                <li key={section.id}>
+                <li key={section.id} className="flex items-center gap-1">
                   <button
                     type="button"
                     aria-pressed={section.id === selectedId}
@@ -127,7 +137,8 @@ export function SectionPalette({
                       }
                     }}
                     className={cn(
-                      "flex w-full items-center gap-2 rounded-tile px-3 py-2 text-left text-sm transition-colors",
+                      "flex min-w-0 flex-1 items-center gap-2 rounded-tile px-3 py-2 text-left text-sm transition-colors",
+                      touch && "min-h-11",
                       section.id === selectedId
                         ? "bg-accent-soft text-accent-ink font-semibold"
                         : "text-ink-soft hover:bg-ground",
@@ -139,6 +150,34 @@ export function SectionPalette({
                       <span className="ml-auto text-xs text-late">Unknown</span>
                     )}
                   </button>
+                  {touch && canEdit ? (
+                    <div className="flex shrink-0 items-center">
+                      <OrderButton
+                        label={`Move ${name} up`}
+                        title="Move up"
+                        disabled={index === 0}
+                        onClick={() => onDepth(section.id, "backward")}
+                      >
+                        <ArrowUp className="size-4" />
+                      </OrderButton>
+                      <OrderButton
+                        label={`Move ${name} down`}
+                        title="Move down"
+                        disabled={index === page.sections.length - 1}
+                        onClick={() => onDepth(section.id, "forward")}
+                      >
+                        <ArrowDown className="size-4" />
+                      </OrderButton>
+                      <OrderButton
+                        label={`Remove ${name}`}
+                        title="Remove"
+                        tone="danger"
+                        onClick={() => onRemove(section.id)}
+                      >
+                        <CloseIcon className="size-4" />
+                      </OrderButton>
+                    </div>
+                  ) : null}
                 </li>
               );
             })}
@@ -146,6 +185,39 @@ export function SectionPalette({
         )}
       </section>
     </div>
+  );
+}
+
+/** One 44px button at the end of an outline row. Icon only, so three fit beside a name at 320px. */
+function OrderButton({
+  label,
+  title,
+  disabled = false,
+  tone = "default",
+  onClick,
+  children,
+}: {
+  label: string;
+  title: string;
+  disabled?: boolean;
+  tone?: "default" | "danger";
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={title}
+      disabled={disabled}
+      onClick={onClick}
+      className={cn(
+        "grid size-11 shrink-0 place-items-center rounded-tile transition-colors disabled:cursor-not-allowed disabled:text-disabled",
+        tone === "danger" ? "text-negative hover:bg-negative-soft" : "text-ink-soft hover:bg-ground",
+      )}
+    >
+      {children}
+    </button>
   );
 }
 

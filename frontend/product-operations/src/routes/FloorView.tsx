@@ -106,7 +106,7 @@ function FloorViewScreen() {
     <div className="rise flex flex-col gap-6">
       <Link
         to={`/warehouses/${warehouseId}/floors`}
-        className="inline-flex w-fit items-center gap-2 text-sm font-semibold text-muted hover:text-ink transition-colors"
+        className="relative hit-44 inline-flex w-fit items-center gap-2 text-sm font-semibold text-muted hover:text-ink transition-colors"
       >
         <ArrowRightIcon className="size-4 rotate-180" />
         Back to floors

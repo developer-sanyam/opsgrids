@@ -70,7 +70,7 @@ export function ReceiveLineEditor({
         <span className="text-xs text-faint tnum">{ctx.sku}</span>
       </div>
 
-      <dl className="grid grid-cols-2 gap-3 rounded-tile bg-ground p-3 sm:grid-cols-4">
+      <dl className="grid grid-cols-1 gap-3 rounded-tile bg-ground p-3 min-[400px]:grid-cols-2 sm:grid-cols-4">
         <Figure label="Ordered" value={`${formatQty(ctx.ordered_qty)} ${uom}`.trim()} />
         <Figure label="Already received" value={`${formatQty(ctx.received_qty)} ${uom}`.trim()} />
         <Figure label="Remaining" value={`${formatQty(ctx.remaining_qty)} ${uom}`.trim()} />

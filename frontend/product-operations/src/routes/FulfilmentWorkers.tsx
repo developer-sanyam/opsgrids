@@ -61,6 +61,7 @@ export function FulfilmentWorkersPage() {
     {
       key: "name",
       header: "Worker",
+      mobile: "title",
       render: (w) => (
         <div className="flex flex-col leading-tight">
           <span className="font-semibold text-ink">{w.display_name || "Unnamed worker"}</span>
@@ -92,6 +93,7 @@ export function FulfilmentWorkersPage() {
     {
       key: "presence",
       header: "Presence",
+      mobile: "status",
       render: (w) => (
         <div className="flex flex-col leading-tight">
           <span
@@ -124,6 +126,7 @@ export function FulfilmentWorkersPage() {
     {
       key: "edit",
       header: "",
+      mobile: "actions",
       align: "right",
       render: (w) =>
         canWrite ? (

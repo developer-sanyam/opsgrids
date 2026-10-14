@@ -56,6 +56,7 @@ export function PurchaseRequisitionsPage() {
     {
       key: "number",
       header: "Number",
+      mobile: "title",
       render: (r) => <span className="font-semibold text-ink tnum">{r.number}</span>,
     },
     {
@@ -66,6 +67,7 @@ export function PurchaseRequisitionsPage() {
     {
       key: "warehouse",
       header: "Warehouse",
+      mobile: "hidden",
       cellClassName: "hidden md:table-cell",
       headerClassName: "hidden md:table-cell",
       render: (r) => <span className="text-ink-soft">{r.warehouse_name ?? "—"}</span>,
@@ -79,6 +81,7 @@ export function PurchaseRequisitionsPage() {
     {
       key: "status",
       header: "Status",
+      mobile: "status",
       render: (r) => (
         <div className="flex flex-col items-start gap-1">
           <RequisitionStatusPill status={r.status} />

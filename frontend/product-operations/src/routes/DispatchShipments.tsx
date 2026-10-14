@@ -109,6 +109,7 @@ export function DispatchShipmentsPage() {
     {
       key: "order",
       header: "Order",
+      mobile: "title",
       render: (s) => (
         <Link to={`/orders/${s.order_id}`} className="font-semibold text-ink tnum hover:text-accent transition-colors">
           {s.order_id.slice(0, 8)}
@@ -118,6 +119,7 @@ export function DispatchShipmentsPage() {
     {
       key: "status",
       header: "Status",
+      mobile: "status",
       render: (s) => (
         <div className="flex flex-col gap-1">
           <ShipmentStatusPill status={s.status} />
@@ -147,6 +149,7 @@ export function DispatchShipmentsPage() {
     {
       key: "actions",
       header: "",
+      mobile: "actions",
       align: "right",
       render: (s) => (
         <RowActions

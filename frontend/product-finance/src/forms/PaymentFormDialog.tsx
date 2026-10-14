@@ -3,7 +3,7 @@ import { useMemo, useRef, useState } from "react";
 import { listInvoices, MAX_PAGE_SIZE, recordPayment } from "@/api/client";
 import type { Invoice, Payment, PaymentAllocationCreate, PaymentCreate, PaymentMethod } from "@/api/types";
 import { outstandingMinor } from "@/data/derive";
-import { formatMoney, minorToInput, parseMinor } from "@/lib/money";
+import { formatAmount, formatMoney, minorToInput, parseMinor } from "@/lib/money";
 import { today as realToday } from "@/lib/format";
 import { ApiError, fieldError, problemMessage, useAsync, useMutation } from "@opsgrids/client";
 import { Card, ErrorState, FormDialog, Select, Skeleton, TextArea, TextField, useFormDirty } from "@/ui";
@@ -71,6 +71,17 @@ export function PaymentFormDialog({ invoice, customers, onClose, onSaved }: Paym
 
   function setAmount(invoiceId: string, value: string) {
     setAmounts((current) => ({ ...current, [invoiceId]: value }));
+  }
+
+  /** Grouped the Indian way once the field is left ("1,25,000.00"), plain again while it is typed in. */
+  function groupAmount(invoiceId: string) {
+    const parsed = parseMinor(amounts[invoiceId] ?? "");
+    if (parsed.ok) setAmount(invoiceId, formatAmount(parsed.minor));
+  }
+
+  function ungroupAmount(invoiceId: string) {
+    const raw = amounts[invoiceId] ?? "";
+    if (raw.includes(",")) setAmount(invoiceId, raw.replace(/,/g, ""));
   }
 
   function submit() {
@@ -213,12 +224,14 @@ export function PaymentFormDialog({ invoice, customers, onClose, onSaved }: Paym
                   <span className="text-sm font-semibold text-ink tnum">{inv.number}</span>
                   <span className="text-xs text-muted">Outstanding {formatMoney(outstandingMinor(inv))}</span>
                 </div>
-                <div className="w-36">
+                <div className="w-40">
                   <TextField
                     label={`Amount for ${inv.number} (₹)`}
                     inputMode="decimal"
                     value={amounts[inv.id] ?? ""}
                     onChange={(e) => setAmount(inv.id, e.target.value)}
+                    onFocus={() => ungroupAmount(inv.id)}
+                    onBlur={() => groupAmount(inv.id)}
                   />
                 </div>
               </div>

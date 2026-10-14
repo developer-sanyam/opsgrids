@@ -1,7 +1,7 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 
 import { ApiError } from "@opsgrids/client";
-import { Button, Card, InlineAlert, useAnnounce } from "@opsgrids/ui";
+import { Button, Card, InlineAlert, TABLET_QUERY, Tabs, useAnnounce, useMediaQuery } from "@opsgrids/ui";
 
 import type { Category, Product } from "@/api/types";
 import { Canvas } from "@/editor/Canvas";
@@ -23,6 +23,15 @@ import { SettingsInspector } from "@/editor/SettingsInspector";
 import { ThemeTokenPanel } from "@/editor/ThemeTokenPanel";
 import type { Brand, NavPlacement, SectionDef, StoreDoc } from "@/theme/schema";
 import { resolveMode, sectionsWithPlaceholders } from "@/theme/store";
+import { StickyActionBar } from "@/ui/StickyActionBar";
+
+type PhonePane = "sections" | "page" | "settings";
+
+const PHONE_PANES: { id: PhonePane; label: string }[] = [
+  { id: "sections", label: "Sections" },
+  { id: "page", label: "Page" },
+  { id: "settings", label: "Settings" },
+];
 
 /**
  * The three panes, the toolbar above them, and the one place document edits are turned into
@@ -69,7 +78,21 @@ export function EditorShell({
   const [paletteOpen, setPaletteOpen] = useState(true);
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [pagesOpen, setPagesOpen] = useState(false);
+  // On a phone three panes cannot sit side by side, nor stack into a page of scrolling: they are
+  // tabs, one at a time, with Save kept in a bar at the foot. `true` where there is no
+  // `matchMedia` (tests) keeps the desktop layout.
+  const roomy = useMediaQuery(TABLET_QUERY, true);
+  const [phonePane, setPhonePane] = useState<PhonePane>("page");
   const idSeq = useRef(0);
+
+  // A phone edits the page as a phone shows it: 390 wide and stacked, at close to full size, rather
+  // than a 1280px desktop page shrunk to a fifth where nothing can be read or tapped. The presets
+  // are not offered here, so this is the width it opens at and stays at. Once, on arrival.
+  useEffect(() => {
+    if (!roomy) dispatch({ type: "set-device", device: "mobile" });
+    // Arrival only: a later resize must not override a width somebody chose on a wider screen.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const page = currentPage(state);
   const selected = selectedSection(state);
@@ -154,6 +177,11 @@ export function EditorShell({
     });
   }
 
+  function removeSection(id: string) {
+    const label = nameOf(page?.sections.find((section) => section.id === id)?.type ?? "Section");
+    run({ type: "remove-section", id }, () => `${label} deleted. Undo brings it back.`);
+  }
+
   async function save() {
     // One save at a time, and never a second one from a double click: the button disables, and
     // this guard covers the keyboard and any race the button cannot see.
@@ -209,6 +237,116 @@ export function EditorShell({
     );
   }
 
+  const palette = (
+    <SectionPalette
+      library={library}
+      page={page}
+      selectedId={state.selectedId}
+      canEdit={canEdit}
+      onAdd={(def) => addSection(def)}
+      onSelect={(id) => run({ type: "select", id })}
+      onRemove={removeSection}
+      onDepth={(id, direction) =>
+        run({ type: "reorder-depth", id, direction }, (next) => depthMessage(next, id, nameOf))
+      }
+    />
+  );
+
+  const canvas = (
+    <Canvas
+      page={page}
+      library={library}
+      tokens={state.present.tokens}
+      brand={brand}
+      mode={resolveMode(state.present)}
+      products={products}
+      categories={categories}
+      device={state.device}
+      selectedId={state.selectedId}
+      canEdit={canEdit}
+      focusRequest={focusRequest}
+      onSelect={(id) => run({ type: "select", id })}
+      onMove={(id, x, y) => run({ type: "move-section", id, x, y })}
+      onResize={(id, w, h) => run({ type: "resize-section", id, w, h })}
+      onNudge={(id, x, y) =>
+        run({ type: "move-section", id, x, y }, (next) => placement(next, id))
+      }
+      onScale={(id, w, h) =>
+        run({ type: "resize-section", id, w, h }, (next) => placement(next, id))
+      }
+      onDepth={(id, direction) =>
+        run({ type: "reorder-depth", id, direction }, (next) => depthMessage(next, id, nameOf))
+      }
+      onRemove={removeSection}
+      onDragEnd={() => {
+        if (state.selectedId === null) return;
+        const where = placement(state, state.selectedId);
+        if (where !== null) announce(where);
+      }}
+      onDropSection={(def, at) => addSection(def, at)}
+    />
+  );
+
+  const inspector = (
+    <div className="flex flex-col gap-5">
+      <SettingsInspector
+        section={selected}
+        def={selected ? findDef(library, selected.type) : undefined}
+        categories={categories}
+        canEdit={canEdit}
+        onSettingChange={(key, value) => {
+          if (!selected) return;
+          run({ type: "set-setting", id: selected.id, key, value });
+        }}
+        onMove={(x, y) => {
+          if (!selected) return;
+          run({ type: "move-section", id: selected.id, x, y });
+        }}
+        onResize={(w, h) => {
+          if (!selected) return;
+          run({ type: "resize-section", id: selected.id, w, h });
+        }}
+        onDuplicate={() => {
+          if (!selected) return;
+          const copyId = newId();
+          run({ type: "duplicate-section", id: selected.id, newId: copyId }, (next) => {
+            const where = placement(next, copyId);
+            return where === null ? null : `${where}. Copied.`;
+          });
+          setFocusRequest({ id: copyId, token: idSeq.current });
+        }}
+        onRemove={() => {
+          if (!selected) return;
+          const label = nameOf(selected.type);
+          run({ type: "remove-section", id: selected.id }, () =>
+            `${label} deleted. Undo brings it back.`,
+          );
+        }}
+        onDepth={(direction) => {
+          if (!selected) return;
+          const id = selected.id;
+          run({ type: "reorder-depth", id, direction }, (next) =>
+            depthMessage(next, id, nameOf),
+          );
+        }}
+      />
+
+      <details className="rounded-tile border border-line">
+        <summary className="cursor-pointer rounded-tile px-3 py-2 text-sm font-semibold text-ink">
+          Theme and brand
+        </summary>
+        <div className="border-t border-line p-3">
+          <ThemeTokenPanel
+            tokens={state.present.tokens}
+            brand={brand}
+            canEdit={canEdit}
+            onToken={(key, value) => run({ type: "set-token", key, value })}
+          />
+        </div>
+      </details>
+    </div>
+  );
+
   return (
     <div className="flex flex-col gap-3">
       {!canEdit ? (
@@ -247,6 +385,7 @@ export function EditorShell({
           canRedo={canRedo(state)}
           canEdit={canEdit}
           saving={saving}
+          phone={!roomy}
           paletteOpen={paletteOpen}
           inspectorOpen={inspectorOpen}
           onTogglePalette={() => {
@@ -275,129 +414,59 @@ export function EditorShell({
           }
         />
 
-        <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-          <div
-            hidden={!paletteOpen}
-            className="shrink-0 border-b border-line lg:w-72 lg:border-b-0 lg:border-r"
-          >
-            <SectionPalette
-              library={library}
-              page={page}
-              selectedId={state.selectedId}
-              canEdit={canEdit}
-              onAdd={(def) => addSection(def)}
-              onSelect={(id) => run({ type: "select", id })}
-              onDepth={(id, direction) =>
-                run({ type: "reorder-depth", id, direction }, (next) => depthMessage(next, id, nameOf))
-              }
-            />
-          </div>
-
-          <div className="min-h-96 min-w-0 flex-1">
-            <Canvas
-              page={page}
-              library={library}
-              tokens={state.present.tokens}
-              brand={brand}
-              mode={resolveMode(state.present)}
-              products={products}
-              categories={categories}
-              device={state.device}
-              selectedId={state.selectedId}
-              canEdit={canEdit}
-              focusRequest={focusRequest}
-              onSelect={(id) => run({ type: "select", id })}
-              onMove={(id, x, y) => run({ type: "move-section", id, x, y })}
-              onResize={(id, w, h) => run({ type: "resize-section", id, w, h })}
-              onNudge={(id, x, y) =>
-                run({ type: "move-section", id, x, y }, (next) => placement(next, id))
-              }
-              onScale={(id, w, h) =>
-                run({ type: "resize-section", id, w, h }, (next) => placement(next, id))
-              }
-              onDepth={(id, direction) =>
-                run({ type: "reorder-depth", id, direction }, (next) => depthMessage(next, id, nameOf))
-              }
-              onRemove={(id) => {
-                const label = nameOf(
-                  page.sections.find((section) => section.id === id)?.type ?? "Section",
-                );
-                run({ type: "remove-section", id }, () => `${label} deleted. Undo brings it back.`);
-              }}
-              onDragEnd={() => {
-                if (state.selectedId === null) return;
-                const where = placement(state, state.selectedId);
-                if (where !== null) announce(where);
-              }}
-              onDropSection={(def, at) => addSection(def, at)}
-            />
-          </div>
-
-          <aside
-            hidden={!inspectorOpen}
-            aria-label="Section and theme settings"
-            className="shrink-0 overflow-y-auto border-t border-line p-4 lg:w-80 lg:border-l lg:border-t-0"
-          >
-            <div className="flex flex-col gap-5">
-              <SettingsInspector
-                section={selected}
-                def={selected ? findDef(library, selected.type) : undefined}
-                categories={categories}
-                canEdit={canEdit}
-                onSettingChange={(key, value) => {
-                  if (!selected) return;
-                  run({ type: "set-setting", id: selected.id, key, value });
-                }}
-                onMove={(x, y) => {
-                  if (!selected) return;
-                  run({ type: "move-section", id: selected.id, x, y });
-                }}
-                onResize={(w, h) => {
-                  if (!selected) return;
-                  run({ type: "resize-section", id: selected.id, w, h });
-                }}
-                onDuplicate={() => {
-                  if (!selected) return;
-                  const copyId = newId();
-                  run({ type: "duplicate-section", id: selected.id, newId: copyId }, (next) => {
-                    const where = placement(next, copyId);
-                    return where === null ? null : `${where}. Copied.`;
-                  });
-                  setFocusRequest({ id: copyId, token: idSeq.current });
-                }}
-                onRemove={() => {
-                  if (!selected) return;
-                  const label = nameOf(selected.type);
-                  run({ type: "remove-section", id: selected.id }, () =>
-                    `${label} deleted. Undo brings it back.`,
-                  );
-                }}
-                onDepth={(direction) => {
-                  if (!selected) return;
-                  const id = selected.id;
-                  run({ type: "reorder-depth", id, direction }, (next) =>
-                    depthMessage(next, id, nameOf),
-                  );
-                }}
-              />
-
-              <details className="rounded-tile border border-line">
-                <summary className="cursor-pointer rounded-tile px-3 py-2 text-sm font-semibold text-ink">
-                  Theme and brand
-                </summary>
-                <div className="border-t border-line p-3">
-                  <ThemeTokenPanel
-                    tokens={state.present.tokens}
-                    brand={brand}
-                    canEdit={canEdit}
-                    onToken={(key, value) => run({ type: "set-token", key, value })}
-                  />
-                </div>
-              </details>
+        {roomy ? (
+          <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+            <div
+              hidden={!paletteOpen}
+              className="shrink-0 border-b border-line lg:w-72 lg:border-b-0 lg:border-r"
+            >
+              {palette}
             </div>
-          </aside>
-        </div>
+
+            <div className="min-h-96 min-w-0 flex-1">{canvas}</div>
+
+            <aside
+              hidden={!inspectorOpen}
+              aria-label="Section and theme settings"
+              className="shrink-0 overflow-y-auto border-t border-line p-4 lg:w-80 lg:border-l lg:border-t-0"
+            >
+              {inspector}
+            </aside>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2 pt-1">
+            <div className="px-4">
+              <Tabs
+                label="Editor panes"
+                items={PHONE_PANES}
+                value={phonePane}
+                onChange={(id) => setPhonePane(id as PhonePane)}
+              >
+                {phonePane === "sections" ? palette : null}
+                {phonePane === "page" ? <div className="min-h-96 min-w-0">{canvas}</div> : null}
+                {phonePane === "settings" ? (
+                  <div aria-label="Section and theme settings" role="region" className="py-4">
+                    {inspector}
+                  </div>
+                ) : null}
+              </Tabs>
+            </div>
+          </div>
+        )}
       </Card>
+
+      {/* Save is the one action the editor exists for, so on a phone it stays in reach under the
+          panes however long the Sections list or the settings run. */}
+      {!roomy && canEdit ? (
+        <StickyActionBar>
+          <span className="min-w-0 flex-1 text-sm text-muted" aria-live="polite">
+            {saving ? "Saving…" : dirty ? "Unsaved changes" : "All changes saved"}
+          </span>
+          <Button onClick={() => void save()} disabled={!dirty || saving} loading={saving}>
+            Save changes
+          </Button>
+        </StickyActionBar>
+      ) : null}
 
       <PageManager
         open={pagesOpen}

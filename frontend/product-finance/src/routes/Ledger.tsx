@@ -188,13 +188,13 @@ export function LedgerPage() {
           <Card className="flex flex-col gap-4 p-6">
             <SectionHeader title="Trial balance" subtitle="Every account, debit and credit" />
             <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-sm">
+              <table className="stack-rows w-full border-collapse text-sm">
                 <caption className="sr-only">Trial balance by account</caption>
                 <thead>
                   <tr className="border-b border-line text-xs font-semibold uppercase tracking-wide text-faint">
                     <th scope="col" className="py-2.5 pr-3 text-left">Code</th>
                     <th scope="col" className="py-2.5 px-3 text-left">Account</th>
-                    <th scope="col" className="py-2.5 px-3 text-left hidden sm:table-cell">Type</th>
+                    <th scope="col" className="py-2.5 px-3 text-left">Type</th>
                     <th scope="col" className="py-2.5 px-3 text-right">Debit</th>
                     <th scope="col" className="py-2.5 pl-3 text-right">Credit</th>
                   </tr>
@@ -202,15 +202,15 @@ export function LedgerPage() {
                 <tbody>
                   {ledger.data.accounts.map((a) => (
                     <tr key={a.code} className="border-b border-line/70 hover:bg-ground/60 transition-colors">
-                      <td className="py-3 pr-3 align-middle font-semibold text-ink tnum">{a.code}</td>
-                      <td className="py-3 px-3 align-middle text-ink-soft">{a.name}</td>
-                      <td className="py-3 px-3 align-middle text-muted hidden sm:table-cell">
+                      <td data-label="Code" className="py-3 pr-3 align-middle font-semibold text-ink tnum">{a.code}</td>
+                      <td className="stack-title py-3 px-3 align-middle text-ink-soft">{a.name}</td>
+                      <td data-label="Type" className="py-3 px-3 align-middle text-muted">
                         {TYPE_LABEL[a.type]}
                       </td>
-                      <td className="py-3 px-3 text-right align-middle money text-ink-soft">
+                      <td data-label="Debit" className="py-3 px-3 text-right align-middle money text-ink-soft">
                         {a.debit_minor > 0 ? `₹${formatAmount(a.debit_minor)}` : <span className="text-faint">—</span>}
                       </td>
-                      <td className="py-3 pl-3 text-right align-middle money text-ink-soft">
+                      <td data-label="Credit" className="py-3 pl-3 text-right align-middle money text-ink-soft">
                         {a.credit_minor > 0 ? `₹${formatAmount(a.credit_minor)}` : <span className="text-faint">—</span>}
                       </td>
                     </tr>
@@ -221,8 +221,8 @@ export function LedgerPage() {
                     <td className="py-3 pr-3" colSpan={3}>
                       Totals
                     </td>
-                    <td className="py-3 px-3 text-right money">₹{formatAmount(totals.debit)}</td>
-                    <td className="py-3 pl-3 text-right money">₹{formatAmount(totals.credit)}</td>
+                    <td data-label="Total debit" className="py-3 px-3 text-right money">₹{formatAmount(totals.debit)}</td>
+                    <td data-label="Total credit" className="py-3 pl-3 text-right money">₹{formatAmount(totals.credit)}</td>
                   </tr>
                 </tfoot>
               </table>

@@ -12,7 +12,7 @@ function Fact({ label, value, mono = false }: { label: string; value: string; mo
   return (
     <div className="flex flex-col gap-0.5">
       <dt className="text-xs font-semibold uppercase tracking-wide text-faint">{label}</dt>
-      <dd className={mono ? "money text-sm text-ink-soft" : "text-sm font-medium text-ink-soft"}>
+      <dd className={mono ? "money break-all text-sm text-ink-soft" : "text-sm font-medium text-ink-soft"}>
         {value}
       </dd>
     </div>

@@ -31,7 +31,7 @@ function BackLink({ id }: { id: string }) {
   return (
     <Link
       to={`/purchase-orders/${id}`}
-      className="inline-flex w-fit items-center gap-2 text-sm font-semibold text-muted hover:text-ink transition-colors"
+      className="relative hit-44 inline-flex w-fit items-center gap-2 text-sm font-semibold text-muted hover:text-ink transition-colors"
     >
       <ArrowRightIcon className="size-4 rotate-180" />
       Back to purchase order
@@ -252,8 +252,14 @@ function ReceiveForm({ context }: { context: ReceivingContextOut }) {
             ) : null}
           </div>
 
-          <div className="flex items-center justify-end gap-3 border-t border-line pt-4">
-            <Button type="submit" loading={post.pending}>
+          {/* Below md the bar stays above the bottom navigation, so "Post receipt" is in reach however
+              many lines the delivery has. */}
+          <div
+            className="sticky z-10 -mx-4 flex items-center justify-end gap-3 border-t border-line bg-surface px-4 py-3 md:static md:mx-0 md:bg-transparent md:px-0 md:pb-0 md:pt-4"
+            style={{ bottom: "var(--shell-bottom-inset)" }}
+            data-action-bar=""
+          >
+            <Button type="submit" loading={post.pending} className="w-full md:w-auto">
               Post receipt
             </Button>
           </div>

@@ -69,6 +69,7 @@ export function OrdersPage() {
     {
       key: "number",
       header: "Order",
+      mobile: "title",
       render: (order) => (
         <div className="flex flex-col leading-tight">
           <span className="font-semibold text-ink tnum">{order.number}</span>
@@ -89,6 +90,7 @@ export function OrdersPage() {
     {
       key: "lines",
       header: "Lines",
+      mobile: "hidden",
       align: "right",
       cellClassName: "hidden md:table-cell",
       headerClassName: "hidden md:table-cell",
@@ -105,6 +107,7 @@ export function OrdersPage() {
     {
       key: "status",
       header: "Status",
+      mobile: "status",
       render: (order) => <OrderStatusPill status={order.status} />,
     },
     {
