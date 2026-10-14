@@ -147,7 +147,10 @@ export type {
 } from "./notifications/useNotifications";
 export { NotificationsBell } from "./notifications/NotificationsBell";
 
-export { settle } from "./fixtures";
+export { paginateFixture, settle } from "./fixtures";
+export type { FixturePage, PaginateFixtureOptions } from "./fixtures";
+export { buildQuery } from "./query";
+export type { BuildQueryOptions, QueryValue } from "./query";
 export { useAsync } from "./useAsync";
 export type { AsyncControls, AsyncState } from "./useAsync";
 export { useMutation } from "./useMutation";

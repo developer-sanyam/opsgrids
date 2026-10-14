@@ -12,7 +12,7 @@
  * through — nothing here re-filters, re-sorts or caps a result set the server already decided.
  */
 
-import { ApiError, apiRequest, settle } from "@opsgrids/client";
+import { ApiError, apiRequest, buildQuery, paginateFixture, settle } from "@opsgrids/client";
 import type { ProblemJson } from "@opsgrids/client";
 import { milliToQty, qtyToMilli } from "@/lib/quantity";
 import {
@@ -238,23 +238,6 @@ const DEFAULT_PAGE_SIZE = 25;
 export const FULL_PAGE = 200;
 
 class NotFoundError extends Error {}
-
-function buildQuery(params: Record<string, string | number | boolean | undefined>): string {
-  const query = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value === undefined || value === "") continue;
-    query.set(key, String(value));
-  }
-  const s = query.toString();
-  return s ? `?${s}` : "";
-}
-
-function paginateFixture<T>(items: T[], page: number, size: number): Page<T> {
-  const total = items.length;
-  const pages = total === 0 ? 0 : Math.ceil(total / size);
-  const start = (page - 1) * size;
-  return { items: items.slice(start, start + size), total, page, size, pages };
-}
 
 function fixtureId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`;

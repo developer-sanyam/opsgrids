@@ -13,3 +13,33 @@
 export function settle<T>(value: T, ms = 240): Promise<T> {
   return new Promise((resolve) => setTimeout(() => resolve(value), ms));
 }
+
+/** The page envelope every list endpoint returns, built in memory for fixture mode. */
+export interface FixturePage<T> {
+  items: T[];
+  total: number;
+  page: number;
+  size: number;
+  pages: number;
+}
+
+export interface PaginateFixtureOptions {
+  /**
+   * What `pages` reads when the list is empty. The gateway's list endpoints report `0`, which is
+   * the default; the storefront's own fixtures have always reported `1` (one empty page).
+   */
+  pagesWhenEmpty?: 0 | 1;
+}
+
+/** Slice an in-memory list into the page envelope the gateway returns. `page` is 1-based. */
+export function paginateFixture<T>(
+  items: T[],
+  page: number,
+  size: number,
+  { pagesWhenEmpty = 0 }: PaginateFixtureOptions = {},
+): FixturePage<T> {
+  const total = items.length;
+  const pages = total === 0 ? pagesWhenEmpty : Math.ceil(total / size);
+  const start = (page - 1) * size;
+  return { items: items.slice(start, start + size), total, page, size, pages };
+}

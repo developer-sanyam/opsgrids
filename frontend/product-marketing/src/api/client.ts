@@ -15,7 +15,7 @@
  * misorder every row the current page does not hold.
  */
 
-import { apiRequest, settle } from "@opsgrids/client";
+import { apiRequest, buildQuery, settle } from "@opsgrids/client";
 import {
   CAMPAIGNS,
   CAMPAIGN_WEEK_SHAPE,
@@ -58,16 +58,6 @@ export const DEFAULT_PAGE_SIZE = 25;
 /** The server's own ceiling (`PageQuery`, `libs/platform-core/src/platform_core/pagination.py`) —
  *  used only for a bounded working set a form's picker needs in full, never for a list screen. */
 export const MAX_PAGE_SIZE = 200;
-
-function buildQuery(params: Record<string, string | number | boolean | undefined>): string {
-  const query = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value === undefined || value === "") continue;
-    query.set(key, String(value));
-  }
-  const s = query.toString();
-  return s ? `?${s}` : "";
-}
 
 /* -------------------------------- audiences ------------------------------- */
 

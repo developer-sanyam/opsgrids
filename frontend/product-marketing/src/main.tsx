@@ -1,5 +1,4 @@
-import { lazy, StrictMode, Suspense } from "react";
-import type { ReactNode } from "react";
+import { lazy, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
@@ -11,6 +10,8 @@ import {
   SettingsIcon,
   SparkIcon,
   ThemeProvider,
+  ComingSoonPage,
+  lazyRoute,
   Toaster,
 } from "@opsgrids/ui";
 import "./index.css";
@@ -19,8 +20,6 @@ import { AuthProvider } from "./auth/AuthProvider";
 import { RequireAuth } from "./auth/RequireAuth";
 import { OverviewPage } from "./routes/Overview";
 import { LoginPage } from "./routes/Login";
-import { ComingSoonPage } from "./routes/ComingSoon";
-import { RouteFallback } from "./routes/RouteFallback";
 import { LogoMark } from "./ui/LogoMark";
 
 // ADR-0003 addendum: sign-in only ever happens on the dashboard, the one host the refresh
@@ -48,9 +47,6 @@ const ChannelsPage = lazy(() =>
   import("./routes/Channels").then((m) => ({ default: m.ChannelsPage })),
 );
 
-function lazyRoute(path: string, element: ReactNode) {
-  return { path, element: <Suspense fallback={<RouteFallback />}>{element}</Suspense> };
-}
 
 const router = createBrowserRouter([
   {

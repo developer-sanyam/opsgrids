@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 
 import { RequirePermission } from "@opsgrids/client";
 
-import { PermissionDenied } from "@/ui/PermissionDenied";
+import { PermissionDenied } from "@opsgrids/ui";
 
 /**
  * A screen gated on one Engage permission, floored at the organization like every Engage grant.

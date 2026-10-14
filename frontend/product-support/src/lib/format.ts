@@ -18,16 +18,7 @@ export function formatTime(iso: string | null): string {
 }
 
 /** "2026-08-24" -> "24 Aug 2026". */
-export function formatDate(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return d.toLocaleDateString("en-IN", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    timeZone: "UTC",
-  });
-}
+export { formatCalendarDate as formatDate } from "@opsgrids/ui";
 
 /**
  * "2026-08-24T09:24:00Z" -> "24 Aug, 2:54 pm IST". An instant, so it renders in the viewer's own
@@ -104,9 +95,4 @@ export function channelLabel(channel: Channel): string {
 }
 
 /** Initials for an avatar fallback: "Ananya Iyer" -> "AI". */
-export function initials(name: string): string {
-  const parts = name.trim().split(/\s+/);
-  const first = parts[0]?.[0] ?? "";
-  const last = parts.length > 1 ? (parts[parts.length - 1]?.[0] ?? "") : "";
-  return (first + last).toUpperCase();
-}
+export { initials } from "@opsgrids/ui";

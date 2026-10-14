@@ -1,8 +1,23 @@
 /**
- * The formatters the design system itself needs, and money, which every product shows the same
- * way. Other product formatting — dates, SLA clocks, domain labels — stays in the app that owns
- * those rules.
+ * The formatters the design system itself needs, money, and the calendar date every product shows
+ * the same way. Other product formatting — instants, SLA clocks, domain labels — stays in the app
+ * that owns those rules.
  */
+
+/**
+ * A stored calendar date for display: "2026-03-15" is "15 Mar 2026". Rendered in UTC so the date
+ * that was stored is the date that shows, whatever zone the reader is in. A missing date is an
+ * em dash rather than "Invalid Date". For an instant (a timestamp), use `formatInstant`.
+ */
+export function formatCalendarDate(iso: string | null): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleDateString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
 
 /** Initials for an avatar fallback: "Sofia Marchetti" -> "SM". */
 export function initials(name: string): string {

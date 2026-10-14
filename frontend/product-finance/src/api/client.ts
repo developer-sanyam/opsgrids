@@ -33,7 +33,7 @@ import {
 import { complianceSummary, isOutstanding, latestPeriod } from "@/data/compliance";
 import type { ComplianceSummary } from "@/data/compliance";
 import { today as realToday } from "@/lib/format";
-import { ApiError, apiRequest } from "@opsgrids/client";
+import { ApiError, apiRequest, buildQuery, paginateFixture as paginate, settle } from "@opsgrids/client";
 import {
   EWAY_BILLS,
   FILINGS_BY_INVOICE,
@@ -109,27 +109,6 @@ const DEFAULT_PAGE_SIZE = 25;
  *  needs the whole (small) working set for this org, such as the customer-name directory. */
 const MAX_PAGE_SIZE = 200;
 
-/** Small artificial delay so loading states are exercised in fixture mode. */
-function settle<T>(value: T, ms = 240): Promise<T> {
-  return new Promise((resolve) => setTimeout(() => resolve(value), ms));
-}
-
-function buildQuery(params: Record<string, string | number | boolean | undefined | null>): string {
-  const query = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value === undefined || value === null || value === "") continue;
-    query.set(key, String(value));
-  }
-  const s = query.toString();
-  return s ? `?${s}` : "";
-}
-
-function paginate<T>(items: T[], page: number, size: number): Page<T> {
-  const total = items.length;
-  const pages = total === 0 ? 0 : Math.ceil(total / size);
-  const start = (page - 1) * size;
-  return { items: items.slice(start, start + size), total, page, size, pages };
-}
 
 /* ------------------------------------------------------------------ invoices */
 

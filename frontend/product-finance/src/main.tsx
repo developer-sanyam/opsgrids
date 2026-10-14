@@ -1,10 +1,9 @@
 import { lazy, StrictMode, Suspense } from "react";
-import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 
 import { RedirectToCentralLogin, configureAuthOrigin, configureSession } from "@opsgrids/client";
-import { ThemeProvider, Toaster } from "@opsgrids/ui";
+import { ComingSoonPage, RouteFallback, ThemeProvider, Toaster, lazyRoute } from "@opsgrids/ui";
 import "./index.css";
 import { AppShell } from "./App";
 import { AuthProvider } from "./auth/AuthProvider";
@@ -13,8 +12,6 @@ import { OverviewPage } from "./routes/Overview";
 import { InvoicesPage } from "./routes/Invoices";
 import { InvoiceDetailPage } from "./routes/InvoiceDetail";
 import { LoginPage } from "./routes/Login";
-import { ComingSoonPage } from "./routes/ComingSoon";
-import { RouteFallback } from "./routes/RouteFallback";
 import { LogoMark } from "./ui/LogoMark";
 
 // ADR-0003 addendum: sign-in only ever happens on the dashboard, the one host the refresh
@@ -66,9 +63,6 @@ const SettingsPage = lazy(() =>
   import("./routes/Settings").then((m) => ({ default: m.SettingsPage })),
 );
 
-function lazyRoute(path: string, element: ReactNode) {
-  return { path, element: <Suspense fallback={<RouteFallback />}>{element}</Suspense> };
-}
 
 const router = createBrowserRouter([
   {

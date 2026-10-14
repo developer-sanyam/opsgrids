@@ -9,7 +9,7 @@
  * accept, and no response field is read that the route does not return.
  */
 
-import { ApiError, apiRequest, settle } from "@opsgrids/client";
+import { ApiError, apiRequest, paginateFixture as paginate, settle } from "@opsgrids/client";
 import type {
   Asset,
   AssetIn,
@@ -71,17 +71,6 @@ const DEFAULT_SIZE = 25;
  *  importing from `./fixtures` would defeat the dynamic `import()` above. */
 const FIXTURE_CLOCK = new Date("2026-08-24T18:00:00Z");
 
-function paginate<T>(items: T[], page: number, size: number): Page<T> {
-  const total = items.length;
-  const start = (page - 1) * size;
-  return {
-    items: items.slice(start, start + size),
-    total,
-    page,
-    size,
-    pages: total === 0 ? 0 : Math.max(1, Math.ceil(total / size)),
-  };
-}
 
 function nextNumber(prefix: string, ids: string[]): string {
   const max = ids.reduce((best, id) => {

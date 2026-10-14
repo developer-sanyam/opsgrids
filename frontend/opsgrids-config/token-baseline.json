@@ -279,10 +279,6 @@
     "arbitrary": 1,
     "spacing": 1
   },
-  "product-finance/src/routes/ComingSoon.tsx": {
-    "colour": 1,
-    "spacing": 3
-  },
   "product-finance/src/routes/Customers.tsx": {
     "spacing": 3
   },
@@ -421,10 +417,6 @@
     "arbitrary": 1,
     "spacing": 4
   },
-  "product-itsm/src/routes/ComingSoon.tsx": {
-    "colour": 1,
-    "spacing": 3
-  },
   "product-itsm/src/routes/IncidentDetail.tsx": {
     "arbitrary": 1,
     "spacing": 13
@@ -475,10 +467,6 @@
   "product-marketing/src/routes/Channels.tsx": {
     "spacing": 1
   },
-  "product-marketing/src/routes/ComingSoon.tsx": {
-    "colour": 1,
-    "spacing": 3
-  },
   "product-marketing/src/routes/Login.tsx": {
     "colour": 3,
     "arbitrary": 9,
@@ -514,10 +502,6 @@
     "colour": 3,
     "arbitrary": 9,
     "spacing": 9
-  },
-  "product-operations/src/routes/NotFound.tsx": {
-    "colour": 1,
-    "spacing": 3
   },
   "product-operations/src/routes/PurchaseOrderDetail.tsx": {
     "arbitrary": 1,
@@ -559,10 +543,6 @@
   "product-projects/src/routes/Milestones.tsx": {
     "spacing": 3
   },
-  "product-projects/src/routes/NotFound.tsx": {
-    "colour": 1,
-    "spacing": 3
-  },
   "product-projects/src/routes/Overview.tsx": {
     "spacing": 3
   },
@@ -602,10 +582,6 @@
   "product-pulseboard/src/routes/Board.tsx": {
     "arbitrary": 1,
     "spacing": 1
-  },
-  "product-pulseboard/src/routes/ComingSoon.tsx": {
-    "colour": 1,
-    "spacing": 3
   },
   "product-pulseboard/src/routes/Login.tsx": {
     "colour": 3,
@@ -727,10 +703,6 @@
     "colour": 3,
     "arbitrary": 9,
     "spacing": 9
-  },
-  "product-support/src/routes/NotFound.tsx": {
-    "colour": 1,
-    "spacing": 3
   },
   "product-support/src/routes/Overview.tsx": {
     "arbitrary": 1,

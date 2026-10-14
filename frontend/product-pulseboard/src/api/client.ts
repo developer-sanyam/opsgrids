@@ -16,7 +16,7 @@
  * one-line change here, not a hunt through every screen.
  */
 
-import { apiRequest, settle } from "@opsgrids/client";
+import { apiRequest, buildQuery, settle } from "@opsgrids/client";
 import { isoOf, mondayOf, weekFrom } from "./dates";
 import {
   PROJECTS,
@@ -76,14 +76,9 @@ export const DEFAULT_PAGE_SIZE = 25;
  */
 const ROLLUP_PAGE = 200;
 
+/** PulseBoard keeps an empty filter (`?q=`) on the wire, as it always has. */
 function qs(params: Record<string, string | number | boolean | undefined>): string {
-  const search = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    if (value === undefined) continue;
-    search.set(key, String(value));
-  }
-  const s = search.toString();
-  return s ? `?${s}` : "";
+  return buildQuery(params, { keepEmpty: true });
 }
 
 /* ------------------------------------------------------------------------ wire shapes
