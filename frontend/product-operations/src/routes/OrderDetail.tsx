@@ -51,7 +51,7 @@ function BackLink() {
   return (
     <Link
       to="/orders"
-      className="inline-flex w-fit items-center gap-2 text-sm font-semibold text-muted hover:text-ink transition-colors"
+      className="relative hit-44 inline-flex w-fit items-center gap-2 text-sm font-semibold text-muted hover:text-ink transition-colors"
     >
       <ArrowRightIcon className="size-4 rotate-180" />
       Back to orders
@@ -390,7 +390,7 @@ export function OrderDetailPage() {
               </p>
               <a
                 href={`${financeHref}/invoices/${encodeURIComponent(order.invoice_id)}/print`}
-                className="inline-flex w-fit items-center gap-2 text-sm font-semibold text-accent-ink underline underline-offset-2"
+                className="relative hit-44 inline-flex w-fit items-center gap-2 text-sm font-semibold text-accent-ink underline underline-offset-2"
               >
                 Open the invoice to download or print
                 <ArrowRightIcon className="size-4" />

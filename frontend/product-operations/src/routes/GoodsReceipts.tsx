@@ -49,6 +49,7 @@ export function GoodsReceiptsPage() {
     {
       key: "number",
       header: "Receipt",
+      mobile: "title",
       render: (r) => <span className="font-semibold text-ink tnum">{r.number}</span>,
     },
     {
@@ -66,6 +67,7 @@ export function GoodsReceiptsPage() {
     {
       key: "note",
       header: "Delivery note",
+      mobile: "hidden",
       cellClassName: "hidden lg:table-cell",
       headerClassName: "hidden lg:table-cell",
       render: (r) => <span className="text-ink-soft">{r.delivery_note ?? "—"}</span>,

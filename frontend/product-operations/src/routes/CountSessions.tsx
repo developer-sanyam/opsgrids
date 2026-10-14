@@ -65,6 +65,7 @@ export function CountSessionsPage() {
     {
       key: "session",
       header: "Session",
+      mobile: "title",
       render: (s) => (
         <div className="flex flex-col leading-tight">
           <Link to={`/counting/${s.id}`} className="font-semibold text-ink hover:underline">
@@ -84,6 +85,7 @@ export function CountSessionsPage() {
     {
       key: "status",
       header: "Status",
+      mobile: "status",
       render: (s) => <CountSessionStatusPill status={s.status} />,
     },
     {
@@ -107,6 +109,7 @@ export function CountSessionsPage() {
     {
       key: "actions",
       header: "",
+      mobile: "actions",
       align: "right",
       render: (s) => (
         <RowActions

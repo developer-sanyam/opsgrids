@@ -93,6 +93,7 @@ export function ChannelsPage() {
     {
       key: "name",
       header: "Channel",
+      mobile: "title",
       render: (c) => (
         <button
           type="button"
@@ -107,6 +108,7 @@ export function ChannelsPage() {
     {
       key: "status",
       header: "Status",
+      mobile: "status",
       render: (c) => (
         <div className="flex flex-col gap-1">
           <ChannelStatusPill status={c.status} />
@@ -126,6 +128,7 @@ export function ChannelsPage() {
     {
       key: "auto_accept",
       header: "Auto-accept",
+      mobile: "hidden",
       cellClassName: "hidden md:table-cell",
       headerClassName: "hidden md:table-cell",
       render: (c) => <span className="text-muted">{c.auto_accept_orders ? "On" : "Off"}</span>,
@@ -140,6 +143,7 @@ export function ChannelsPage() {
     {
       key: "actions",
       header: "",
+      mobile: "actions",
       align: "right",
       render: (c) => (
         <RowActions

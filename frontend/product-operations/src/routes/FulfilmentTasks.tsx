@@ -128,6 +128,7 @@ export function FulfilmentTasksPage() {
     {
       key: "task",
       header: "Task",
+      mobile: "title",
       render: (t) => (
         <div className="flex flex-col leading-tight">
           <span className="font-semibold text-ink tnum">Order {t.order_id.slice(0, 8)}</span>
@@ -140,11 +141,13 @@ export function FulfilmentTasksPage() {
     {
       key: "status",
       header: "Status",
+      mobile: "status",
       render: (t) => <PickTaskStatusPill status={t.status} />,
     },
     {
       key: "round",
       header: "Round",
+      mobile: "hidden",
       align: "right",
       cellClassName: "hidden sm:table-cell",
       headerClassName: "hidden sm:table-cell",
@@ -179,6 +182,7 @@ export function FulfilmentTasksPage() {
     {
       key: "actions",
       header: "",
+      mobile: "actions",
       align: "right",
       render: (t) => (
         <RowActions

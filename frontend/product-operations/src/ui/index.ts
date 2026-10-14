@@ -64,6 +64,8 @@ export type {
 
 export { Barcode128 } from "./Barcode128";
 export { useNavGroups } from "./useNavGroups";
+export { GoBackButton } from "./GoBackButton";
+export { StickyActionBar } from "./StickyActionBar";
 export { LoadError } from "./LoadError";
 export { NeedsAttention } from "./NeedsAttention";
 export {

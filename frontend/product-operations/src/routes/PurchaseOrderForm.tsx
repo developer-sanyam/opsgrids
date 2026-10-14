@@ -146,7 +146,7 @@ function LineEditor({
         {...(descriptionServerError !== undefined ? { error: descriptionServerError } : {})}
       />
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 min-[400px]:grid-cols-2 sm:grid-cols-4">
         <TextField
           label="Quantity"
           inputMode="numeric"
@@ -246,7 +246,7 @@ function BackLink({ id }: { id?: string }) {
   return (
     <Link
       to={id ? `/purchase-orders/${id}` : "/purchase-orders"}
-      className="inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors"
+      className="relative hit-44 inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors"
     >
       <ArrowRightIcon className="size-4 rotate-180" />
       {id ? "Back to purchase order" : "Back to purchase orders"}

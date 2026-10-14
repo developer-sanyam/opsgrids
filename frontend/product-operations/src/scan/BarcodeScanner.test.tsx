@@ -179,3 +179,26 @@ describe("a camera read", () => {
     expect(s.stop).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("on a touch device", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("puts the camera first and typing second, and leaves the keyboard down", () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query === "(pointer: coarse)",
+      media: query,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    }));
+    render(<BarcodeScanner onScan={vi.fn()} />);
+    const camera = screen.getByRole("button", { name: "Use camera" });
+    const field = screen.getByLabelText("Type or scan a code");
+    // The camera comes before the field in reading and tab order, not just on screen.
+    expect(camera.compareDocumentPosition(field) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(document.activeElement).not.toBe(field);
+    expect(camera.className).toContain("bg-accent");
+    expect(screen.getByRole("button", { name: "Look up" }).className).not.toContain("bg-accent");
+  });
+});

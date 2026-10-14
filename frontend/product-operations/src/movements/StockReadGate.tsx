@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 import { RequirePermission } from "@opsgrids/client";
-import { Card, EmptyState } from "@/ui";
+import { Card, EmptyState, GoBackButton } from "@/ui";
 import { ShieldIcon } from "@opsgrids/ui";
 
 /**
@@ -20,6 +20,7 @@ export function StockReadGate({ children }: { children: ReactNode }) {
             icon={<ShieldIcon className="size-6" />}
             title="You don't have access to stock movements"
             description="Ask an administrator for permission to read inventory stock, or check that you are signed in to the right organization."
+            action={<GoBackButton />}
           />
         </Card>
       }

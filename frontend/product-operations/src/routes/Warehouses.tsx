@@ -58,6 +58,7 @@ export function WarehousesPage() {
     {
       key: "code",
       header: "Code",
+      mobile: "title",
       render: (w) => <span className="tnum text-xs font-semibold text-muted">{w.code}</span>,
     },
     {
@@ -73,6 +74,7 @@ export function WarehousesPage() {
     {
       key: "actions",
       header: "",
+      mobile: "actions",
       align: "right",
       render: (w) => (
         <RowActions

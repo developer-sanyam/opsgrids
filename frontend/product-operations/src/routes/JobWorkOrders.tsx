@@ -63,6 +63,7 @@ export function JobWorkOrdersPage() {
     {
       key: "order",
       header: "Order",
+      mobile: "title",
       render: (o) => (
         <div className="flex flex-col leading-tight">
           <Link to={`/jobwork/orders/${o.id}`} className="font-semibold text-ink hover:underline">
@@ -76,6 +77,7 @@ export function JobWorkOrdersPage() {
     {
       key: "status",
       header: "Status",
+      mobile: "status",
       render: (o) => (
         <div className="flex flex-wrap items-center gap-2">
           <JobWorkStatusPill status={o.status} />
@@ -93,6 +95,7 @@ export function JobWorkOrdersPage() {
     {
       key: "sent",
       header: "Sent",
+      mobile: "hidden",
       align: "right",
       cellClassName: "hidden md:table-cell",
       headerClassName: "hidden md:table-cell",

@@ -28,6 +28,7 @@ import {
   Card,
   ConfirmDialog,
   ErrorState,
+  GoBackButton,
   InlineAlert,
   PageHeader,
   RadioGroup,
@@ -207,7 +208,11 @@ export function PaymentSettingsPage() {
       <div className="rise flex flex-col gap-6">
         <PageHeader eyebrow="Settings" title="Online payments" />
         <Card className="p-6">
-          <ErrorState message="You don't have access to this organization's payment settings." />
+          <ErrorState
+            tone="neutral"
+            message="You don't have access to this organization's payment settings."
+            action={<GoBackButton />}
+          />
         </Card>
       </div>
     );

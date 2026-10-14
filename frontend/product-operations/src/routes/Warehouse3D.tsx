@@ -136,7 +136,7 @@ function BackLink({ warehouseId }: { warehouseId: string }) {
   return (
     <Link
       to={`/warehouses/${warehouseId}/locations`}
-      className="inline-flex w-fit items-center gap-2 text-sm font-semibold text-muted hover:text-ink transition-colors"
+      className="relative hit-44 inline-flex w-fit items-center gap-2 text-sm font-semibold text-muted hover:text-ink transition-colors"
     >
       <ArrowRightIcon className="size-4 rotate-180" />
       Back to locations

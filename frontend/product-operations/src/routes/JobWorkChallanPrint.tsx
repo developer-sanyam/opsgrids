@@ -32,7 +32,7 @@ export function JobWorkChallanPrintPage() {
       <div className="print:hidden flex flex-wrap items-center justify-between gap-4 border-b border-line bg-surface px-6 py-4">
         <Link
           to={state.status === "success" ? `/jobwork/orders/${state.data.order_id}` : "/jobwork/orders"}
-          className="inline-flex items-center gap-2 text-sm font-semibold text-muted hover:text-ink transition-colors"
+          className="relative hit-44 inline-flex items-center gap-2 text-sm font-semibold text-muted hover:text-ink transition-colors"
         >
           <ArrowRightIcon className="size-4 rotate-180" />
           Back to the order

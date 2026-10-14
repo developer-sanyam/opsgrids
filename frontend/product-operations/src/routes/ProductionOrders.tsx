@@ -58,6 +58,7 @@ export function ProductionOrdersPage() {
     {
       key: "number",
       header: "Order",
+      mobile: "title",
       render: (o) => (
         <Link to={`/manufacturing/orders/${o.id}`} className="font-semibold text-ink tnum hover:underline">
           {o.number}
@@ -105,6 +106,7 @@ export function ProductionOrdersPage() {
     {
       key: "bom",
       header: "BOM version",
+      mobile: "hidden",
       cellClassName: "hidden md:table-cell",
       headerClassName: "hidden md:table-cell",
       render: (o) => (

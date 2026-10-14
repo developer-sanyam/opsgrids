@@ -26,6 +26,7 @@ import {
   PoStatusPill,
   SectionHeader,
   Skeleton,
+  StickyActionBar,
   TextArea,
 } from "@/ui";
 import {
@@ -35,6 +36,8 @@ import {
   ClockIcon,
   MapPinIcon,
   TruckIcon,
+  TABLET_QUERY,
+  useMediaQuery,
   useToast,
 } from "@opsgrids/ui";
 import { purchaseOrderActions } from "../lib/purchaseOrderActions";
@@ -108,6 +111,7 @@ export function PurchaseOrderDetailPage() {
   const canWriteReceipt = useCan("operations.procurement.receipt.write", "ORG");
   const canReceiveStock = useCan("operations.inventory.stock.receive", "ORG");
   const canReceiveGoods = canWriteReceipt && canReceiveStock;
+  const roomy = useMediaQuery(TABLET_QUERY, true);
 
   const [deleting, setDeleting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
@@ -256,7 +260,7 @@ export function PurchaseOrderDetailPage() {
           ) : null}
           {/* The goods-receipt flow is the way to take a delivery: partial, short, tolerance-checked,
               with lots and rolls. Receiving everything outstanding in one click stays beside it. */}
-          {actions.receiveGoods && canReceiveGoods ? (
+          {actions.receiveGoods && canReceiveGoods && roomy ? (
             <Button leadingIcon={<TruckIcon className="size-4" />} onClick={() => navigate(`/purchase-orders/${id}/receive`)}>
               Receive goods
             </Button>
@@ -426,6 +430,20 @@ export function PurchaseOrderDetailPage() {
         </div>
       </div>
 
+      {/* On a phone the delivery is the one thing this screen is for, so it stays in reach under a
+          long order rather than sitting in a header that has scrolled away. */}
+      {actions.receiveGoods && canReceiveGoods && !roomy ? (
+        <StickyActionBar>
+          <Button
+            className="w-full"
+            leadingIcon={<TruckIcon className="size-4" />}
+            onClick={() => navigate(`/purchase-orders/${id}/receive`)}
+          >
+            Receive goods
+          </Button>
+        </StickyActionBar>
+      ) : null}
+
       <ConfirmDialog
         open={deleting}
         onClose={() => {
@@ -474,7 +492,7 @@ function BackLink() {
   return (
     <Link
       to="/purchase-orders"
-      className="inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors"
+      className="relative hit-44 inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors"
     >
       <ArrowRightIcon className="size-4 rotate-180" />
       Back to purchase orders

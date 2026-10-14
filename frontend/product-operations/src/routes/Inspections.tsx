@@ -68,6 +68,7 @@ export function InspectionsPage() {
     {
       key: "item",
       header: "Item",
+      mobile: "title",
       render: (i) => (
         <div className="flex flex-col leading-tight">
           <Link to={`/quality/inspections/${i.id}`} className="font-semibold text-ink hover:underline">
@@ -80,6 +81,7 @@ export function InspectionsPage() {
     {
       key: "kind",
       header: "Kind",
+      mobile: "status",
       cellClassName: "hidden sm:table-cell",
       headerClassName: "hidden sm:table-cell",
       render: (i) => <span className="text-muted">{KIND_LABEL[i.kind]}</span>,
