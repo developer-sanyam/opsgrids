@@ -879,7 +879,7 @@ def test_quoted_values_a_trailing_space_and_inline_comments_are_not_flagged(box:
     _append_to_env(
         box,
         'OPS_ALERT_EMAIL="ops team <ops@opsgrids.test>"',
-        "SENTRY_DSN='a b'",
+        "PII_DECRYPT_KEYS='a b'",
         "EDGE_WEB_ROOT=/srv/opsgrids/web   ",
         "S3_PUBLIC_BUCKET=opsgrids-public # the public bucket",
         "  # an indented comment with = and spaces",
@@ -893,7 +893,7 @@ def test_quoted_values_a_trailing_space_and_inline_comments_are_not_flagged(box:
 def test_a_value_that_contains_a_hash_but_no_whitespace_is_left_alone(box: Box) -> None:
     """`KEY=abc#def` is one word to bash — a comment only starts after whitespace."""
     box.write_env(compose_profiles="")
-    _append_to_env(box, "SENTRY_DSN=https://abc#def@sentry.example.test/1")
+    _append_to_env(box, "PII_DECRYPT_KEYS=https://abc#def@sentry.example.test/1")
     assert "unquoted value containing whitespace" not in box.preflight().stderr
 
 
@@ -1099,19 +1099,19 @@ def test_a_quoted_shell_metacharacter_is_fine(box: Box) -> None:
 
 @pytest.mark.parametrize(
     "line",
-    ['SENTRY_DSN="a" b', "SENTRY_DSN='a' b", 'SENTRY_DSN="a"b'],
+    ['PII_DECRYPT_KEYS="a" b', "PII_DECRYPT_KEYS='a' b", 'PII_DECRYPT_KEYS="a"b'],
 )
 def test_text_after_a_closing_quote_is_a_named_failure(box: Box, line: str) -> None:
     box.write_env(compose_profiles="")
     _dot_env(box, line + "\n")
     result = box.preflight()
     assert result.returncode == 1
-    assert "FAIL  SENTRY_DSN in .env has text after its closing quote" in result.stderr
+    assert "FAIL  PII_DECRYPT_KEYS in .env has text after its closing quote" in result.stderr
 
 
 def test_a_comment_after_a_closing_quote_is_fine(box: Box) -> None:
     box.write_env(compose_profiles="")
-    _dot_env(box, 'SENTRY_DSN="a b"  # the dsn\n')
+    _dot_env(box, 'PII_DECRYPT_KEYS="a b"  # the dsn\n')
     assert "closing quote" not in box.preflight().stderr
 
 

@@ -108,7 +108,6 @@ x-service-env: &service-env
   CORS_ORIGINS: ${CORS_ORIGINS}
   ACCOUNT_SERVICE_URL: http://account:8000
   PRODUCT_SERVICE_URL: http://product:8000
-  SENTRY_DSN: ${SENTRY_DSN:-}
 
 x-service-common: &service-common
   restart: unless-stopped
