@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 import { cn } from "@/lib/cn";
-import { Card } from "./Card";
+import { Card } from "@opsgrids/ui";
 import { DeltaPill } from "./DeltaPill";
 import { Sparkline } from "./Sparkline";
 

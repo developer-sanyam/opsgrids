@@ -1,9 +1,5 @@
-export { Card } from "./Card";
-export { Button, Pill, SearchInput } from "@opsgrids/ui";
-export { Tag } from "./Tag";
-export { Avatar } from "./Avatar";
+export { Avatar, Button, Card, PageHeader, Pill, SearchInput, Tag } from "@opsgrids/ui";
 export { OrgIdentity } from "./OrgIdentity";
-export { PageHeader } from "./PageHeader";
 export { ThemeToggle } from "./ThemeToggle";
 export { useNavGroups } from "./useNavGroups";
 export { Money } from "./Money";
@@ -19,4 +15,4 @@ export { DataTable } from "@opsgrids/ui";
 export type { Column } from "@opsgrids/ui";
 export { StatusPill, AccountStatusPill, LedgerKindPill } from "./StatusPill";
 export type { PillTone } from "./StatusPill";
-export { Skeleton, EmptyState, ErrorState, SectionHeader } from "./States";
+export { Skeleton, EmptyState, ErrorState, SectionHeader } from "@opsgrids/ui";
