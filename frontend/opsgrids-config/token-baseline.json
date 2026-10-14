@@ -89,11 +89,6 @@
   "opsgrids-internal/src/ui/BreakdownBar.tsx": {
     "spacing": 2
   },
-  "opsgrids-internal/src/ui/Button.tsx": {
-    "colour": 1,
-    "arbitrary": 1,
-    "spacing": 2
-  },
   "opsgrids-internal/src/ui/Card.tsx": {
     "colour": 1
   },
@@ -108,12 +103,6 @@
     "spacing": 2
   },
   "opsgrids-internal/src/ui/PageHeader.tsx": {
-    "arbitrary": 1
-  },
-  "opsgrids-internal/src/ui/Pill.tsx": {
-    "spacing": 1
-  },
-  "opsgrids-internal/src/ui/SearchInput.tsx": {
     "arbitrary": 1
   },
   "opsgrids-internal/src/ui/States.tsx": {

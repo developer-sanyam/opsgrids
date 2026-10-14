@@ -83,7 +83,8 @@ module.exports = {
       comment: "No import cycles, anywhere — they make module initialisation order a runtime bug.",
       severity: "error",
       from: {},
-      to: { circular: true },
+      // A cycle closed only by `import type` is erased at compile time: no runtime initialisation order.
+      to: { circular: true, dependencyTypesNot: ["type-only"] },
     },
     {
       name: "not-to-unresolvable",
