@@ -38,7 +38,7 @@ from typing import Any
 
 import httpx
 import pytest
-from test_journey import _claims, auth_header, login
+from _http import auth_header, login, token_claims
 
 pytestmark = pytest.mark.e2e
 
@@ -143,7 +143,7 @@ class TestEngageJourney:
         """
         alpha = tenants["alpha"]
         pre_token = login(client, alpha["owner"]["email"], tenants["password"], alpha["org_id"])
-        assert PRODUCT not in _claims(pre_token).get("ent", []), (
+        assert PRODUCT not in token_claims(pre_token).get("ent", []), (
             "engage is entitled before it was ever activated — every step below would pass for "
             "the wrong reason"
         )
@@ -173,7 +173,7 @@ class TestEngageJourney:
         # wrong.
         _wait_for_registration(probe, alpha["org_id"])
         token = login(client, alpha["owner"]["email"], tenants["password"], alpha["org_id"])
-        assert PRODUCT in _claims(token).get("ent", []), (
+        assert PRODUCT in token_claims(token).get("ent", []), (
             "the re-issued token does not carry engage even after the registration installed"
         )
         engage_journey["owner_token"] = token
@@ -379,7 +379,7 @@ class TestEngageJourney:
         )
         _wait_for_registration(probe, beta["org_id"])
         beta_token = login(client, beta["owner"]["email"], tenants["password"], beta["org_id"])
-        assert PRODUCT in _claims(beta_token).get("ent", []), (
+        assert PRODUCT in token_claims(beta_token).get("ent", []), (
             "beta's re-issued token does not carry engage even after its registration installed"
         )
 

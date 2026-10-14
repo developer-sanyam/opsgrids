@@ -34,7 +34,7 @@ from typing import Any
 
 import httpx
 import pytest
-from test_journey import _claims, auth_header, login
+from _http import auth_header, login, token_claims
 
 pytestmark = pytest.mark.e2e
 
@@ -167,7 +167,7 @@ class TestTheInventoryJourney:
             inventory_tenant["password"],
             inventory_tenant["org_id"],
         )
-        assert PRODUCT in _claims(inv["token"])["ent"]
+        assert PRODUCT in token_claims(inv["token"])["ent"]
 
     # ------------------------------------------------------------------ 3. places
 

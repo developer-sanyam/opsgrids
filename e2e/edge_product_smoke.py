@@ -26,6 +26,7 @@ import time
 import uuid
 
 import httpx
+from _http import Abort, require
 from edge_lib import API, StepLog, find_flat_offer, login, read_reset_token
 
 # key -> (one read endpoint through the gateway, the permission it needs, the product's own
@@ -87,12 +88,6 @@ PRODUCTS: dict[str, dict[str, str]] = {
 }
 
 
-class Abort(Exception):
-    """Raised when a step this product's later steps depend on failed outright. Caught once,
-    per product, in `run_product` — the step itself is already logged as FAIL by the time this
-    is raised; this only stops the dependent steps that would otherwise fail confusingly."""
-
-
 def run_product(key: str) -> StepLog:
     cfg = PRODUCTS[key]
     log = StepLog()
@@ -123,13 +118,6 @@ def run_product(key: str) -> StepLog:
     return log
 
 
-def _require(log: StepLog, name: str, ok: bool, detail: str = "") -> None:
-    """Log a step; abort this product's remaining API steps if it failed."""
-    log.step(name, ok, detail)
-    if not ok:
-        raise Abort(name)
-
-
 def _api_steps(
     c: httpx.Client,
     log: StepLog,
@@ -155,7 +143,7 @@ def _api_steps(
         if r.headers.get("content-type", "").startswith("application/json")
         else None
     )
-    _require(
+    require(
         log,
         "1a sign up (public)",
         r.status_code == 201,
@@ -163,10 +151,10 @@ def _api_steps(
     )
 
     r = c.post("/api/v1/auth/password/forgot", json={"email": email})
-    _require(log, "1b request the set-password link", r.status_code == 202, str(r.status_code))
+    require(log, "1b request the set-password link", r.status_code == 202, str(r.status_code))
 
     token, body = read_reset_token(email)
-    _require(
+    require(
         log,
         "1c the email rendered by the platform rule carries the link",
         token != "",
@@ -174,12 +162,12 @@ def _api_steps(
     )
 
     r = c.post("/api/v1/auth/password/reset", json={"token": token, "new_password": password})
-    _require(log, "1d set the password from the link", r.status_code == 204, str(r.status_code))
+    require(log, "1d set the password from the link", r.status_code == 204, str(r.status_code))
 
     try:
         tok = login(c, email, password)
     except RuntimeError as exc:
-        _require(log, "1e log in", False, str(exc))
+        require(log, "1e log in", False, str(exc))
         return
     log.step("1e log in", True, "")
     h = {"Authorization": f"Bearer {tok}"}
@@ -188,7 +176,7 @@ def _api_steps(
     # product is available, a published flat price exists, start the trial
     r = c.get("/api/v1/products", headers=h)
     product = next((p for p in r.json() if p["key"] == key), None) if r.status_code == 200 else None
-    _require(
+    require(
         log,
         "2a marketplace lists the product as available",
         product is not None and product.get("status") == "available",
@@ -198,13 +186,13 @@ def _api_steps(
     r = c.get("/api/v1/plans", params={"product_key": key}, headers=h)
     plans = r.json() if r.status_code == 200 else []
     offer = find_flat_offer(plans) if r.status_code == 200 else None
-    _require(
+    require(
         log,
         "2b a published flat price exists (the card's 'Start 14-day trial' condition)",
         offer is not None,
         f"{r.status_code} {offer and offer[1].get('kind')}",
     )
-    assert offer is not None  # _require already aborted otherwise
+    assert offer is not None  # require already aborted otherwise
     version, _price = offer
 
     r = c.post(
@@ -212,7 +200,7 @@ def _api_steps(
         headers=h,
         json={"product_key": key, "plan_version_id": version["id"], "trial_days": 14},
     )
-    _require(
+    require(
         log,
         "2c start the 14-day trial (POST /subscriptions)",
         r.status_code == 201 and r.json().get("state") == "trial",
@@ -241,7 +229,7 @@ def _api_steps(
             entitled = True
             break
         time.sleep(3)
-    _require(
+    require(
         log,
         "3a subscription event -> product activation entitles (re-login on token-stale, ADR-0007)",
         entitled,
@@ -252,7 +240,7 @@ def _api_steps(
     roles = (
         [role for role in r.json() if role.get("product") == key] if r.status_code == 200 else []
     )
-    _require(
+    require(
         log,
         "3b the product's roles are installed in the organisation",
         r.status_code == 200 and len(roles) > 0,
@@ -262,7 +250,7 @@ def _api_steps(
     try:
         tok = login(c, email, password)  # a fresh token carries the new entitlement and grants
     except RuntimeError as exc:
-        _require(log, "3c re-login for a fresh token", False, str(exc))
+        require(log, "3c re-login for a fresh token", False, str(exc))
         return
     log.step("3c re-login for a fresh token", True, "")
     h = {"Authorization": f"Bearer {tok}"}

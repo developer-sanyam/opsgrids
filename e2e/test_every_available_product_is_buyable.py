@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
-from test_journey import auth_header, login
+from _http import auth_header, login
 
 
 def test_every_available_product_has_a_published_plan(
