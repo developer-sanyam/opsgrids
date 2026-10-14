@@ -121,6 +121,8 @@ export type { PlatformProduct, PlatformProductKey } from "./platform/catalogue";
 export { usePlatformModules } from "./platform/usePlatformModules";
 export type { PlatformModule } from "./platform/usePlatformModules";
 export { useCurrentUser } from "./platform/useCurrentUser";
+export { useProductShell } from "./platform/useProductShell";
+export type { ProductShellData } from "./platform/useProductShell";
 export type { CurrentUser } from "./platform/useCurrentUser";
 export { useOrgProfile } from "./platform/useOrgProfile";
 export type { OrgProfile } from "./platform/useOrgProfile";
