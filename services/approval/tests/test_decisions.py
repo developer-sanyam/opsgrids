@@ -34,6 +34,7 @@ async def _decide(
     has_org_decide: bool = False,
     outcome: str = "approve",
     comment: str | None = None,
+    caller_user_id: uuid.UUID | None = None,
 ) -> ApprovalRequest:
     async with session.begin():
         return await services.decide_request(
@@ -44,6 +45,7 @@ async def _decide(
             has_org_decide=has_org_decide,
             outcome=outcome,
             comment=comment,
+            caller_user_id=caller_user_id,
         )
 
 
@@ -195,8 +197,14 @@ class TestRouteOrgUnassignedAndAbandoned:
         async with session.begin():
             await seed_person(session, org_id, exited_manager, status="exited", source_version=2)
 
+        hr_user = uuid.uuid4()
         decided = await _decide(
-            session, org_id, request_id=request.id, caller_id=hr, has_org_decide=True
+            session,
+            org_id,
+            request_id=request.id,
+            caller_id=hr,
+            has_org_decide=True,
+            caller_user_id=hr_user,
         )
         assert decided.status == "approved"
 
@@ -214,7 +222,8 @@ class TestRouteOrgUnassignedAndAbandoned:
                 .scalars()
                 .one()
             )
-        assert row.actor_id == hr
+        # The audit actor is the deciding user (the dashboard resolves user ids to names).
+        assert row.actor_id == hr_user and decided.decided_by_employee_id == hr
 
     async def test_an_org_holder_cannot_decide_an_assigned_step(
         self, session: AsyncSession, org_id: uuid.UUID
@@ -332,7 +341,7 @@ class TestOwnerSelfApproval:
                 .scalars()
                 .all()
             )
-        assert len(audit) == 1 and audit[0].actor_id == owner
+        assert len(audit) == 1 and audit[0].actor_id == user
 
     async def test_without_the_confirmation_the_refusal_explains_what_to_do(
         self, session: AsyncSession, org_id: uuid.UUID

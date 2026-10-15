@@ -839,7 +839,8 @@ async def decide_request(
         session,
         AuditLog,
         organization_id=organization_id,
-        actor_id=caller_id,
+        # The audit read resolves actors by user id; the employee id stays on the request row.
+        actor_id=caller_user_id or caller_id,
         acting_as=(
             str(eligibility.acting_for_employee_id) if eligibility.acting_for_employee_id else None
         ),
