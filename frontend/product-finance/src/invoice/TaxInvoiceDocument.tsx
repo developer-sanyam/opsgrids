@@ -153,6 +153,13 @@ export function TaxInvoiceDocument({ model }: { model: TaxInvoiceModel }) {
           {model.supplier.legalName ? (
             <p className="text-body-sm text-muted">{model.supplier.legalName}</p>
           ) : null}
+          {model.supplier.addressLines.length > 0 ? (
+            <address className="not-italic text-body-sm text-ink-soft">
+              {model.supplier.addressLines.map((line) => (
+                <div key={line}>{line}</div>
+              ))}
+            </address>
+          ) : null}
           <dl className="flex flex-col gap-1 text-body-sm">
             <Fact label="GSTIN">
               {model.supplier.gstin ? <span className="tnum">{model.supplier.gstin}</span> : null}
@@ -161,6 +168,9 @@ export function TaxInvoiceDocument({ model }: { model: TaxInvoiceModel }) {
               {model.supplier.stateName && model.supplier.stateCode
                 ? `${model.supplier.stateName} (${model.supplier.stateCode})`
                 : null}
+            </Fact>
+            <Fact label="PAN">
+              {model.supplier.pan ? <span className="tnum">{model.supplier.pan}</span> : null}
             </Fact>
           </dl>
         </div>
@@ -222,7 +232,13 @@ export function TaxInvoiceDocument({ model }: { model: TaxInvoiceModel }) {
           rows={
             <>
               {model.buyer.contact ? <div className="text-muted">Attn: {model.buyer.contact}</div> : null}
-              {model.buyer.location ? <div className="text-muted">{model.buyer.location}</div> : null}
+              {model.buyer.addressLines.length > 0 ? (
+                <address className="not-italic text-muted">
+                  {model.buyer.addressLines.map((line) => (
+                    <div key={line}>{line}</div>
+                  ))}
+                </address>
+              ) : null}
               <Fact label="GSTIN">
                 {model.buyer.gstin ? <span className="tnum">{model.buyer.gstin}</span> : null}
               </Fact>
@@ -234,6 +250,19 @@ export function TaxInvoiceDocument({ model }: { model: TaxInvoiceModel }) {
             </>
           }
         />
+        {model.shipToLines.length > 0 ? (
+          <Party
+            heading="Delivered to"
+            name={model.buyer.name}
+            rows={
+              <address className="not-italic text-muted">
+                {model.shipToLines.map((line) => (
+                  <div key={line}>{line}</div>
+                ))}
+              </address>
+            }
+          />
+        ) : null}
       </div>
 
       {/* Lines. The header repeats on every printed page. */}
@@ -258,6 +287,11 @@ export function TaxInvoiceDocument({ model }: { model: TaxInvoiceModel }) {
             <th scope="col" className={NUM_TH}>
               Rate (₹)
             </th>
+            {model.showDiscount ? (
+              <th scope="col" className={NUM_TH}>
+                Discount (₹)
+              </th>
+            ) : null}
             <th scope="col" className={NUM_TH}>
               Taxable value (₹)
             </th>
@@ -278,8 +312,14 @@ export function TaxInvoiceDocument({ model }: { model: TaxInvoiceModel }) {
               <td className="invoice-line-no px-2 py-2 text-left align-top">{line.number}</td>
               <td className="stack-title px-2 py-2 text-left align-top text-body-sm text-ink">{line.description}</td>
               {model.showHsn ? <td data-label="HSN / SAC" className="px-2 py-2 text-left align-top">{line.hsnSac}</td> : null}
-              <td data-label="Qty" className={NUM_TD}>{QUANTITY.format(line.quantity)}</td>
+              <td data-label="Qty" className={NUM_TD}>
+                {QUANTITY.format(line.quantity)}
+                {line.unit ? ` ${line.unit}` : ""}
+              </td>
               <td data-label="Rate (₹)" className={NUM_TD}>{formatAmount(line.ratePerUnit)}</td>
+              {model.showDiscount ? (
+                <td data-label="Discount (₹)" className={NUM_TD}>{line.discount > 0 ? formatAmount(line.discount) : ""}</td>
+              ) : null}
               <td data-label="Taxable value (₹)" className={NUM_TD}>{formatAmount(line.taxable)}</td>
               <td data-label="GST" className={NUM_TD}>{rate(line.taxRatePct)}</td>
               <td data-label={intra ? "CGST + SGST (₹)" : "IGST (₹)"} className={NUM_TD}>{formatAmount(intra ? line.cgst + line.sgst : line.igst)}</td>
@@ -317,6 +357,12 @@ export function TaxInvoiceDocument({ model }: { model: TaxInvoiceModel }) {
                 <dd className="font-semibold">{formatMoney(model.totals.igst)}</dd>
               </div>
             )}
+            {model.totals.roundOff !== 0 ? (
+              <div className="flex justify-between gap-4">
+                <dt className="text-muted">Round-off</dt>
+                <dd className="font-semibold">{formatMoney(model.totals.roundOff)}</dd>
+              </div>
+            ) : null}
             <div className="mt-1 flex items-baseline justify-between gap-4 border-y-2 border-ink py-2">
               <dt className="text-card-title font-bold">
                 {isCreditNote ? "Credit total" : "Total"}
@@ -366,12 +412,30 @@ export function TaxInvoiceDocument({ model }: { model: TaxInvoiceModel }) {
       ) : null}
 
       <div className="grid break-inside-avoid grid-cols-1 gap-6 sm:grid-cols-2">
-        <section aria-label="Terms and notes" className="flex flex-col gap-1">
+        <section aria-label="Payment details and notes" className="flex flex-col gap-3">
+          {model.supplier.bank && !isCreditNote ? (
+            <div className="flex flex-col gap-1">
+              <h2 className="text-caption font-bold uppercase tracking-wide text-muted">Bank details</h2>
+              <dl className="flex flex-col gap-1 text-body-sm">
+                <Fact label="Account name">{model.supplier.bank.account_name}</Fact>
+                <Fact label="Account no.">
+                  <span className="tnum">{model.supplier.bank.account_number}</span>
+                </Fact>
+                <Fact label="IFSC">
+                  {model.supplier.bank.ifsc ? <span className="tnum">{model.supplier.bank.ifsc}</span> : null}
+                </Fact>
+                <Fact label="Bank">
+                  {[model.supplier.bank.bank_name, model.supplier.bank.branch].filter(Boolean).join(", ")}
+                </Fact>
+                <Fact label="UPI">{model.supplier.bank.upi_id}</Fact>
+              </dl>
+            </div>
+          ) : null}
           {model.notes ? (
-            <>
+            <div className="flex flex-col gap-1">
               <h2 className="text-caption font-bold uppercase tracking-wide text-muted">Notes</h2>
               <p className="whitespace-pre-line text-body-sm">{model.notes}</p>
-            </>
+            </div>
           ) : null}
         </section>
         <section aria-label="Authorised signatory" className="flex flex-col items-end justify-between gap-8 text-right">

@@ -201,11 +201,17 @@ class StubIrpClient:
                 "the lines' taxable values do not sum to the document's taxable value",
             )
 
+        # The portal's `ValDtls` carries the round-off (`RndOffAmt`) inside the total, and so
+        # does the platform's document: the three must foot with it, not without it.
         tax = payload.cgst_minor + payload.sgst_minor + payload.igst_minor
-        if payload.taxable_minor + tax != payload.total_minor:
+        if abs(payload.round_off_minor) > 99:
+            raise IrpRejected(
+                ERR_TOTAL_DOES_NOT_FOOT, "the round-off is more than a rupee either way"
+            )
+        if payload.taxable_minor + tax + payload.round_off_minor != payload.total_minor:
             raise IrpRejected(
                 ERR_TOTAL_DOES_NOT_FOOT,
-                "taxable value plus tax does not equal the document total",
+                "taxable value plus tax and round-off does not equal the document total",
             )
 
 

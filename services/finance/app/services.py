@@ -84,6 +84,7 @@ from app.models import (
     Payment,
     PaymentAllocation,
     PurchaseDocument,
+    SupplierProfile,
 )
 from app.schemas import (
     CancelEwayIn,
@@ -104,8 +105,11 @@ from app.schemas import (
     PurchaseDocumentCreate,
     ReturnDiffOut,
     SectionDeltaOut,
+    SupplierPrintOut,
+    SupplierProfileUpsert,
     TaxHeadAmountsOut,
 )
+from platform_core import pii
 from platform_core.audit import record_audit
 from platform_core.auth import Principal, Scope, ScopeContext
 from platform_core.db import assert_tenant, constraint_name, set_tenant
@@ -261,17 +265,72 @@ def _checked_gstin(raw: str | None, *, whose: str) -> str | None:
         raise BusinessRuleProblem(f"{whose} GSTIN is not valid: {exc}") from exc
 
 
-def _checked_rate(rate: float | Decimal, *, where: str) -> Decimal:
-    """A GST rate, checked against the statutory bands.
+def _checked_rate(rate: float | Decimal, *, where: str, on: date | None = None) -> Decimal:
+    """A GST rate, checked against the statutory bands — and, given the document date `on`,
+    against the bands in force that day (40 % exists only from 22 September 2025).
 
     A rate that is not a band is either a typo or a jurisdiction this service does not model, and
-    both are better refused than filed. Cess and the 0.25/3 % bands are in `GST_RATE_BANDS`.
+    both are better refused than filed. Cess and the 0.25/1.5/3 % bands are in `GST_RATE_BANDS`.
     """
     value = Decimal(str(rate))
     if value not in domain.GST_RATE_BANDS:
         bands = ", ".join(str(b) for b in sorted(domain.GST_RATE_BANDS))
         raise BusinessRuleProblem(f"{where}: {value} % is not a GST rate band ({bands})")
+    if on is not None and not domain.band_in_force(value, on):
+        start = domain.GST_RATE_BAND_FROM[value].isoformat()
+        raise BusinessRuleProblem(
+            f"{where}: {value} % is a GST rate only from {start}, after this document's date"
+        )
     return value
+
+
+def _checked_pincode(raw: str | None, *, whose: str) -> str:
+    """A six-numeral PIN code, or "" for none. Refused rather than stored when malformed: it is
+    printed on a tax invoice, and a typo there is a typo on a legal document."""
+    if raw is None or not raw.strip():
+        return ""
+    try:
+        return domain.normalise_pincode(raw)
+    except ValueError as exc:
+        raise BusinessRuleProblem(f"{whose} PIN code is not valid: {exc}") from exc
+
+
+def _checked_buyer_state(gstin: str | None, state_code: str | None) -> str | None:
+    """The billing state code, validated, and consistent with the GSTIN when there is one.
+
+    A GSTIN is issued per state, so a registered buyer's billing state *is* the GSTIN's state; a
+    record that disagrees would print one state and tax another. Refused, naming both."""
+    if state_code is None or not state_code.strip():
+        return None
+    code = state_code.strip()
+    if code not in domain.GST_STATE_CODES:
+        raise BusinessRuleProblem(f"{code!r} is not a GST state code")
+    if gstin and gstin[:2] != code:
+        raise BusinessRuleProblem(
+            f"The GSTIN is registered in {domain.GST_STATE_CODES.get(gstin[:2], gstin[:2])}, "
+            f"but the billing state is {domain.GST_STATE_CODES[code]}. A GSTIN belongs to one "
+            "state: correct one of the two."
+        )
+    return code
+
+
+def _customer_facts(customer: Customer) -> dict[str, Any]:
+    """The editable facts of a customer, for the before/after of its audit rows and events."""
+    return {
+        "name": customer.name,
+        "contact_name": customer.contact_name,
+        "email": customer.email,
+        "gstin": customer.gstin,
+        "city": customer.city,
+        "state": customer.state,
+        "address_line1": customer.address_line1,
+        "address_line2": customer.address_line2,
+        "pincode": customer.pincode,
+        "state_code": customer.state_code,
+        "is_tds_deductor": customer.is_tds_deductor,
+        "deducts_tds_194q": customer.deducts_tds_194q,
+        "tcs_applicable": customer.tcs_applicable,
+    }
 
 
 def _now() -> datetime:
@@ -311,6 +370,10 @@ async def create_customer(
     stored — this service holds no unverified GSTIN anywhere."""
     gstin = _checked_gstin(payload.gstin, whose="The customer's")
     _check_withholding_exclusion(payload.deducts_tds_194q, payload.tcs_applicable)
+    state_code = _checked_buyer_state(gstin, payload.state_code)
+    state = payload.state
+    if state_code is not None and not state.strip():
+        state = domain.GST_STATE_CODES[state_code]
     payload = payload.model_copy(update={"gstin": gstin})
     customer = Customer(
         organization_id=ctx.organization_id,
@@ -320,7 +383,11 @@ async def create_customer(
         email=payload.email,
         gstin=payload.gstin,
         city=payload.city,
-        state=payload.state,
+        state=state,
+        address_line1=payload.address_line1.strip(),
+        address_line2=payload.address_line2.strip(),
+        pincode=_checked_pincode(payload.pincode, whose="The customer's"),
+        state_code=state_code,
         # Facts about the buyer that decide whether tax is withheld on what this organization
         # bills them. All three default false, which is what keeps withholding opt-in.
         is_tds_deductor=payload.is_tds_deductor,
@@ -376,20 +443,21 @@ async def update_customer(
     if not changes:
         return customer
 
-    before = {
-        "name": customer.name,
-        "contact_name": customer.contact_name,
-        "email": customer.email,
-        "gstin": customer.gstin,
-        "city": customer.city,
-        "state": customer.state,
-        "is_tds_deductor": customer.is_tds_deductor,
-        "deducts_tds_194q": customer.deducts_tds_194q,
-        "tcs_applicable": customer.tcs_applicable,
-    }
+    before = _customer_facts(customer)
 
     if "gstin" in changes:
         changes["gstin"] = _checked_gstin(changes["gstin"], whose="The customer's")
+    if "pincode" in changes:
+        changes["pincode"] = _checked_pincode(changes["pincode"], whose="The customer's")
+    for line in ("address_line1", "address_line2"):
+        if line in changes:
+            changes[line] = (changes[line] or "").strip()
+    if "gstin" in changes or "state_code" in changes:
+        gstin_after = changes.get("gstin", customer.gstin)
+        code_after = changes.get("state_code", customer.state_code)
+        changes["state_code"] = _checked_buyer_state(gstin_after, code_after)
+        if changes["state_code"] is not None and not changes.get("state", customer.state).strip():
+            changes["state"] = domain.GST_STATE_CODES[changes["state_code"]]
 
     deducts_194q = changes.get("deducts_tds_194q", customer.deducts_tds_194q)
     tcs = changes.get("tcs_applicable", customer.tcs_applicable)
@@ -400,17 +468,7 @@ async def update_customer(
     customer.updated_by = str(ctx.principal.sub)
     await session.flush()
 
-    after = {
-        "name": customer.name,
-        "contact_name": customer.contact_name,
-        "email": customer.email,
-        "gstin": customer.gstin,
-        "city": customer.city,
-        "state": customer.state,
-        "is_tds_deductor": customer.is_tds_deductor,
-        "deducts_tds_194q": customer.deducts_tds_194q,
-        "tcs_applicable": customer.tcs_applicable,
-    }
+    after = _customer_facts(customer)
     record_audit(
         session,
         AuditLog,
@@ -713,23 +771,29 @@ async def create_invoice(
         place_of_supply=place_of_supply,
     )
 
-    document_rate = _checked_rate(payload.tax_rate_pct, where="Document tax rate")
+    document_rate = _checked_rate(
+        payload.tax_rate_pct, where="Document tax rate", on=payload.issued_date
+    )
 
     lines: list[InvoiceLine] = []
     subtotal = 0
     tax_split = domain.ZERO_TAX
     for i, line in enumerate(payload.lines, start=1):
-        amount = _line_amount_minor(line.quantity, line.unit_price_minor)
+        gross = _line_amount_minor(line.quantity, line.unit_price_minor)
+        try:
+            amount = domain.line_taxable_minor(gross, line.discount_minor)
+            unit = domain.normalise_uqc(line.unit)
+            hsn = domain.normalise_hsn(line.hsn_sac)
+        except ValueError as exc:
+            raise BusinessRuleProblem(f"Line {i}: {exc}") from exc
         subtotal += amount
         rate = (
             document_rate
             if line.tax_rate_pct is None
-            else _checked_rate(line.tax_rate_pct, where=f"Line {i} tax rate")
+            else _checked_rate(
+                line.tax_rate_pct, where=f"Line {i} tax rate", on=payload.issued_date
+            )
         )
-        try:
-            hsn = domain.normalise_hsn(line.hsn_sac)
-        except ValueError as exc:
-            raise BusinessRuleProblem(f"Line {i}: {exc}") from exc
         # Reverse charge moves the liability to the recipient: the supplier states the rate and
         # charges nothing, so the split is zero rather than absent.
         split = (
@@ -745,19 +809,24 @@ async def create_invoice(
                 line_no=i,
                 description=line.description,
                 quantity=Decimal(str(line.quantity)),
+                unit=unit,
                 unit_price_minor=line.unit_price_minor,
+                discount_minor=line.discount_minor,
                 amount_minor=amount,
                 hsn_sac=hsn,
                 tax_rate_pct=rate,
                 cgst_minor=split.cgst_minor,
                 sgst_minor=split.sgst_minor,
                 igst_minor=split.igst_minor,
+                item_id=line.item_id,
+                item_sku=(line.item_sku or "").strip() or None,
             )
         )
 
     tax_rate = document_rate
     tax = tax_split.total_minor
-    total = subtotal + tax
+    round_off = domain.round_off_minor(subtotal + tax, payload.currency) if payload.round_off else 0
+    total = subtotal + tax + round_off
 
     if payload.document_type == "credit_note":
         if total >= 0:
@@ -808,7 +877,9 @@ async def create_invoice(
         cgst_minor=tax_split.cgst_minor,
         sgst_minor=tax_split.sgst_minor,
         igst_minor=tax_split.igst_minor,
+        round_off_minor=round_off,
         lines=lines,
+        **_party_snapshots(registration, customer, payload.ship_to_address),
     )
     session.add(invoice)
     await session.flush()
@@ -877,6 +948,49 @@ async def create_invoice(
     return invoice
 
 
+def _party_snapshots(
+    registration: GstRegistration | None, customer: Customer, ship_to: str | None
+) -> dict[str, Any]:
+    """What a document prints about each party, frozen at issue (Rule 46(a), (d), (e), (n)).
+
+    The supplier's legal name and address come from the registration the document is issued
+    under; the buyer's from the customer record. Empty strings become null, so a reader can tell
+    "not recorded" from "recorded as blank" and fall back to the live record only for the first.
+    """
+
+    def _or_none(value: str) -> str | None:
+        return value or None
+
+    seller_address = (
+        domain.compose_address(
+            registration.address_line1,
+            registration.address_line2,
+            " ".join(x for x in (registration.city, registration.pincode) if x),
+        )
+        if registration is not None
+        else ""
+    )
+    buyer_state = customer.state_code
+    if customer.gstin:
+        buyer_state = customer.gstin[:2]
+    elif buyer_state is None:
+        buyer_state = domain.state_code_for_name(customer.state)
+    return {
+        "seller_legal_name": _or_none(registration.legal_name.strip()) if registration else None,
+        "seller_address": _or_none(seller_address),
+        "buyer_name": customer.name,
+        "buyer_address": _or_none(
+            domain.compose_address(
+                customer.address_line1,
+                customer.address_line2,
+                " ".join(x for x in (customer.city, customer.pincode) if x),
+            )
+        ),
+        "buyer_state_code": buyer_state,
+        "ship_to_address": _or_none((ship_to or "").strip()),
+    }
+
+
 #: `invoice` -> `INV`, `credit_note` -> `CN`. Two independent series per organization per
 #: financial year, so a credit note never contends with an invoice for the next number.
 _NUMBER_PREFIXES: dict[str, str] = {"invoice": "INV", "credit_note": "CN"}
@@ -927,7 +1041,7 @@ async def allocate_invoice_number(
     )
     next_after = (await session.execute(stmt)).scalar_one()
     seq = int(next_after) - 1
-    return f"{series}-{financial_year}-{seq:05d}"
+    return domain.document_number(series, financial_year, seq)
 
 
 # ------------------------------------------------------- orders (Fulfilment ADR-0024 §1/§4)
@@ -1184,6 +1298,7 @@ async def evaluate_order_invoice_request(
         sgst_minor=tax_split.sgst_minor,
         igst_minor=tax_split.igst_minor,
         lines=invoice_lines,
+        **_party_snapshots(registration, customer, None),
     )
     try:
         # A SAVEPOINT, not a bare `session.add` + `flush()`: see `uq_invoices_org_order_id`'s own
@@ -1267,6 +1382,8 @@ def _place_of_supply(explicit: str | None, customer: Customer, seller_state: str
             # service created. It is caught rather than raised because a document must still be
             # raisable against a customer imported before validation existed.
             pass
+    if customer.state_code:
+        return customer.state_code
     from_name = domain.state_code_for_name(customer.state)
     if from_name:
         return from_name
@@ -1478,6 +1595,13 @@ async def set_gst_registration(
         raise BusinessRuleProblem(f"That is not a valid GSTIN: {exc}") from exc
     if payload.registration_type not in ("regular", "composition", "casual"):
         raise BusinessRuleProblem(f"Unknown registration type {payload.registration_type!r}")
+    address = {
+        key: getattr(payload, key).strip()
+        for key in ("address_line1", "address_line2", "city")
+        if getattr(payload, key) is not None
+    }
+    if payload.pincode is not None:
+        address["pincode"] = _checked_pincode(payload.pincode, whose="The registration's")
 
     existing = await selectors.gst_registration_by_gstin(session, ctx.organization_id, parsed.value)
     if payload.is_primary:
@@ -1492,6 +1616,8 @@ async def set_gst_registration(
         existing.trade_name = payload.trade_name
         existing.registration_type = payload.registration_type
         existing.is_primary = payload.is_primary
+        for key, value in address.items():
+            setattr(existing, key, value)
         existing.updated_by = str(ctx.principal.sub)
         registration = existing
     else:
@@ -1505,6 +1631,7 @@ async def set_gst_registration(
             trade_name=payload.trade_name,
             registration_type=payload.registration_type,
             is_primary=payload.is_primary,
+            **address,
         )
         session.add(registration)
     await session.flush()
@@ -1523,6 +1650,9 @@ async def set_gst_registration(
             "state_code": registration.state_code,
             "legal_name": registration.legal_name,
             "is_primary": registration.is_primary,
+            "address_line1": registration.address_line1,
+            "city": registration.city,
+            "pincode": registration.pincode,
         },
         request=request,
     )
@@ -1543,6 +1673,166 @@ async def set_gst_registration(
         actor=actor_for(ctx),
     )
     return registration
+
+
+# --------------------------------------------------------------------- supplier profile
+
+
+def _bank_aad(organization_id: uuid.UUID) -> bytes:
+    """Associated data the bank account number is sealed under: this organization's id, so a
+    sealed value lifted onto another tenant's row will not open there."""
+    return f"finance.supplier_profile:{organization_id}".encode()
+
+
+def _profile_facts(profile: SupplierProfile) -> dict[str, Any]:
+    """The audit view of a supplier profile — the account number only as its mask."""
+    return {
+        "pan": profile.pan,
+        "bank_account_name": profile.bank_account_name,
+        "bank_account_number": profile.bank_account_number_masked,
+        "bank_ifsc": profile.bank_ifsc,
+        "bank_name": profile.bank_name,
+        "bank_branch": profile.bank_branch,
+        "upi_id": profile.upi_id,
+    }
+
+
+async def set_supplier_profile(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    payload: SupplierProfileUpsert,
+    *,
+    request: Request | None = None,
+) -> SupplierProfile:
+    """Set this organization's PAN and bank details — configuration, edited in place.
+
+    Only the fields sent are changed; an empty string clears one. Each is validated before
+    anything is written: PAN by shape and against the PAN inside the primary GSTIN, IFSC and UPI
+    by shape, the account number as 9-18 numerals. The account number is sealed on write and its
+    mask kept beside it; the plaintext is never logged, audited or returned from here.
+    """
+    changes = payload.model_dump(exclude_unset=True)
+    profile = await selectors.get_supplier_profile(session, ctx.organization_id, for_update=True)
+    if profile is None:
+        profile = SupplierProfile(
+            organization_id=ctx.organization_id, created_by=str(ctx.principal.sub)
+        )
+        session.add(profile)
+        before: dict[str, Any] | None = None
+    else:
+        before = _profile_facts(profile)
+
+    def _clean(key: str, normalise: Callable[[str], str], label: str) -> str | None:
+        raw = changes.get(key)
+        if raw is None or not str(raw).strip():
+            return None
+        try:
+            return normalise(str(raw))
+        except ValueError as exc:
+            raise BusinessRuleProblem(f"{label} is not valid: {exc}") from exc
+
+    if "pan" in changes:
+        pan = _clean("pan", domain.normalise_pan, "The PAN")
+        if pan is not None:
+            registration = await selectors.get_gst_registration(session, ctx.organization_id)
+            if registration is not None and registration.gstin[2:12] != pan:
+                raise BusinessRuleProblem(
+                    f"The PAN does not match the GSTIN {registration.gstin}, which carries the PAN "
+                    f"{registration.gstin[2:12]}."
+                )
+        profile.pan = pan
+    if "bank_account_number" in changes:
+        number = _clean(
+            "bank_account_number", domain.normalise_account_number, "The account number"
+        )
+        if number is None:
+            profile.bank_account_number_enc = None
+            profile.bank_account_number_masked = ""
+        else:
+            sealed, masked = pii.seal(
+                number,
+                kind="bank_account",
+                settings=settings(),
+                aad=_bank_aad(ctx.organization_id),
+            )
+            profile.bank_account_number_enc = sealed
+            profile.bank_account_number_masked = masked
+    if "bank_ifsc" in changes:
+        profile.bank_ifsc = _clean("bank_ifsc", domain.normalise_ifsc, "The IFSC") or ""
+    if "upi_id" in changes:
+        profile.upi_id = _clean("upi_id", domain.normalise_upi, "The UPI ID") or ""
+    for key in ("bank_account_name", "bank_name", "bank_branch"):
+        if key in changes:
+            setattr(profile, key, (changes[key] or "").strip())
+    profile.updated_by = str(ctx.principal.sub)
+    await session.flush()
+
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="supplier_profile.set",
+        entity="supplier_profile",
+        entity_id=profile.id,
+        before=before,
+        after=_profile_facts(profile),
+        request=request,
+    )
+    return profile
+
+
+async def supplier_print_details(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    invoice: Invoice,
+    *,
+    request: Request | None = None,
+) -> SupplierPrintOut:
+    """The supplier block for one invoice's printable copy, bank account number whole.
+
+    This is the one place the sealed number is opened, because a tax invoice tells the customer
+    where to pay. It is opened only when there is one, and every opening writes an audit row
+    naming the invoice it was printed for, in this same transaction — so a revealed number never
+    exists without a record of who revealed it, for which document, and when.
+    """
+    registration = await selectors.get_gst_registration(session, ctx.organization_id)
+    profile = await selectors.get_supplier_profile(session, ctx.organization_id)
+    bank = None
+    # A credit note asks the customer to pay nothing, and its printed copy carries no bank block,
+    # so the number is not opened (or disclosed, or audited) for one.
+    if (
+        invoice.document_type != "credit_note"
+        and profile is not None
+        and profile.bank_account_number_enc is not None
+    ):
+        try:
+            number = pii.open_sealed(
+                profile.bank_account_number_enc,
+                settings=settings(),
+                aad=_bank_aad(ctx.organization_id),
+            )
+        except pii.PiiError:
+            # A key rotated without its predecessor kept in `pii_decrypt_keys`. The document
+            # prints without bank details rather than failing; the log says why.
+            log.error("finance.supplier_profile.bank_unopenable")
+        else:
+            bank = selectors.to_bank_details(profile, account_number=number)
+            record_audit(
+                session,
+                AuditLog,
+                organization_id=ctx.organization_id,
+                actor_id=ctx.principal.sub,
+                action="supplier_profile.bank_disclosed",
+                entity="invoice",
+                entity_id=invoice.id,
+                after={
+                    "invoice_number": invoice.number,
+                    "bank_account_number": profile.bank_account_number_masked,
+                },
+                request=request,
+            )
+    return selectors.to_supplier_print(registration, profile, bank)
 
 
 # --------------------------------------------------------------------- portal calls, off the loop
@@ -1606,6 +1896,7 @@ def build_irp_payload(
         sgst_minor=invoice.sgst_minor,
         igst_minor=invoice.igst_minor,
         total_minor=invoice.total_minor,
+        round_off_minor=invoice.round_off_minor,
         financial_year=domain.financial_year(invoice.issued_date),
         generated_at=at,
         lines=[

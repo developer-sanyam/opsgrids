@@ -52,6 +52,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -100,6 +101,22 @@ class Customer(Base, TenantBase):
     gstin: Mapped[str | None] = mapped_column(String(20))
     city: Mapped[str] = mapped_column(String(120), nullable=False, default="")
     state: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+
+    # ---------------------------------------------------------------- billing address
+    # What a tax invoice prints as the recipient's address (CGST Rule 46(d)/(e)). Snapshotted onto
+    # each invoice at issue (`invoices.buyer_address`), so editing it here never rewrites a
+    # document already sent.
+    address_line1: Mapped[str] = mapped_column(
+        String(200), nullable=False, default="", server_default=""
+    )
+    address_line2: Mapped[str] = mapped_column(
+        String(200), nullable=False, default="", server_default=""
+    )
+    #: Six digits, first non-zero, or empty when not known.
+    pincode: Mapped[str] = mapped_column(String(6), nullable=False, default="", server_default="")
+    #: The GST state code of the billing address. Authoritative over the free-text `state` for
+    #: place of supply; a GSTIN, when present, must agree with it (`services._checked_buyer_state`).
+    state_code: Mapped[str | None] = mapped_column(String(2))
 
     #: The CRM contact (`services/customer`) this billed party was resolved from, when it was
     #: — `ensure_customer_for_crm_contact`'s own idempotency key. A plain UUID, never a foreign
@@ -156,8 +173,9 @@ class Invoice(Base, TenantBase):
     edit — which is why there is no update path for these fields.
 
     Totals foot exactly: `subtotal_minor = Σ line.amount_minor` and
-    `total_minor = subtotal_minor + tax_minor`. `amount_paid_minor` is deliberately *not* stored
-    — it is the sum of the payment allocations pointing here, computed on read.
+    `total_minor = subtotal_minor + tax_minor + round_off_minor` (the last is zero unless the
+    issuer rounded the grand total to whole rupees). `amount_paid_minor` is deliberately *not*
+    stored — it is the sum of the payment allocations pointing here, computed on read.
     """
 
     __tablename__ = "invoices"
@@ -210,6 +228,31 @@ class Invoice(Base, TenantBase):
     cgst_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     sgst_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     igst_minor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    #: The adjustment that brings the grand total to whole rupees, when the issuer asked for it
+    #: (`domain.round_off_minor`). Signed, always within ±50 paise, and part of `total_minor`:
+    #: `total_minor = subtotal_minor + tax_minor + round_off_minor`. Zero on every document raised
+    #: before this column existed, which is why the older two-term identity still holds for them.
+    round_off_minor: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+
+    # ---------------------------------------------------------------- party snapshots
+    # What the document printed about each party when it was issued (CGST Rule 46(a), (d), (e),
+    # (n)). Snapshots for the same reason the GSTINs above are: a supplier moves premises, a
+    # buyer corrects an address, and a reprint of last year's invoice must still say what it said.
+    # Null on documents issued before this slice; readers then fall back to the live records.
+
+    #: The supplier's legal name as registered, when the document was issued.
+    seller_legal_name: Mapped[str | None] = mapped_column(String(200))
+    #: The supplier's principal place of business, one line per printed line.
+    seller_address: Mapped[str | None] = mapped_column(Text)
+    #: The recipient's name and billing address as the customer record held them at issue.
+    buyer_name: Mapped[str | None] = mapped_column(String(200))
+    buyer_address: Mapped[str | None] = mapped_column(Text)
+    #: The GST state code of the recipient's address (GSTIN state first, then the address).
+    buyer_state_code: Mapped[str | None] = mapped_column(String(2))
+    #: Where the goods go, when that is not the billing address (Rule 46(n)). Null otherwise.
+    ship_to_address: Mapped[str | None] = mapped_column(Text)
 
     notes: Mapped[str | None] = mapped_column(Text)
     #: Set on a credit note: the invoice this document corrects. Same-schema self-reference.
@@ -272,9 +315,26 @@ class InvoiceLine(Base, TenantBase):
     description: Mapped[str] = mapped_column(String(300), nullable=False)
     #: A count, possibly fractional (tonnes, cft) and negative on a return line.
     quantity: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False)
+    #: The GST unit quantity code (`domain.UQC_CODES`: NOS, KGS, MTR, …) the quantity is counted
+    #: in — Rule 46(h). Null on lines raised before this slice.
+    unit: Mapped[str | None] = mapped_column(String(3))
     unit_price_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    #: The discount allowed on this line, as a non-negative magnitude in minor units. Taken off
+    #: before tax: `amount_minor = quantity x unit_price_minor - discount` (sign-aware on a credit
+    #: note line), because GST is levied on the value after a discount shown on the invoice
+    #: (CGST Act s. 15(3)(a)).
+    discount_minor: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
     #: The **taxable value** of the line. GST is computed on this, never on the gross.
     amount_minor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    #: The inventory item this line was picked from, when it was. A plain UUID into
+    #: `operations.inventory_items` — a different schema, so never a foreign key (ADR-0000 §10) —
+    #: and never joined: the description, HSN, unit and price were copied onto this line when it
+    #: was written, which is what the document has to keep saying.
+    item_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    #: The item's SKU as it stood when picked, for a reader who has no access to inventory.
+    item_sku: Mapped[str | None] = mapped_column(String(60))
 
     # ---------------------------------------------------------------- GST
     # A GST return and an e-invoice are both line-level documents: the HSN summary in GSTR-1 is
@@ -439,6 +499,17 @@ class GstRegistration(Base, TenantBase):
     trade_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     #: regular | composition | casual. Only `regular` files e-invoices.
     registration_type: Mapped[str] = mapped_column(String(20), nullable=False, default="regular")
+    #: The principal place of business for this registration — the supplier address a tax invoice
+    #: must print (Rule 46(a)). Per registration rather than per organization, because each
+    #: state's registration certificate names its own premises. The state is the GSTIN's.
+    address_line1: Mapped[str] = mapped_column(
+        String(200), nullable=False, default="", server_default=""
+    )
+    address_line2: Mapped[str] = mapped_column(
+        String(200), nullable=False, default="", server_default=""
+    )
+    city: Mapped[str] = mapped_column(String(120), nullable=False, default="", server_default="")
+    pincode: Mapped[str] = mapped_column(String(6), nullable=False, default="", server_default="")
     #: The default registration for this organization. A partial unique index makes "at most one"
     #: a database guarantee rather than a rule the service remembers.
     is_primary: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -451,6 +522,55 @@ class GstRegistration(Base, TenantBase):
             "organization_id",
             unique=True,
             postgresql_where=text("is_primary"),
+        ),
+    )
+
+
+class SupplierProfile(Base, TenantBase):
+    """The rest of what this organization prints about itself on a tax invoice: PAN and the bank
+    account a customer pays into. One live row per organization.
+
+    Configuration, mutable like `gst_registrations`. The bank account number is **sealed**
+    (`platform_core.pii.seal`) with its mask beside it, the same envelope employee-service uses for
+    a salary account: the settings read and every list show only the mask, and the one path that
+    opens it is the printable invoice, which writes an audit row each time it does
+    (`services.supplier_print_details`).
+    """
+
+    __tablename__ = "supplier_profiles"
+
+    #: Permanent Account Number, upper-case, `AAAAA9999A`. Must agree with the PAN inside the
+    #: primary GSTIN (characters 3-12) when both exist. Null until entered.
+    pan: Mapped[str | None] = mapped_column(String(10))
+    bank_account_name: Mapped[str] = mapped_column(
+        String(200), nullable=False, default="", server_default=""
+    )
+    #: The sealed account number, bound to this organization as associated data so a sealed value
+    #: copied onto another tenant's row cannot be opened there.
+    bank_account_number_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    #: `••••••3210`: the only form of the number any read but the print path returns.
+    bank_account_number_masked: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="", server_default=""
+    )
+    #: A public branch code (`pii.NON_SENSITIVE_KINDS`), so stored in the clear.
+    bank_ifsc: Mapped[str] = mapped_column(
+        String(11), nullable=False, default="", server_default=""
+    )
+    bank_name: Mapped[str] = mapped_column(
+        String(120), nullable=False, default="", server_default=""
+    )
+    bank_branch: Mapped[str] = mapped_column(
+        String(120), nullable=False, default="", server_default=""
+    )
+    #: A UPI virtual payment address (`name@bank`), optional.
+    upi_id: Mapped[str] = mapped_column(String(100), nullable=False, default="", server_default="")
+
+    __table_args__ = (
+        Index(
+            "uq_supplier_profiles_org",
+            "organization_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
         ),
     )
 

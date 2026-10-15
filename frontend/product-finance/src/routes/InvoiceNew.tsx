@@ -1,12 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
-import { getInvoice, issueInvoice, listCustomers, MAX_PAGE_SIZE } from "@/api/client";
-import type { Invoice, InvoiceLineCreate, InvoiceIssueIn, SupplyType } from "@/api/types";
-import { GST_STATE_OPTIONS } from "@/data/gstStates";
+import { getInvoice, getSupplierSettings, issueInvoice, listCustomers, MAX_PAGE_SIZE } from "@/api/client";
+import type { Customer, Invoice, InvoiceLineCreate, InvoiceIssueIn, SupplyType } from "@/api/types";
+import { GST_STATE_NAME, GST_STATE_OPTIONS, gstStateName, stateCodeForName } from "@/data/gstStates";
+import { isIntraState, previewInvoice } from "@/invoice/gstMath";
+import type { PreviewLine } from "@/invoice/gstMath";
+import { InvoiceTotals } from "@/invoice/InvoiceTotals";
+import { LineEditor } from "@/invoice/LineEditor";
+import { blankLine } from "@/invoice/lineDraft";
+import type { LineDraft } from "@/invoice/lineDraft";
+import { SupplierSetupPrompt } from "@/invoice/SupplierSetupPrompt";
+import { FORTY_PERCENT_FROM } from "@/invoice/vocabulary";
 import { addDays, DEFAULT_PAYMENT_TERMS_DAYS } from "@/lib/format";
 import { formatMoney, minorToInput, parseMinor, parseQuantity } from "@/lib/money";
-import { ApiError, fieldError, problemMessage, useAsync, useMutation } from "@opsgrids/client";
+import { ApiError, fieldError, problemMessage, useAsync, useCan, useEntitlement, useMutation } from "@opsgrids/client";
 import {
   Button,
   Card,
@@ -27,7 +35,6 @@ import {
 import { PlusIcon, StickyActionBar, useToast } from "@opsgrids/ui";
 import type { ProblemJson } from "@opsgrids/client";
 
-const TAX_RATES = ["0", "0.25", "3", "5", "12", "18", "28"];
 const SUPPLY_TYPES: { value: SupplyType | ""; label: string }[] = [
   { value: "", label: "Derived from the buyer's GSTIN" },
   { value: "b2b", label: "B2B — registered buyer" },
@@ -36,32 +43,32 @@ const SUPPLY_TYPES: { value: SupplyType | ""; label: string }[] = [
   { value: "sez", label: "SEZ supply" },
 ];
 
-interface LineDraft {
-  description: string;
-  quantity: string;
-  unitPrice: string;
-  hsnSac: string;
-  taxRateOverride: string;
+const HSN_PATTERN = /^(\d{4}|\d{6}|\d{8})$/;
+
+/** A line parsed for the preview, or null while any of its numbers is not yet a number. */
+function parsePreviewLine(line: LineDraft): PreviewLine | null {
+  const qty = parseQuantity(line.quantity);
+  const unit = parseMinor(line.unitPrice || "0");
+  const discount = line.discount.trim() === "" ? { ok: true as const, minor: 0 } : parseMinor(line.discount);
+  if (!qty.ok || !unit.ok || !discount.ok) return null;
+  return { quantity: qty.value, unitPriceMinor: unit.minor, discountMinor: Math.abs(discount.minor), ratePct: Number(line.ratePct) };
 }
 
-function blankLine(): LineDraft {
-  return { description: "", quantity: "1", unitPrice: "", hsnSac: "", taxRateOverride: "" };
+/** Where the supply is taxed, by the server's own order: the buyer's GSTIN, their billing state,
+ *  the state name on file, then the supplier's own. */
+function derivedPlaceOfSupply(customer: Customer | null, sellerState: string | null): string | null {
+  if (customer === null) return null;
+  if (customer.gstin) return customer.gstin.slice(0, 2);
+  if (customer.state_code) return customer.state_code;
+  return stateCodeForName(customer.state) ?? sellerState;
 }
 
-/** A rough client-side preview only — the server computes and returns the real split. */
-function previewTotal(lines: LineDraft[], defaultRatePct: number): { subtotal: number; tax: number } {
-  let subtotal = 0;
-  let tax = 0;
-  for (const line of lines) {
-    const qty = parseQuantity(line.quantity);
-    const unit = parseMinor(line.unitPrice || "0");
-    if (!qty.ok || !unit.ok) continue;
-    const amount = Math.round(unit.minor * qty.value);
-    const rate = line.taxRateOverride !== "" ? Number(line.taxRateOverride) : defaultRatePct;
-    subtotal += amount;
-    tax += Math.round((amount * rate) / 100);
-  }
-  return { subtotal, tax };
+function billingAddress(customer: Customer): string {
+  const cityLine = [customer.city, customer.pincode].filter((s) => s && s.trim() !== "").join(" ");
+  return [customer.address_line1, customer.address_line2, cityLine]
+    .map((s) => (s ?? "").trim())
+    .filter(Boolean)
+    .join(", ");
 }
 
 export function InvoiceNewPage() {
@@ -70,35 +77,60 @@ export function InvoiceNewPage() {
   const [searchParams] = useSearchParams();
   const correctsId = searchParams.get("corrects");
   const isCreditNote = correctsId !== null;
+  const canConfigure = useCan("finance.compliance.registration.write", "ORG");
+  const hasOperations = useEntitlement("operations");
+  const canReadItems = useCan("operations.inventory.item.read");
 
   const correcting = useAsync(
     useCallback(() => (correctsId ? getInvoice(correctsId) : Promise.resolve(null)), [correctsId]),
     [correctsId],
   );
   const customersState = useAsync(() => listCustomers({ sort: "name_asc", size: MAX_PAGE_SIZE }), []);
+  // The supplier settings decide whether an invoice may be started at all. Reading them needs the
+  // registration read; an issuer without it gets a 403, which leaves the decision to the server
+  // and the printed copy's own checks rather than blocking a person who cannot see why.
+  const supplier = useAsync(async () => {
+    try {
+      return await getSupplierSettings();
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 403) return null;
+      throw error;
+    }
+  }, []);
+
+  const loading = customersState.status === "loading" || supplier.status === "loading" || (correctsId !== null && correcting.status === "loading");
+  const failure = [customersState, supplier, ...(correctsId ? [correcting] : [])].find((s) => s.status === "error");
 
   return (
     <div className="rise flex flex-col gap-6">
-      <PageHeader
-        eyebrow="Accounts receivable"
-        title={isCreditNote ? "Issue credit note" : "Issue invoice"}
-      />
-      {correctsId && correcting.status === "loading" ? <Skeleton className="h-64 w-full rounded-tile" /> : null}
-      {correctsId && correcting.status === "error" ? (
+      <PageHeader eyebrow="Accounts receivable" title={isCreditNote ? "Issue credit note" : "Issue invoice"} />
+      {loading ? <Skeleton className="h-64 w-full rounded-tile" /> : null}
+      {failure && failure.status === "error" ? (
         <Card className="p-6">
-          <ErrorState message={problemMessage(correcting.error)} onRetry={correcting.reload} />
+          <ErrorState
+            message={problemMessage(failure.error)}
+            onRetry={() => {
+              customersState.reload();
+              supplier.reload();
+              correcting.reload();
+            }}
+          />
         </Card>
       ) : null}
-      {customersState.status === "error" ? (
-        <Card className="p-6">
-          <ErrorState message={problemMessage(customersState.error)} onRetry={customersState.reload} />
-        </Card>
+      {supplier.status === "success" && supplier.data !== null && !supplier.data.ready ? (
+        <SupplierSetupPrompt missing={supplier.data.missing} canConfigure={canConfigure} />
       ) : null}
-      {customersState.status === "loading" ? <Skeleton className="h-64 w-full rounded-tile" /> : null}
-      {customersState.status === "success" && (!correctsId || correcting.status === "success") ? (
+      {!loading &&
+      !failure &&
+      customersState.status === "success" &&
+      supplier.status === "success" &&
+      (supplier.data === null || supplier.data.ready) &&
+      (!correctsId || correcting.status === "success") ? (
         <IssueForm
           correcting={correcting.status === "success" ? correcting.data : null}
-          customers={customersState.data.items.map((row) => ({ value: row.customer.id, label: row.customer.name }))}
+          customers={customersState.data.items.map((row) => row.customer)}
+          sellerState={supplier.data?.registration?.state_code ?? null}
+          canPickItems={hasOperations && canReadItems}
           onIssued={(invoice) => {
             toast.success(`${invoice.number} issued.`);
             navigate(`/invoices/${invoice.id}`);
@@ -110,14 +142,33 @@ export function InvoiceNewPage() {
   );
 }
 
+function linesFrom(correcting: Invoice | null): LineDraft[] {
+  if (!correcting) return [blankLine()];
+  return correcting.lines.map((l) => ({
+    description: `Return — ${l.description}`,
+    hsnSac: l.hsn_sac ?? "",
+    quantity: String(-Math.abs(l.quantity)),
+    unit: l.unit ?? "",
+    unitPrice: minorToInput(l.unit_price_minor),
+    discount: l.discount_minor ? minorToInput(l.discount_minor) : "",
+    ratePct: String(l.tax_rate_pct ?? correcting.tax_rate_pct),
+    itemId: l.item_id ?? null,
+    itemSku: l.item_sku ?? null,
+  }));
+}
+
 function IssueForm({
   correcting,
   customers,
+  sellerState,
+  canPickItems,
   onIssued,
   onCancel,
 }: {
   correcting: Invoice | null;
-  customers: { value: string; label: string }[];
+  customers: Customer[];
+  sellerState: string | null;
+  canPickItems: boolean;
   onIssued: (invoice: Invoice) => void;
   onCancel: () => void;
 }) {
@@ -129,38 +180,18 @@ function IssueForm({
   // the person picks a date of their own; after that the issue date no longer moves it.
   const [pickedDueDate, setPickedDueDate] = useState<string | null>(null);
   const defaultDueDate =
-    isCreditNote || !/^\d{4}-\d{2}-\d{2}$/.test(issuedDate)
-      ? issuedDate
-      : addDays(issuedDate, DEFAULT_PAYMENT_TERMS_DAYS);
+    isCreditNote || !/^\d{4}-\d{2}-\d{2}$/.test(issuedDate) ? issuedDate : addDays(issuedDate, DEFAULT_PAYMENT_TERMS_DAYS);
   const dueDate = pickedDueDate ?? defaultDueDate;
-  const [taxRatePct, setTaxRatePct] = useState(String(correcting?.tax_rate_pct ?? 18));
   const [supplyType, setSupplyType] = useState<SupplyType | "">(correcting?.supply_type ?? "");
   const [placeOfSupply, setPlaceOfSupply] = useState(correcting?.place_of_supply ?? "");
   const [reverseCharge, setReverseCharge] = useState(correcting?.reverse_charge ?? false);
+  const [roundOff, setRoundOff] = useState(correcting ? (correcting.round_off_minor ?? 0) !== 0 : true);
+  const [shipElsewhere, setShipElsewhere] = useState(false);
+  const [shipTo, setShipTo] = useState("");
   const [notes, setNotes] = useState(correcting ? `Corrects ${correcting.number}.` : "");
-  const [lines, setLines] = useState<LineDraft[]>(() =>
-    correcting
-      ? correcting.lines.map((l) => ({
-          description: `Return — ${l.description}`,
-          quantity: String(-Math.abs(l.quantity)),
-          unitPrice: minorToInput(l.unit_price_minor),
-          hsnSac: l.hsn_sac ?? "",
-          taxRateOverride: l.tax_rate_pct !== undefined && l.tax_rate_pct !== correcting.tax_rate_pct ? String(l.tax_rate_pct) : "",
-        }))
-      : [blankLine()],
-  );
+  const [lines, setLines] = useState<LineDraft[]>(() => linesFrom(correcting));
 
-  const fields = {
-    customerId,
-    issuedDate,
-    dueDate,
-    taxRatePct,
-    supplyType,
-    placeOfSupply,
-    reverseCharge,
-    notes,
-    lines,
-  };
+  const fields = { customerId, issuedDate, dueDate, supplyType, placeOfSupply, reverseCharge, roundOff, shipTo, notes, lines };
   const [initial] = useState(fields);
   const changed = useFormDirty(initial, fields);
 
@@ -174,9 +205,24 @@ function IssueForm({
   const [issued, setIssued] = useState<Invoice | null>(null);
   const dirty = changed && issued === null;
 
-  const rate = Number(taxRatePct);
-  const preview = useMemo(() => previewTotal(lines, rate), [lines, rate]);
-  const previewTotalMinor = preview.subtotal + preview.tax;
+  const customer = customers.find((c) => c.id === customerId) ?? null;
+  const effectivePos = placeOfSupply || derivedPlaceOfSupply(customer, sellerState);
+  const effectiveSupply: SupplyType = supplyType || (customer?.gstin ? "b2b" : "b2c");
+  const intraState = isIntraState(effectiveSupply, sellerState, effectivePos);
+
+  const parsed = useMemo(() => lines.map(parsePreviewLine), [lines]);
+  const preview = useMemo(
+    () => previewInvoice(parsed.filter((l): l is PreviewLine => l !== null), { intraState, reverseCharge, roundOff }),
+    [parsed, intraState, reverseCharge, roundOff],
+  );
+  const lineFigures = useMemo(() => {
+    let k = 0;
+    return parsed.map((p) => {
+      if (p === null) return null;
+      const line = preview.lines[k++];
+      return line ? { taxable: line.taxable, tax: line.cgst + line.sgst + line.igst } : null;
+    });
+  }, [parsed, preview]);
 
   const issue = useMutation((input: InvoiceIssueIn) => issueInvoice(input), {
     onSuccess: (invoice) => setIssued(invoice),
@@ -189,14 +235,6 @@ function IssueForm({
 
   function updateLine(index: number, patch: Partial<LineDraft>) {
     setLines((current) => current.map((l, i) => (i === index ? { ...l, ...patch } : l)));
-  }
-
-  function addLine() {
-    setLines((current) => [...current, blankLine()]);
-  }
-
-  function removeLine(index: number) {
-    setLines((current) => (current.length > 1 ? current.filter((_, i) => i !== index) : current));
   }
 
   function validate(): InvoiceIssueIn | null {
@@ -218,14 +256,19 @@ function IssueForm({
     }
 
     const parsedLines: InvoiceLineCreate[] = [];
-    for (const line of lines) {
+    for (const [i, line] of lines.entries()) {
+      const n = i + 1;
       if (line.description.trim() === "") {
-        setLinesError("Every line needs a description.");
+        setLinesError(`Line ${n} needs a description.`);
+        return null;
+      }
+      if (line.hsnSac !== "" && !HSN_PATTERN.test(line.hsnSac)) {
+        setLinesError(`Line ${n}: an HSN or SAC code is 4, 6 or 8 numerals.`);
         return null;
       }
       const qty = parseQuantity(line.quantity);
       if (!qty.ok) {
-        setLinesError(qty.message);
+        setLinesError(`Line ${n}: ${qty.message}`);
         return null;
       }
       if (isCreditNote && qty.value > 0) {
@@ -238,23 +281,42 @@ function IssueForm({
       }
       const unit = parseMinor(line.unitPrice);
       if (!unit.ok) {
-        setLinesError(unit.message);
+        setLinesError(`Line ${n}: ${unit.message}`);
+        return null;
+      }
+      const discount = line.discount.trim() === "" ? { ok: true as const, minor: 0 } : parseMinor(line.discount);
+      if (!discount.ok || discount.minor < 0) {
+        setLinesError(`Line ${n}: enter the discount as a positive amount, or leave it blank.`);
+        return null;
+      }
+      const figures = lineFigures[i];
+      const gross = Math.abs(preview.lines[i]?.gross ?? 0);
+      if (figures && discount.minor > gross) {
+        setLinesError(`Line ${n}: the discount is more than the line's value.`);
+        return null;
+      }
+      if (line.ratePct === "40" && issuedDate < FORTY_PERCENT_FROM) {
+        setLinesError(`Line ${n}: the 40% rate applies only to invoices dated from 22 September 2025.`);
         return null;
       }
       parsedLines.push({
         description: line.description.trim(),
         quantity: qty.value,
         unit_price_minor: unit.minor,
-        hsn_sac: line.hsnSac.trim() === "" ? null : line.hsnSac.trim(),
-        tax_rate_pct: line.taxRateOverride === "" ? null : Number(line.taxRateOverride),
+        discount_minor: discount.minor,
+        unit: line.unit === "" ? null : line.unit,
+        hsn_sac: line.hsnSac === "" ? null : line.hsnSac,
+        tax_rate_pct: Number(line.ratePct),
+        item_id: line.itemId,
+        item_sku: line.itemSku,
       });
     }
 
-    if (isCreditNote && previewTotalMinor >= 0) {
+    if (isCreditNote && preview.total >= 0) {
       setLinesError("A credit note's total must be negative.");
       return null;
     }
-    if (!isCreditNote && previewTotalMinor <= 0) {
+    if (!isCreditNote && preview.total <= 0) {
       setLinesError("An invoice's total must be greater than zero.");
       return null;
     }
@@ -263,7 +325,7 @@ function IssueForm({
       customer_id: customerId,
       issued_date: issuedDate,
       due_date: dueDate,
-      tax_rate_pct: rate,
+      tax_rate_pct: parsedLines[0]?.tax_rate_pct ?? 18,
       lines: parsedLines,
       document_type: isCreditNote ? "credit_note" : "invoice",
       notes: notes.trim() === "" ? null : notes.trim(),
@@ -271,6 +333,8 @@ function IssueForm({
       supply_type: supplyType === "" ? null : supplyType,
       place_of_supply: placeOfSupply === "" ? null : placeOfSupply,
       reverse_charge: reverseCharge,
+      round_off: roundOff,
+      ship_to_address: shipElsewhere && shipTo.trim() !== "" ? shipTo.trim() : null,
     };
   }
 
@@ -285,10 +349,12 @@ function IssueForm({
     void issue.mutate(payload);
   }
 
+  const reviewLabel = isCreditNote ? "Review credit note" : "Review invoice";
+
   return (
     <>
       <UnsavedChangesGuard when={dirty} subject={isCreditNote ? "this credit note" : "this invoice"} />
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3 items-start">
+      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-3">
         <Card className="flex flex-col gap-5 p-6 lg:col-span-2 lg:p-8">
           {correcting ? (
             <InlineAlert tone="info" title={`Correcting ${correcting.number}`}>
@@ -303,93 +369,78 @@ function IssueForm({
               value={customerId}
               onChange={(e) => setCustomerId(e.target.value)}
               placeholder="Choose a customer"
-              options={customers}
+              options={customers.map((c) => ({ value: c.id, label: c.name }))}
               disabled={isCreditNote}
               required
               error={customerError ?? fieldError(issueProblem, "customer_id")}
             />
-            <Select
-              label="Tax rate"
-              value={taxRatePct}
-              onChange={(e) => setTaxRatePct(e.target.value)}
-              options={TAX_RATES.map((r) => ({ value: r, label: `${r}%` }))}
-              error={fieldError(issueProblem, "tax_rate_pct")}
-            />
+            <div className="grid grid-cols-2 gap-4">
+              <TextField
+                label="Issued date"
+                type="date"
+                value={issuedDate}
+                onChange={(e) => setIssuedDate(e.target.value)}
+                required
+                error={dateError ? undefined : fieldError(issueProblem, "issued_date")}
+              />
+              <TextField
+                label="Due date"
+                type="date"
+                value={dueDate}
+                onChange={(e) => setPickedDueDate(e.target.value)}
+                required
+                error={dateError ?? fieldError(issueProblem, "due_date")}
+              />
+            </div>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <TextField
-              label="Issued date"
-              type="date"
-              value={issuedDate}
-              onChange={(e) => setIssuedDate(e.target.value)}
-              required
-              error={dateError ? undefined : fieldError(issueProblem, "issued_date")}
+          {customer ? (
+            <BuyerSummary
+              customer={customer}
+              placeOfSupply={effectivePos}
+              supplyType={effectiveSupply}
+              intraState={intraState}
             />
-            <TextField
-              label="Due date"
-              type="date"
-              value={dueDate}
-              onChange={(e) => setPickedDueDate(e.target.value)}
-              required
-              error={dateError ?? fieldError(issueProblem, "due_date")}
-            />
+          ) : null}
+
+          <div className="flex flex-col gap-3">
+            <SectionHeader title="Lines" subtitle="Tax is previewed here and computed by the server on issue" />
+            {linesError ? <InlineAlert tone="danger" title={linesError} /> : null}
+            {lines.map((line, i) => (
+              <LineEditor
+                key={i}
+                index={i}
+                line={line}
+                figures={lineFigures[i] ?? null}
+                canPickItems={canPickItems}
+                canRemove={lines.length > 1}
+                onChange={(patch) => updateLine(i, patch)}
+                onRemove={() => setLines((current) => (current.length > 1 ? current.filter((_, j) => j !== i) : current))}
+                errorFor={(field) => fieldError(issueProblem, field)}
+              />
+            ))}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              leadingIcon={<PlusIcon className="size-4" />}
+              onClick={() => setLines((current) => [...current, blankLine(current.at(-1)?.ratePct ?? "18")])}
+              className="self-start"
+            >
+              Add line
+            </Button>
           </div>
 
           <div className="flex flex-col gap-3">
-            <SectionHeader title="Lines" subtitle="Server-computed tax — this is a preview only" />
-            {linesError ? <InlineAlert tone="danger" title={linesError} /> : null}
-            {lines.map((line, i) => (
-              <div key={i} className="flex flex-col gap-3 rounded-tile border border-line p-4">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-semibold uppercase tracking-wide text-faint">Line {i + 1}</span>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => removeLine(i)}
-                    disabled={lines.length === 1}
-                    aria-label={`Remove line ${i + 1}`}
-                  >
-                    Remove
-                  </Button>
-                </div>
-                <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-3">
-                  <div className="sm:col-span-3">
-                    <TextField
-                      label="Description"
-                      value={line.description}
-                      onChange={(e) => updateLine(i, { description: e.target.value })}
-                      required
-                      error={fieldError(issueProblem, `lines.${i}.description`)}
-                    />
-                  </div>
-                  <TextField
-                    label="Quantity"
-                    inputMode="decimal"
-                    value={line.quantity}
-                    onChange={(e) => updateLine(i, { quantity: e.target.value })}
-                    required
-                  />
-                  <TextField
-                    label="Unit price (₹)"
-                    inputMode="decimal"
-                    value={line.unitPrice}
-                    onChange={(e) => updateLine(i, { unitPrice: e.target.value })}
-                    required
-                  />
-                  <TextField
-                    label="HSN/SAC"
-                    value={line.hsnSac}
-                    onChange={(e) => updateLine(i, { hsnSac: e.target.value })}
-                    optional
-                  />
-                </div>
-              </div>
-            ))}
-            <Button type="button" variant="outline" size="sm" leadingIcon={<PlusIcon className="size-4" />} onClick={addLine} className="self-start">
-              Add line
-            </Button>
+            <Switch
+              checked={shipElsewhere}
+              onChange={setShipElsewhere}
+              label="Deliver to a different address"
+              description="Printed as the delivery address when the goods go somewhere other than the billing address."
+            />
+            {shipElsewhere ? (
+              <TextArea label="Delivery address" value={shipTo} onChange={(e) => setShipTo(e.target.value)} rows={3} maxLength={600} />
+            ) : null}
           </div>
 
           <details className="rounded-tile border border-line p-4">
@@ -405,7 +456,7 @@ function IssueForm({
                 label="Place of supply"
                 value={placeOfSupply}
                 onChange={(e) => setPlaceOfSupply(e.target.value)}
-                placeholder="Derived from the buyer"
+                placeholder={effectivePos ? `Derived: ${effectivePos} — ${gstStateName(effectivePos)}` : "Derived from the buyer"}
                 options={[...GST_STATE_OPTIONS]}
               />
             </div>
@@ -424,30 +475,16 @@ function IssueForm({
 
         <Card className="flex flex-col gap-4 p-6">
           <SectionHeader
-            title="Estimated total"
-            action={<SampleChip label="Estimate" title="Client-side preview only — the server computes the real tax split" />}
+            title="Totals"
+            action={<SampleChip label="Preview" title="Computed here the way the server computes it; the issued invoice shows the server's figures" />}
           />
-          <div className="flex flex-col gap-2 text-sm">
-            <div className="flex justify-between">
-              <span className="text-muted">Subtotal</span>
-              <span className="money font-semibold text-ink">{formatMoney(preview.subtotal)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted">Tax (est.)</span>
-              <span className="money font-semibold text-ink">{formatMoney(preview.tax)}</span>
-            </div>
-            <div className="flex justify-between border-t border-line pt-2">
-              <span className="font-bold text-ink">Total (est.)</span>
-              <span className="money text-lg font-extrabold text-ink">{formatMoney(previewTotalMinor)}</span>
-            </div>
-          </div>
+          <InvoiceTotals preview={preview} intraState={intraState} roundOff={roundOff} onRoundOffChange={setRoundOff} />
           <p className="text-xs text-muted">
-            An issued invoice cannot be edited or deleted. A mistake is corrected with a credit
-            note.
+            An issued invoice cannot be edited or deleted. A mistake is corrected with a credit note.
           </p>
           <div className="hidden flex-col gap-2 pt-2 md:flex">
             <Button onClick={submit} disabled={issue.pending}>
-              {isCreditNote ? "Review credit note" : "Review invoice"}
+              {reviewLabel}
             </Button>
             <Button variant="ghost" onClick={onCancel} disabled={issue.pending}>
               Cancel
@@ -457,26 +494,24 @@ function IssueForm({
             <InlineAlert
               tone="danger"
               title={problemMessage(issue.error)}
-              {...(issue.error instanceof ApiError && issue.error.problem?.request_id
-                ? { reference: issue.error.problem.request_id }
-                : {})}
+              {...(issue.error instanceof ApiError && issue.error.problem?.request_id ? { reference: issue.error.problem.request_id } : {})}
             />
           ) : null}
         </Card>
       </div>
 
       {/* Below md the review button lives in a bar that stays above the bottom navigation, with the
-          estimate beside it: the long form never scrolls the one action out of reach. */}
+          total beside it: the long form never scrolls the one action out of reach. */}
       <StickyActionBar
         summary={
           <div className="flex min-w-0 flex-col leading-tight">
-            <span className="text-xs text-muted">Total (est.)</span>
-            <span className="money text-base font-extrabold text-ink">{formatMoney(previewTotalMinor)}</span>
+            <span className="text-xs text-muted">Total</span>
+            <span className="money text-base font-extrabold text-ink">{formatMoney(preview.total)}</span>
           </div>
         }
       >
         <Button onClick={submit} disabled={issue.pending}>
-          {isCreditNote ? "Review credit note" : "Review invoice"}
+          {reviewLabel}
         </Button>
       </StickyActionBar>
 
@@ -490,8 +525,8 @@ function IssueForm({
         title={isCreditNote ? "Issue this credit note?" : "Issue this invoice?"}
         body={
           isCreditNote
-            ? `This corrects ${correcting?.number} for an estimated ${formatMoney(previewTotalMinor)}. An issued document cannot be edited or deleted.`
-            : `This bills the customer an estimated ${formatMoney(previewTotalMinor)}. An issued invoice cannot be edited or deleted — a mistake is corrected with a credit note.`
+            ? `This corrects ${correcting?.number} for ${formatMoney(preview.total)}. An issued document cannot be edited or deleted.`
+            : `This bills ${customer?.name ?? "the customer"} ${formatMoney(preview.total)}. An issued invoice cannot be edited or deleted — a mistake is corrected with a credit note.`
         }
         confirmLabel={isCreditNote ? "Issue credit note" : "Issue invoice"}
         pendingLabel="Issuing…"
@@ -499,5 +534,52 @@ function IssueForm({
         {...(issue.error ? { error: problemMessage(issue.error) } : {})}
       />
     </>
+  );
+}
+
+/** The buyer facts the invoice will print, and what they decide: place of supply and tax heads. */
+function BuyerSummary({
+  customer,
+  placeOfSupply,
+  supplyType,
+  intraState,
+}: {
+  customer: Customer;
+  placeOfSupply: string | null;
+  supplyType: SupplyType;
+  intraState: boolean;
+}) {
+  const address = billingAddress(customer);
+  return (
+    <section aria-label="Buyer details" className="flex flex-col gap-2 rounded-tile bg-ground p-4 text-sm">
+      <dl className="grid grid-cols-1 gap-x-6 gap-y-1 sm:grid-cols-2">
+        <div className="flex gap-2">
+          <dt className="text-muted">GSTIN</dt>
+          <dd className="font-semibold text-ink tnum">{customer.gstin ?? "Unregistered (B2C)"}</dd>
+        </div>
+        <div className="flex gap-2">
+          <dt className="text-muted">Place of supply</dt>
+          <dd className="font-semibold text-ink">
+            {placeOfSupply ? `${GST_STATE_NAME[placeOfSupply] ?? placeOfSupply} (${placeOfSupply})` : "Not known"}
+          </dd>
+        </div>
+        <div className="flex gap-2 sm:col-span-2">
+          <dt className="text-muted">Billing address</dt>
+          <dd className="font-semibold text-ink">{address || "None on file"}</dd>
+        </div>
+        <div className="flex gap-2 sm:col-span-2">
+          <dt className="text-muted">Tax</dt>
+          <dd className="font-semibold text-ink">
+            {supplyType.toUpperCase()} · {intraState ? "CGST + SGST (same state)" : "IGST (another state)"}
+          </dd>
+        </div>
+      </dl>
+      {address === "" ? (
+        <p className="text-xs text-muted">
+          Add the customer&rsquo;s billing address under Customers so it prints on the invoice. It is
+          required for an unregistered buyer billed ₹50,000 or more.
+        </p>
+      ) : null}
+    </section>
   );
 }

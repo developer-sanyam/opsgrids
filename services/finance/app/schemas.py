@@ -71,6 +71,12 @@ class CustomerOut(BaseModel):
     gstin: str | None
     city: str
     state: str
+    #: The billing address a tax invoice prints for this buyer.
+    address_line1: str = ""
+    address_line2: str = ""
+    pincode: str = ""
+    #: The GST state code of the billing address; null when not recorded.
+    state_code: str | None = None
     # ---------------------------------------------------------------- withholding
     # Facts about this buyer that decide whether tax is withheld on what this organization
     # bills them. Carried here (not just on `CustomerCreate`) so an edit form can prefill them —
@@ -95,8 +101,8 @@ class CustomerSummary(BaseModel):
 
 
 class InvoiceLineOut(BaseModel):
-    """One line on an invoice. `amount_minor` foots to `quantity x unit_price_minor`, and is the
-    **taxable value** the line's GST is computed on.
+    """One line on an invoice. `amount_minor` foots to `quantity x unit_price_minor` less
+    `discount_minor`, and is the **taxable value** the line's GST is computed on.
 
     Exactly one tax shape is populated: `cgst_minor` + `sgst_minor` on an intra-state supply,
     `igst_minor` on an inter-state one. The three always sum to the tax actually charged.
@@ -107,10 +113,17 @@ class InvoiceLineOut(BaseModel):
     id: uuid.UUID
     description: str
     quantity: float
+    #: GST unit quantity code (NOS, KGS, ...); null on lines raised before units were recorded.
+    unit: str | None = None
     unit_price_minor: int
+    #: Discount taken off this line before tax, as a non-negative magnitude.
+    discount_minor: int = 0
     amount_minor: int
     #: HSN (goods) or SAC (services) code. Null on documents raised before GST fields existed.
     hsn_sac: str | None = None
+    #: The inventory item the line was picked from, and its SKU then; null for a typed line.
+    item_id: uuid.UUID | None = None
+    item_sku: str | None = None
     tax_rate_pct: float = 0
     cgst_minor: int = 0
     sgst_minor: int = 0
@@ -180,7 +193,8 @@ class EInvoiceState(BaseModel):
 
 class InvoiceOut(BaseModel):
     """An invoice or credit note. Totals foot exactly:
-    `subtotal_minor = Σ line.amount_minor`, `total_minor = subtotal_minor + tax_minor`,
+    `subtotal_minor = Σ line.amount_minor`,
+    `total_minor = subtotal_minor + tax_minor + round_off_minor`,
     and `tax_minor = cgst_minor + sgst_minor + igst_minor = Σ line tax`.
     A credit note carries negative amounts and a `corrects_invoice_id`.
     """
@@ -214,6 +228,16 @@ class InvoiceOut(BaseModel):
     cgst_minor: int = 0
     sgst_minor: int = 0
     igst_minor: int = 0
+    #: The rounding to whole rupees included in `total_minor`; zero unless asked for at issue.
+    round_off_minor: int = 0
+    #: What the document printed about each party when issued (null on older documents, whose
+    #: readers fall back to the live supplier settings and customer record).
+    seller_legal_name: str | None = None
+    seller_address: str | None = None
+    buyer_name: str | None = None
+    buyer_address: str | None = None
+    buyer_state_code: str | None = None
+    ship_to_address: str | None = None
     #: Where this document stands with the portal. Never null: an unfiled document reports
     #: `required` with a null `status`, so an unmet obligation is visible rather than absent.
     einvoice: EInvoiceState
@@ -378,6 +402,15 @@ class InvoiceLineCreate(BaseModel):
     #: Overrides the document's rate for this line — a freight or installation line on a goods
     #: invoice is the everyday case. Defaults to the document's `tax_rate_pct`.
     tax_rate_pct: float | None = None
+    #: GST unit quantity code (`domain.UQC_CODES`), case-insensitive. Optional for compatibility;
+    #: the finance screen always sends one.
+    unit: str | None = Field(default=None, max_length=10)
+    #: Discount on this line in minor units, a non-negative magnitude no larger than the line.
+    discount_minor: int = Field(default=0, ge=0)
+    #: The inventory item this line was picked from (a reference only: nothing is read from it
+    #: server-side) and its SKU, both optional.
+    item_id: uuid.UUID | None = None
+    item_sku: str | None = Field(default=None, max_length=60)
 
 
 class InvoiceCreate(BaseModel):
@@ -409,6 +442,10 @@ class InvoiceCreate(BaseModel):
     #: The recipient pays the tax instead of the supplier. The document carries the rate and no
     #: tax amounts.
     reverse_charge: bool = False
+    #: Round the grand total to whole rupees (INR only); the adjustment is `round_off_minor`.
+    round_off: bool = False
+    #: The delivery address, when it differs from the buyer's billing address (Rule 46(n)).
+    ship_to_address: str | None = Field(default=None, max_length=600)
 
 
 class InvoiceIssueIn(BaseModel):
@@ -439,6 +476,11 @@ class InvoiceIssueIn(BaseModel):
     supply_type: SupplyType | None = None
     place_of_supply: str | None = None
     reverse_charge: bool = False
+    #: Round the grand total to whole rupees (INR only). Off unless asked for, so an API caller
+    #: that never heard of it gets exactly the totals it always did.
+    round_off: bool = False
+    #: The delivery address, when it differs from the buyer's billing address (Rule 46(n)).
+    ship_to_address: str | None = Field(default=None, max_length=600)
 
 
 class GstRegistrationOut(BaseModel):
@@ -456,17 +498,99 @@ class GstRegistrationOut(BaseModel):
     trade_name: str
     registration_type: str
     is_primary: bool
+    #: The principal place of business printed as the supplier's address.
+    address_line1: str = ""
+    address_line2: str = ""
+    city: str = ""
+    pincode: str = ""
 
 
 class GstRegistrationUpsert(BaseModel):
     """Register or update this organization's GSTIN. The number is parsed and checksum-verified
-    before a row is written — an unverified GSTIN is not stored anywhere in this service."""
+    before a row is written — an unverified GSTIN is not stored anywhere in this service.
+
+    The address fields are optional and *absent means unchanged* on an existing registration, so a
+    caller written before they existed cannot blank an address somebody else entered."""
 
     gstin: str
     legal_name: str
     trade_name: str = ""
     registration_type: str = "regular"
     is_primary: bool = True
+    address_line1: str | None = Field(default=None, max_length=200)
+    address_line2: str | None = Field(default=None, max_length=200)
+    city: str | None = Field(default=None, max_length=120)
+    #: Six numerals, or empty to clear.
+    pincode: str | None = Field(default=None, max_length=6)
+
+
+# --------------------------------------------------------------------- supplier settings
+
+
+class BankDetailsOut(BaseModel):
+    """The account a customer pays into. On the settings read `account_number` is the mask
+    (`••••••3210`); only the printable invoice returns it whole."""
+
+    account_name: str
+    account_number: str
+    ifsc: str
+    bank_name: str
+    branch: str
+    upi_id: str
+
+
+class SupplierProfileOut(BaseModel):
+    """PAN and bank details, masked: what Finance settings shows."""
+
+    pan: str | None
+    bank: BankDetailsOut
+
+
+class SupplierProfileUpsert(BaseModel):
+    """Set PAN and bank details. Every field is optional and *absent means unchanged*; an empty
+    string clears it. The account number is write-only: it is sealed on write and never returned
+    by this route."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pan: str | None = Field(default=None, max_length=12)
+    bank_account_name: str | None = Field(default=None, max_length=200)
+    bank_account_number: str | None = Field(default=None, max_length=24)
+    bank_ifsc: str | None = Field(default=None, max_length=11)
+    bank_name: str | None = Field(default=None, max_length=120)
+    bank_branch: str | None = Field(default=None, max_length=120)
+    upi_id: str | None = Field(default=None, max_length=100)
+
+
+class SupplierSettingsOut(BaseModel):
+    """Everything a tax invoice states about this organization, and whether it is enough.
+
+    `missing` lists `domain.SUPPLIER_REQUIRED_FIELDS` keys still to be given; `ready` is true when
+    it is empty. The finance screen refuses to start an invoice until then, so no document is
+    issued without the supplier facts Rule 46 requires."""
+
+    registration: GstRegistrationOut | None
+    profile: SupplierProfileOut
+    ready: bool
+    missing: list[str]
+
+
+class SupplierPrintOut(BaseModel):
+    """The supplier block of the printable invoice: the live settings, with the bank account
+    number whole. `gstin` lets the reader check it is the registration the invoice was issued
+    under before using any of it."""
+
+    gstin: str | None
+    legal_name: str | None
+    trade_name: str | None
+    state_code: str | None
+    address_line1: str
+    address_line2: str
+    city: str
+    pincode: str
+    pan: str | None
+    #: Null when no account is on file.
+    bank: BankDetailsOut | None
 
 
 # --------------------------------------------------------------------- e-invoicing (internal)
@@ -508,6 +632,13 @@ class CustomerCreate(BaseModel):
     gstin: str | None = Field(default=None, min_length=15, max_length=15)
     city: str = Field(default="", max_length=120)
     state: str = Field(default="", max_length=120)
+    address_line1: str = Field(default="", max_length=200)
+    address_line2: str = Field(default="", max_length=200)
+    #: Six numerals, first non-zero, or empty.
+    pincode: str = Field(default="", max_length=6)
+    #: GST state code of the billing address. When given, `state` is filled from it if blank, and
+    #: a GSTIN must belong to the same state.
+    state_code: str | None = Field(default=None, min_length=2, max_length=2)
     # Withholding facts about the buyer. All three default to false, which is what keeps
     # withholding opt-in: an organization that has not told the platform about its counterparties
     # has no TDS or TCS figures invented for it. 194Q and 206C(1H) are mutually exclusive by
@@ -532,6 +663,10 @@ class CustomerUpdate(BaseModel):
     gstin: str | None = Field(default=None, min_length=15, max_length=15)
     city: str | None = Field(default=None, max_length=120)
     state: str | None = Field(default=None, max_length=120)
+    address_line1: str | None = Field(default=None, max_length=200)
+    address_line2: str | None = Field(default=None, max_length=200)
+    pincode: str | None = Field(default=None, max_length=6)
+    state_code: str | None = Field(default=None, min_length=2, max_length=2)
     is_tds_deductor: bool | None = None
     deducts_tds_194q: bool | None = None
     tcs_applicable: bool | None = None

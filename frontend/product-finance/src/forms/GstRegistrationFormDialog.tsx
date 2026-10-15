@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 
 import { setGstRegistration } from "@/api/client";
-import type { GstRegistration, GstRegistrationType } from "@/api/types";
+import type { GstRegistration, GstRegistrationType, GstRegistrationUpsert } from "@/api/types";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
 import { ConfirmDialog, FormDialog, Select, Switch, TextField, useFormDirty } from "@/ui";
 
@@ -37,23 +37,33 @@ export function GstRegistrationFormDialog({
     (registration?.registration_type as GstRegistrationType | undefined) ?? "regular",
   );
   const [isPrimary, setIsPrimary] = useState(registration?.is_primary ?? true);
+  const [addressLine1, setAddressLine1] = useState(registration?.address_line1 ?? "");
+  const [addressLine2, setAddressLine2] = useState(registration?.address_line2 ?? "");
+  const [city, setCity] = useState(registration?.city ?? "");
+  const [pincode, setPincode] = useState(registration?.pincode ?? "");
 
-  const fields = { gstin, legalName, tradeName, registrationType, isPrimary };
+  const fields = { gstin, legalName, tradeName, registrationType, isPrimary, addressLine1, addressLine2, city, pincode };
   const [initial] = useState(fields);
   const dirty = useFormDirty(initial, fields);
 
   const [gstinError, setGstinError] = useState<string | undefined>(undefined);
   const [legalNameError, setLegalNameError] = useState<string | undefined>(undefined);
+  const [addressError, setAddressError] = useState<string | undefined>(undefined);
+  const [cityError, setCityError] = useState<string | undefined>(undefined);
+  const [pincodeError, setPincodeError] = useState<string | undefined>(undefined);
   const [confirming, setConfirming] = useState(false);
   const firstFieldRef = useRef<HTMLInputElement>(null);
 
-  const save = useMutation((input: { gstin: string; legal_name: string; trade_name: string; registration_type: GstRegistrationType; is_primary: boolean }) => setGstRegistration(input), {
+  const save = useMutation((input: GstRegistrationUpsert) => setGstRegistration(input), {
     onSuccess: (saved) => onSaved(saved),
   });
 
   function validate(): boolean {
     setGstinError(undefined);
     setLegalNameError(undefined);
+    setAddressError(undefined);
+    setCityError(undefined);
+    setPincodeError(undefined);
     const cleanedGstin = gstin.trim().toUpperCase();
     if (!GSTIN_PATTERN.test(cleanedGstin)) {
       setGstinError("Enter a valid 15-character GSTIN, like 27AABCA9012D1Z5.");
@@ -62,6 +72,18 @@ export function GstRegistrationFormDialog({
     }
     if (legalName.trim().length < 1) {
       setLegalNameError("Give the legal name on the certificate.");
+      return false;
+    }
+    if (addressLine1.trim() === "") {
+      setAddressError("Give the principal place of business — it prints on every tax invoice.");
+      return false;
+    }
+    if (city.trim() === "") {
+      setCityError("Give the city.");
+      return false;
+    }
+    if (!/^[1-9]\d{5}$/.test(pincode.trim())) {
+      setPincodeError("A PIN code is six numerals and does not start with 0.");
       return false;
     }
     return true;
@@ -79,6 +101,10 @@ export function GstRegistrationFormDialog({
       trade_name: tradeName.trim(),
       registration_type: registrationType,
       is_primary: isPrimary,
+      address_line1: addressLine1.trim(),
+      address_line2: addressLine2.trim(),
+      city: city.trim(),
+      pincode: pincode.trim(),
     });
   }
 
@@ -119,6 +145,41 @@ export function GstRegistrationFormDialog({
           onChange={(e) => setTradeName(e.target.value)}
           optional
         />
+        <TextField
+          label="Address"
+          value={addressLine1}
+          onChange={(e) => setAddressLine1(e.target.value)}
+          maxLength={200}
+          required
+          helper="The principal place of business on the registration certificate."
+          error={addressError ?? save.fieldErrors.address_line1}
+        />
+        <TextField
+          label="Address line 2"
+          value={addressLine2}
+          onChange={(e) => setAddressLine2(e.target.value)}
+          maxLength={200}
+          optional
+        />
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <TextField
+            label="City"
+            value={city}
+            onChange={(e) => setCity(e.target.value)}
+            maxLength={120}
+            required
+            error={cityError ?? save.fieldErrors.city}
+          />
+          <TextField
+            label="PIN code"
+            value={pincode}
+            inputMode="numeric"
+            onChange={(e) => setPincode(e.target.value.replace(/\D/g, ""))}
+            maxLength={6}
+            required
+            error={pincodeError ?? save.fieldErrors.pincode}
+          />
+        </div>
         <Select
           label="Registration type"
           value={registrationType}
