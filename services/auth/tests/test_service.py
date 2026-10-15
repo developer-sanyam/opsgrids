@@ -107,6 +107,89 @@ class TestJwks:
         assert "path=/api/v1/auth" in set_cookie
 
 
+class TestTheRefreshCookieOutlivesTheBrowser:
+    """A session must survive the browser being closed and reopened (a production tester's
+    report, 2026-10-15). The access token lives in memory and `sessionStorage`, both of which a
+    new browser run loses; what restores the session is the boot-time silent refresh, and that
+    only works if the refresh cookie itself was persisted. A cookie without `Max-Age`/`Expires`
+    is a *session* cookie the browser discards on exit — these pin that it is not one, on
+    sign-in and on every rotation, and that clearing it names the same scope it was set with
+    (a deletion whose `Domain` differs from the set's is a different cookie, and leaves the
+    real one behind)."""
+
+    @staticmethod
+    def _refresh_cookie(response) -> str:
+        from app.config import settings
+
+        name = settings().refresh_cookie_name
+        matches = [c for c in response.headers.get_list("set-cookie") if c.startswith(name + "=")]
+        assert len(matches) == 1, response.headers.get_list("set-cookie")
+        return matches[0].lower()
+
+    async def _login(self, client: AsyncClient):
+        from tests.conftest import PASSWORD
+
+        response = await client.post(
+            "/api/v1/auth/login", json={"email": "sam@example.com", "password": PASSWORD}
+        )
+        assert response.status_code == 200, response.text
+        return response
+
+    async def test_sign_in_sets_a_persistent_lax_host_only_cookie(
+        self, client: AsyncClient, registered
+    ) -> None:
+        from app.config import settings
+
+        cookie = self._refresh_cookie(await self._login(client))
+        assert f"max-age={settings().refresh_token_ttl_seconds}" in cookie
+        # Max-Age alone makes it persistent (RFC 6265 §5.3: it takes precedence over Expires,
+        # and every supported browser honours it).
+        assert "samesite=lax" in cookie
+        assert "httponly" in cookie
+        assert "path=/api/v1/auth" in cookie
+        # Host-only by default (ADR-0003 addendum): never a `.opsgrids.com` cookie unless a
+        # deployment deliberately configures one.
+        assert "domain=" not in cookie
+
+    async def test_a_rotation_sets_a_persistent_cookie_too(
+        self, client: AsyncClient, registered
+    ) -> None:
+        from app.config import settings
+
+        await self._login(client)
+        rotated = await client.post(
+            "/api/v1/auth/refresh", headers={"X-Requested-With": "opsgrids"}
+        )
+        assert rotated.status_code == 200, rotated.text
+        cookie = self._refresh_cookie(rotated)
+        assert f"max-age={settings().refresh_token_ttl_seconds}" in cookie
+        assert "httponly" in cookie
+
+    async def test_the_cookie_is_secure_outside_development(
+        self, client: AsyncClient, registered, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.config import settings
+
+        monkeypatch.setattr(settings(), "environment", "production")
+        assert "secure" in self._refresh_cookie(await self._login(client)).split("; ")
+
+    async def test_logout_clears_the_cookie_with_the_scope_it_was_set_with(
+        self, client: AsyncClient, registered, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.config import settings
+
+        monkeypatch.setattr(settings(), "refresh_cookie_domain", "app.example.test")
+        set_cookie = self._refresh_cookie(await self._login(client))
+        assert "domain=app.example.test" in set_cookie
+
+        out = await client.post("/api/v1/auth/logout", headers={"X-Requested-With": "opsgrids"})
+        assert out.status_code == 204, out.text
+        cleared = self._refresh_cookie(out)
+        assert "max-age=0" in cleared
+        assert "path=/api/v1/auth" in cleared
+        assert "domain=app.example.test" in cleared
+
+
 class TestCsrfOnCookieAuthenticatedRoutes:
     """`/auth/refresh` and `/auth/logout` are the two routes a browser will act on using only
     the refresh cookie — no bearer token, no header CORS would ever have forced a preflight
