@@ -5,7 +5,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { getAllEmployees, getAttendanceDaySummary } from "@/api/client";
 import { getOrgUnitNameById } from "@/api/orgUnits";
 import type { EmployeeOut, TrendPoint, TrendRange } from "@/api/types";
-import { Can, useAsync, useAuth } from "@opsgrids/client";
+import { Can, orgToday, useAsync, useAuth } from "@opsgrids/client";
 import {
   activeCount,
   distinctDepartmentCount,
@@ -31,8 +31,7 @@ import { ArrowRightIcon, CalendarCheckIcon, CalendarIcon, CheckSquareIcon, PlusI
 
 /** The real clock — never a frozen fixture date. */
 function todayISO(): string {
-  // The local calendar day, matching attendance's local-midnight rollover (not the UTC day).
-  return new Date().toLocaleDateString("en-CA");
+  return orgToday();
 }
 
 /** A stable empty reference so the derived-data memos don't churn while loading. */

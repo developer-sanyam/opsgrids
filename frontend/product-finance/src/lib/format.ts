@@ -3,6 +3,7 @@
  * Money lives in its own module (`money.ts`) because it has stricter rules.
  */
 
+import { orgToday } from "@opsgrids/client";
 import { formatInstant } from "@opsgrids/ui";
 
 /** "2026-08-24" -> "24 Aug 2026". Rendered in UTC so a stored date shows as-is. */
@@ -43,7 +44,7 @@ export function daysBetween(aIso: string, bIso: string): number {
  * optional injection point for a test that needs a fixed instant.
  */
 export function today(clock: () => Date = () => new Date()): string {
-  return clock().toISOString().slice(0, 10);
+  return orgToday(clock());
 }
 
 /** `YYYY-MM-DD` plus a whole number of days, on the calendar (no timezone drift). */

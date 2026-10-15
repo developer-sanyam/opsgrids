@@ -5,7 +5,7 @@ import type { AttendanceRecord, AttendanceStatus } from "@/api/types";
 import { departmentLabel } from "@/data/departments";
 import { getMyEmployeeId } from "@/lib/subject";
 import { useZoneLookup } from "@/lib/zone";
-import { ApiError, problemMessage, useAsync, useCan } from "@opsgrids/client";
+import { ApiError, orgToday, problemMessage, useAsync, useCan } from "@opsgrids/client";
 import {
   Announcer,
   Button,
@@ -41,9 +41,7 @@ import { RequestCorrectionDialog } from "@/ui/RequestCorrectionDialog";
 
 /** The real clock, not a frozen fixture date — injectable so a test can pin it. */
 function todayISO(): string {
-  // The user's local calendar day (en-CA prints YYYY-MM-DD), not the UTC day: after local
-  // midnight, and before UTC midnight, the UTC date is still yesterday.
-  return new Date().toLocaleDateString("en-CA");
+  return orgToday();
 }
 
 function toISO(d: Date): string {

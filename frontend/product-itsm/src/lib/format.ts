@@ -1,3 +1,4 @@
+import { orgToday } from "@opsgrids/client";
 import { formatInstant } from "@opsgrids/ui";
 
 import type {
@@ -80,7 +81,7 @@ export function formatMoney(minor: number, currency: string): string {
 
 /** Today, against the real clock: "Mon, 24 Aug 2026". */
 export function todayLabel(reference: Date = now()): string {
-  return reference.toLocaleDateString("en-IN", {
+  return new Date(`${orgToday(reference)}T00:00:00Z`).toLocaleDateString("en-IN", {
     weekday: "short",
     day: "2-digit",
     month: "short",

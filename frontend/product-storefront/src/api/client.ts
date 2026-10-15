@@ -109,7 +109,11 @@ function composeStoreDoc(doc: ThemeDocOut): StoreDoc {
 export async function getStore(): Promise<StoreResponse> {
   if (USE_FIXTURES) return settle(currentStore);
   try {
-    const doc = await apiRequest<ThemeDocOut>("/storefront/theme");
+    const doc = await apiRequest<ThemeDocOut | null>("/storefront/theme");
+    if (doc === null) {
+      currentVersion = null;
+      return null;
+    }
     currentVersion = doc.version;
     return composeStoreDoc(doc);
   } catch (error) {

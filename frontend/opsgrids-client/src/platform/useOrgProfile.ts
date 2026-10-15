@@ -87,3 +87,22 @@ export function useOrgProfile(): OrgProfile {
 
   return profile;
 }
+
+/** `YYYY-MM-DD` for an instant in a zone; with no zone, the browser's own local date. */
+export function dateInZone(now: Date, zone?: string): string {
+  try {
+    return new Intl.DateTimeFormat("en-CA", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+  } catch {
+    return dateInZone(now);
+  }
+}
+
+/**
+ * "Today" as a calendar date in the organization's timezone, falling back to the browser's local
+ * date until the profile has loaded (or when it could not be read). Never the UTC date: at 00:40
+ * IST the UTC date is still yesterday. The first call starts the profile read.
+ */
+export function orgToday(now: Date = new Date()): string {
+  if (settled === null) void loadOrgProfile();
+  return dateInZone(now, settled?.status === "success" ? settled.timezone : undefined);
+}

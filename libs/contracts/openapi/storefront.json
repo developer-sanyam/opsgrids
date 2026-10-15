@@ -5445,14 +5445,22 @@
         ]
       },
       "get": {
-        "description": "`storefront.store.settings.read`, floored at ORG. Reused rather than a new code \u2014 ADR-0011\n\u00a73's own note: anyone who can publish the store can edit its theme.\n\n**404 with a clear detail is the \"no theme adopted\" state** \u2014 the front end maps this to\n\"pick a theme\" rather than treating it as an error.",
+        "description": "`storefront.store.settings.read`, floored at ORG. Reused rather than a new code \u2014 ADR-0011\n\u00a73's own note: anyone who can publish the store can edit its theme.\n\n**`null` (200) is the \"no theme adopted\" state** \u2014 the front end maps this to \"pick a\ntheme\". It was a 404, which logged a console error on every load until a theme was picked.",
         "operationId": "read_theme_api_v1_storefront_theme_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ThemeDocOut"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ThemeDocOut"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Read Theme Api V1 Storefront Theme Get"
                 }
               }
             },

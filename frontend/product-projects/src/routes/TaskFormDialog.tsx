@@ -1,9 +1,9 @@
 import { useRef, useState } from "react";
 
-import { createTask, updateTask } from "@/api/client";
+import { createMember, createTask, updateTask } from "@/api/client";
 import type { MemberOut, ProjectOut, TaskOut, TaskPriority, TaskStage } from "@/api/types";
 import { PRIORITY_LABEL, STAGE_LABEL } from "@/data/labels";
-import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
+import { ApiError, problemMessage, resolveRosterRef, useMutation, useOrgMembers, withOrgMembers } from "@opsgrids/client";
 import { maybe } from "@/lib/optional";
 import { FormDialog, Select, TextField, useFormDirty } from "@opsgrids/ui";
 import type { SelectOption } from "@opsgrids/ui";
@@ -59,9 +59,15 @@ export function TaskFormDialog({
   const projectRef = useRef<HTMLSelectElement>(null);
   const titleRef = useRef<HTMLInputElement>(null);
 
+  const orgMembers = useOrgMembers();
   const save = useMutation(
-    () => {
-      const assignee_ref = assigneeRef.trim() === "" ? null : assigneeRef.trim();
+    async () => {
+      const assignee_ref =
+        assigneeRef.trim() === ""
+          ? null
+          : await resolveRosterRef(assigneeRef.trim(), orgMembers, (ref, memberName) =>
+              createMember({ ref, name: memberName }),
+            );
       const due_date = dueDate.trim() === "" ? null : dueDate;
       if (editing) {
         return updateTask(task.id, {
@@ -112,10 +118,10 @@ export function TaskFormDialog({
     value: p.code,
     label: `${p.code} · ${p.name}`,
   }));
-  const assigneeOptions: SelectOption[] = [
-    { value: "", label: "Unassigned" },
-    ...members.map((m) => ({ value: m.id, label: m.name })),
-  ];
+  const assigneeOptions: SelectOption[] = withOrgMembers(
+    [{ value: "", label: "Unassigned" }, ...members.map((m) => ({ value: m.id, label: m.name }))],
+    orgMembers,
+  );
 
   const nonFieldError =
     save.error && Object.keys(save.fieldErrors).length === 0 ? problemMessage(save.error) : undefined;
