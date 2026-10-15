@@ -1,6 +1,8 @@
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
+import { useLocation } from "react-router-dom";
 
 import { listDeals } from "@/api/client";
+import { onDealsChanged } from "@/data/dealsChanged";
 import { useAsync } from "@opsgrids/client";
 import {
   ActivityIcon,
@@ -25,6 +27,15 @@ const PINNED: NavEntry[] = [];
 export function useNavGroups(): { groups: NavGroup[]; pinned: NavEntry[] } {
   const dealsTotal = useAsync(useCallback(() => listDeals({ size: 1 }), []), []);
   const dealsCount = dealsTotal.status === "success" ? String(dealsTotal.data.total) : undefined;
+
+  // The count is the server's, so it is asked again whenever it may have moved: after a screen
+  // adds or removes a deal, and on every navigation (another tab or a teammate may have).
+  const { refresh } = dealsTotal;
+  const { pathname } = useLocation();
+  useEffect(() => onDealsChanged(refresh), [refresh]);
+  useEffect(() => {
+    refresh();
+  }, [pathname, refresh]);
 
   const groups: NavGroup[] = [
     {

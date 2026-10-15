@@ -17,6 +17,7 @@ import {
   Button,
   Card,
   EmployeesPanel,
+  EmptyState,
   ErrorState,
   HeadcountByDepartment,
   HeadcountTrend,
@@ -274,7 +275,24 @@ export function DashboardPage() {
           {employees.status === "error" ? (
             <ErrorState message={employees.error.message} />
           ) : null}
-          {employees.status === "success" ? (
+          {employees.status === "success" && items.length === 0 ? (
+            <EmptyState
+              icon={<UsersIcon className="size-6" />}
+              title="No employees yet"
+              description="Add your first employee to start the directory."
+              action={
+                <Can permission="hrms.people.employee.write" scope="ORG">
+                  <Link
+                    to="/employees"
+                    className="inline-flex h-11 items-center rounded-full bg-accent px-6 font-semibold text-on-accent transition-colors hover:bg-accent-strong"
+                  >
+                    Add your first employee
+                  </Link>
+                </Can>
+              }
+            />
+          ) : null}
+          {employees.status === "success" && items.length > 0 ? (
             <>
               {/* The directory has its own page, built for a phone; a second, cramped copy of it
                *  on the dashboard is what this link replaces below 768px. */}

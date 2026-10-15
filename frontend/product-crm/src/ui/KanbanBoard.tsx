@@ -46,7 +46,7 @@ function DealCard({
       onDragStart={canMove ? onDragStart : undefined}
       onDragEnd={canMove ? onDragEnd : undefined}
       className={cn(
-        "group flex flex-col gap-3 rounded-tile border border-line bg-surface p-3.5 shadow-card",
+        "group relative flex flex-col gap-3 rounded-tile border border-line bg-surface p-3.5 shadow-card",
         "transition-opacity duration-150",
         canMove && "active:cursor-grabbing cursor-grab",
         dragging && "opacity-50",
@@ -88,6 +88,7 @@ function DealCard({
       {canMove ? (
         <Select
           label={`Stage — ${deal.name}`}
+          hideLabel
           value={deal.stage}
           disabled={closed || moving}
           onChange={(e) => onStageSelect(e.target.value as DealStage)}
@@ -224,7 +225,11 @@ export function KanbanBoard({ groups, canMove, onMoved, onMoveFailed, reload }: 
                   aria-hidden
                 />
                 <span className="text-sm font-bold text-ink">{meta.label}</span>
-                <span className="grid h-5 min-w-5 place-items-center rounded-full bg-surface px-1.5 text-xs font-bold text-muted tnum">
+                <span
+                  className="grid h-5 min-w-5 place-items-center rounded-full bg-surface px-1.5 text-xs font-bold text-muted tnum"
+                  role="img"
+                  aria-label={`${deals.length} ${deals.length === 1 ? "deal" : "deals"}`}
+                >
                   {deals.length}
                 </span>
                 <span className="ml-auto tnum text-xs font-semibold text-muted">

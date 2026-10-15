@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { deleteCompany, getCompany, listActivities, listContacts, listDeals } from "@/api/client";
+import { announceDealsChanged } from "@/data/dealsChanged";
 import { useDirectory } from "@/data/directoryContext";
 import { ownerById } from "@/data/lookups";
 import { isOpen } from "@/data/stages";
@@ -407,6 +408,7 @@ export function CompanyDetailPage() {
                       setCreatingDeal(false);
                       toast.success(`${dealRow.name} created.`);
                       deals.reload();
+                      announceDealsChanged();
                     }}
                   />
                 ) : null}
