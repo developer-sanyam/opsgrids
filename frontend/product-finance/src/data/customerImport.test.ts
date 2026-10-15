@@ -4,7 +4,7 @@
  * may be a name or a GST code and must agree with its GSTIN, an unregistered name already on file
  * is refused, and an export never writes a phone number in full.
  */
-import { checkImportEntity, makeLookup, RowProblem } from "@opsgrids/client";
+import { checkImportEntity, makeLookup, RowSkipped } from "@opsgrids/client";
 import type { LookupSet, ParsedRow } from "@opsgrids/client";
 import { describe, expect, it } from "vitest";
 
@@ -12,7 +12,10 @@ import type { CustomerSummary } from "@/api/types";
 
 import { customerImport } from "./customerImport";
 
-const NONE_ON_FILE: LookupSet = { "finance.customers.unregisteredNames": makeLookup([]) };
+const NONE_ON_FILE: LookupSet = {
+  "finance.customers.unregisteredNames": makeLookup([]),
+  "finance.customers.gstins": makeLookup([]),
+};
 const ctx = (lookups: LookupSet = NONE_ON_FILE) => ({ lookups, signal: new AbortController().signal });
 
 function row(values: Record<string, string | null>): ParsedRow {
@@ -56,11 +59,21 @@ describe("toPayload", () => {
     const lookups: LookupSet = {
       "finance.customers.unregisteredNames": makeLookup([{ label: "Ravi Kumar", value: "c-1" }]),
     };
-    expect(() => customerImport.toPayload(row({ name: "ravi kumar", gstin: null }), ctx(lookups))).toThrow(RowProblem);
-    // A GSTIN is a key of its own: the server answers a duplicate one with "already exists".
+    expect(() => customerImport.toPayload(row({ name: "ravi kumar", gstin: null }), ctx(lookups))).toThrow(RowSkipped);
+    // A GSTIN is a key of its own, checked against the GSTINs on file.
     expect(() =>
       customerImport.toPayload(row({ name: "Ravi Kumar", gstin: "27AAECO9012H1ZG" }), ctx(lookups)),
     ).not.toThrow();
+  });
+
+  it("skips a row whose GSTIN is already on file, in any capitals", () => {
+    const lookups: LookupSet = {
+      ...NONE_ON_FILE,
+      "finance.customers.gstins": makeLookup([{ label: "27AAECO9012H1ZG", value: "c-2" }]),
+    };
+    expect(() => customerImport.toPayload(row({ name: "Konkan", gstin: "27aaeco9012h1zg" }), ctx(lookups))).toThrow(
+      RowSkipped,
+    );
   });
 });
 

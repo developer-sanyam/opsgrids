@@ -3,7 +3,7 @@ import { useRef, useState } from "react";
 import { createCustomer, updateCustomer } from "@/api/client";
 import type { Customer, CustomerCreate, CustomerUpdate } from "@/api/types";
 import { GST_STATE_NAME, GST_STATE_OPTIONS, stateCodeForName } from "@/data/gstStates";
-import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
+import { ApiError, normalisePhone, problemMessage, useMutation } from "@opsgrids/client";
 import { FormDialog, InlineAlert, Select, Switch, TextField, useFormDirty } from "@/ui";
 
 const GSTIN_PATTERN = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
@@ -93,8 +93,9 @@ export function CustomerFormDialog({ customer, onClose, onSaved }: CustomerFormD
       return;
     }
     const trimmedPhone = phone.trim();
-    if (trimmedPhone !== "" && !/^\+?[0-9][0-9 ().-]{6,22}$/.test(trimmedPhone)) {
-      setPhoneError("Enter a 10-numeral mobile, or the number with its country code like +91 98765 43210.");
+    const phoneE164 = trimmedPhone === "" ? null : normalisePhone(trimmedPhone);
+    if (trimmedPhone !== "" && phoneE164 === null) {
+      setPhoneError("Enter a 10-digit mobile, or the number with its country code, like +91 98765 43210.");
       return;
     }
     if (deducts194q && tcsApplicable) {
@@ -113,7 +114,7 @@ export function CustomerFormDialog({ customer, onClose, onSaved }: CustomerFormD
       address_line1: addressLine1.trim(),
       address_line2: addressLine2.trim(),
       pincode: pincode.trim(),
-      ...(trimmedPhone !== "" ? { phone: trimmedPhone } : {}),
+      ...(phoneE164 !== null ? { phone: phoneE164 } : {}),
       is_tds_deductor: isTdsDeductor,
       deducts_tds_194q: deducts194q,
       tcs_applicable: tcsApplicable,
@@ -183,6 +184,7 @@ export function CustomerFormDialog({ customer, onClose, onSaved }: CustomerFormD
       <TextField
         label="Phone"
         type="tel"
+        inputMode="tel"
         value={phone}
         onChange={(e) => setPhone(e.target.value)}
         maxLength={24}

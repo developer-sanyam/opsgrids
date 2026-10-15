@@ -33,7 +33,9 @@ function numberFormat(places: number): Intl.NumberFormat {
 
 /** "₹12,34,567.00" — full precision with the Indian digit grouping and the currency sign. */
 export function formatMoney(minor: Minor, currency: string = CURRENCY): string {
-  return `${symbolFor(currency)}${formatAmount(minor, currency)}`;
+  // A true minus before the currency sign: "−₹0.48", never "₹-0.48".
+  const sign = minor < 0 ? "−" : "";
+  return `${sign}${symbolFor(currency)}${formatAmount(Math.abs(minor), currency)}`;
 }
 
 /** "12,34,567.00" — same, without the currency sign (for right-aligned columns with a header unit). */

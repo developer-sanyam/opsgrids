@@ -43,7 +43,9 @@ function telHref(value: string): string {
 /** A click-to-chat link: `https://wa.me/` takes the international number as digits only, no `+`.
  *  `null` for anything too short to be a full international number. */
 function whatsAppHref(value: string): string | null {
-  const digits = value.replace(/\D/g, "");
+  // wa.me needs the country code; a bare national number would open a chat with a stranger.
+  if (!/^\s*(\+|00)/.test(value)) return null;
+  const digits = value.replace(/\D/g, "").replace(/^00/, "");
   return digits.length >= 8 && digits.length <= 15 ? `https://wa.me/${digits}` : null;
 }
 
@@ -99,7 +101,7 @@ export function RevealableField({ kind, label, noun, masked, canReveal, field }:
               ref={linkRef}
               href={kind === "phone" ? telHref(field.value) : `mailto:${field.value}`}
               className={cn(
-                "inline-flex min-h-11 min-w-0 items-center break-words transition-colors hover:text-accent",
+                "inline-flex min-h-11 min-w-0 items-center break-words underline underline-offset-2 transition-colors hover:text-accent",
                 digits,
               )}
             >
@@ -122,7 +124,7 @@ export function RevealableField({ kind, label, noun, masked, canReveal, field }:
             target="_blank"
             rel="noopener noreferrer"
             aria-label={`WhatsApp ${formatPhone(field.value)} (opens in a new tab)`}
-            className="inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-tile px-2 text-sm font-semibold text-muted transition-colors hover:text-accent"
+            className="inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-tile px-2 text-sm font-semibold text-muted underline underline-offset-2 transition-colors hover:text-accent"
           >
             <MessageIcon className="size-4" aria-hidden="true" />
             WhatsApp
@@ -133,7 +135,7 @@ export function RevealableField({ kind, label, noun, masked, canReveal, field }:
             ref={buttonRef}
             size="sm"
             variant="ghost"
-            className="min-w-24"
+            className="relative hit-44 min-w-24"
             leadingIcon={<EyeIcon className="size-4" />}
             loading={field.pending}
             aria-label={`Reveal ${named.noun}`}

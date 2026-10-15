@@ -1145,16 +1145,19 @@ def to_supplier_print(
     registration: GstRegistration | None,
     profile: SupplierProfile | None,
     bank: BankDetailsOut | None,
+    *,
+    with_address: bool = True,
 ) -> SupplierPrintOut:
+    shown = registration if with_address else None
     return SupplierPrintOut(
         gstin=registration.gstin if registration else None,
         legal_name=(registration.legal_name or None) if registration else None,
         trade_name=(registration.trade_name or None) if registration else None,
         state_code=registration.state_code if registration else None,
-        address_line1=registration.address_line1 if registration else "",
-        address_line2=registration.address_line2 if registration else "",
-        city=registration.city if registration else "",
-        pincode=registration.pincode if registration else "",
+        address_line1=shown.address_line1 if shown else "",
+        address_line2=shown.address_line2 if shown else "",
+        city=shown.city if shown else "",
+        pincode=shown.pincode if shown else "",
         pan=profile.pan if profile else None,
         bank=bank,
     )

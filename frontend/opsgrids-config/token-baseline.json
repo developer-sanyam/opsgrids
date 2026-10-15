@@ -160,9 +160,6 @@
     "arbitrary": 1,
     "spacing": 9
   },
-  "product-crm/src/routes/LeadDetail.tsx": {
-    "spacing": 4
-  },
   "product-crm/src/routes/Leads.tsx": {
     "spacing": 1
   },
@@ -282,7 +279,7 @@
     "spacing": 1
   },
   "product-finance/src/routes/Settings.tsx": {
-    "spacing": 3
+    "spacing": 2
   },
   "product-finance/src/routes/Withholding.tsx": {
     "spacing": 6

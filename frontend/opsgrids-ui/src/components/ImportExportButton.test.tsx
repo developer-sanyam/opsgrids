@@ -15,6 +15,7 @@ import {
   MENU_STATE,
   PREVIEW_MISSING_COLUMNS,
   PREVIEW_WITH_ERRORS,
+  PREVIEW_WITH_EXISTING,
   PROGRESS_RUNNING,
   PROGRESS_WAITING,
   SUMMARY_CANCELLED,
@@ -577,6 +578,24 @@ describe("ImportExportButton: the preview", () => {
     expect(screen.getByText("No rows can be imported yet.")).toBeTruthy();
   });
 
+  it("tells a row that already exists from one that needs fixing", async () => {
+    await openWith({ state: stateFor({ phase: "preview", preview: PREVIEW_WITH_EXISTING }) });
+    expect(screen.getByText("Already exists")).toBeTruthy();
+    expect(screen.getByText("A company with that name is already on file.")).toBeTruthy();
+    expect(screen.getAllByText("Needs fixing")).toHaveLength(1);
+    expect(figure("Already exist")).toBe("1");
+  });
+
+  it("says nothing is new when every row already exists", async () => {
+    await openWith({
+      state: stateFor({
+        phase: "preview",
+        preview: { ...PREVIEW_WITH_EXISTING, total: 1, valid: 0, invalid: 0, rows: PREVIEW_WITH_EXISTING.rows.slice(1, 2) },
+      }),
+    });
+    expect(screen.getByText("Nothing new to import.")).toBeTruthy();
+  });
+
   it("says when the file holds only the sample rows", async () => {
     await openWith({
       state: stateFor({
@@ -756,7 +775,7 @@ describe("ImportExportButton: done", () => {
   it("counts created, skipped, failed and invalid, and lists every row that was not created", async () => {
     await openWith({ state: stateFor({ phase: "done", summary: SUMMARY_WITH_PROBLEMS }) });
     expect(
-      screen.getByText("3 rows were not imported. 4 companies were created."),
+      screen.getByText("3 rows failed; 2 rows already existed and were skipped. 4 companies were created."),
     ).toBeTruthy();
     for (const [label, value] of [
       ["Created", "4"],
@@ -767,7 +786,7 @@ describe("ImportExportButton: done", () => {
       expect(figure(label)).toBe(value);
     }
 
-    expect(screen.getByText("5 rows were not created. The result report lists every row.")).toBeTruthy();
+    expect(screen.getByText("5 rows were not created: 3 failed, 2 skipped as already existing. The result report lists every row.")).toBeTruthy();
     const table = screen.getByRole("table", { name: "Rows that were not created" });
     const rows = within(table).getAllByRole("row");
     expect(rows).toHaveLength(6);

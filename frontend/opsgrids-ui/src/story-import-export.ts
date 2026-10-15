@@ -117,6 +117,26 @@ export const PREVIEW_WITH_ERRORS: ImportExportPreview = {
   baseline: null,
 };
 
+/** One new row, one that is already on file (skipped, not wrong) and one that needs fixing. */
+export const PREVIEW_WITH_EXISTING: ImportExportPreview = {
+  ...PREVIEW_WITH_ERRORS,
+  total: 3,
+  valid: 1,
+  invalid: 1,
+  exists: 1,
+  sample: 0,
+  create: 1,
+  rows: [
+    previewRow(4, ["", "Freight", "Mumbai", "https://bluefin.example", "48"], { error: "Name is required." }),
+    {
+      ...previewRow(3, ["Acme Industries", "Manufacturing", "Pune", "https://acme.example", "240"]),
+      action: "exists",
+      note: "A company with that name is already on file.",
+    },
+    previewRow(2, ["Kaveri Agro", "Agriculture", "Mysuru", "", "31"]),
+  ],
+};
+
 /** The file has no Name column, so no row can be sent, whatever else is in it. */
 export const PREVIEW_MISSING_COLUMNS: ImportExportPreview = {
   fileName: "customer-list.xlsx",

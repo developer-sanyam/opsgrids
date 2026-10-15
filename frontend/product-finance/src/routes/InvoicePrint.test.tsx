@@ -15,7 +15,13 @@ vi.mock("@/api/client", async () => {
     getInvoice: async (id: string) => {
       const found = fixtures.INVOICES.find((i) => i.id === id);
       if (!found) throw new Error("not found");
-      return found;
+      // Issued with its supplier snapshot; one without prints no address, PAN or bank block.
+      if (registration.mode === "none") return found;
+      return {
+        ...found,
+        seller_legal_name: fixtures.GST_REGISTRATION.legal_name,
+        seller_address: "Plot 14, MIDC Bhosari\nPune 411026",
+      };
     },
     getCustomer: async (id: string) => {
       const found = customers.CUSTOMERS.find((c) => c.id === id);

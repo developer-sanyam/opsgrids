@@ -76,7 +76,7 @@ describe("an unassigned lead", () => {
     await openLead(UNASSIGNED);
     expect(screen.queryByText("Ready to convert.")).toBeNull();
     const convert = screen.getByRole("button", { name: "Convert" });
-    expect((convert as HTMLButtonElement).disabled).toBe(true);
+    expect(convert.getAttribute("aria-disabled")).toBe("true");
     expect(screen.getByText(/Assign an owner first/)).toBeTruthy();
   });
 
@@ -126,7 +126,7 @@ describe("a converted lead", () => {
     });
     expect(screen.getByRole("link", { name: "Open the company" }).getAttribute("href")).toBe("/companies/comp-9");
     expect(screen.getByRole("link", { name: "Open the deal" }).getAttribute("href")).toBe("/deals/deal-9");
-    expect(screen.getByRole("link", { name: "See the contact" }).getAttribute("href")).toBe("/companies/comp-9");
+    expect(screen.queryByRole("link", { name: "See the contact" })).toBeNull();
     expect(screen.queryByLabelText(/^owner/i)).toBeNull();
   });
 });

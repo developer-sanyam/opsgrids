@@ -176,6 +176,15 @@ export function summarySentence(summary: ImportExportSummary, meta: ImportExport
     const made = summary.created === 0 ? "Nothing was created." : `${createdPhrase(summary.created, meta)} before it stopped.`;
     return `${made} The remaining rows were not sent.`;
   }
+  if (notImported > 0 && summary.skipped > 0) {
+    // A row that already existed is not a failure: said apart, so the counts add up to the list.
+    const failed = notImported === 1 ? "1 row failed" : `${formatCount(notImported)} rows failed`;
+    const skipped =
+      summary.skipped === 1
+        ? "1 row already existed and was skipped"
+        : `${formatCount(summary.skipped)} rows already existed and were skipped`;
+    return `${failed}; ${skipped}. ${createdPhrase(summary.created, meta)}.`;
+  }
   if (notImported > 0) {
     const rows = notImported === 1 ? "1 row was" : `${formatCount(notImported)} rows were`;
     return `${rows} not imported. ${createdPhrase(summary.created, meta)}.`;

@@ -1,7 +1,7 @@
-import { useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 
 import type { SupplierField } from "@/api/types";
-import { Button, Card } from "@/ui";
+import { Card } from "@/ui";
 import { ShieldCheckIcon } from "@opsgrids/ui";
 
 import { SUPPLIER_FIELD_LABEL } from "./vocabulary";
@@ -13,7 +13,6 @@ import { SUPPLIER_FIELD_LABEL } from "./vocabulary";
  * form is not offered at all rather than producing a document that is missing them.
  */
 export function SupplierSetupPrompt({ missing, canConfigure }: { missing: readonly SupplierField[]; canConfigure: boolean }) {
-  const navigate = useNavigate();
   return (
     <Card className="flex flex-col items-start gap-4 p-6">
       <ShieldCheckIcon className="size-6 text-muted" />
@@ -30,7 +29,12 @@ export function SupplierSetupPrompt({ missing, canConfigure }: { missing: readon
         ))}
       </ul>
       {canConfigure ? (
-        <Button onClick={() => navigate("/settings")}>Open Finance settings</Button>
+        <Link
+          to="/settings"
+          className="relative hit-44 inline-flex items-center text-sm font-semibold text-accent underline underline-offset-2 transition-colors hover:text-accent-strong"
+        >
+          Open Finance settings
+        </Link>
       ) : (
         <p className="text-sm text-muted">Ask a finance administrator to fill these in under Settings.</p>
       )}

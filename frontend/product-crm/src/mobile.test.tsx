@@ -100,9 +100,9 @@ describe("LeadDetail: converting", () => {
     await screen.findByRole("heading", { name: "Meera Iyer" });
 
     const convert = screen.getByRole("button", { name: "Convert" });
-    expect(convert).toHaveProperty("disabled", true);
+    expect(convert.getAttribute("aria-disabled")).toBe("true");
     const reason = screen.getByText(/Qualify first/);
-    expect(convert.getAttribute("aria-describedby")).toBe(reason.id);
+    expect(convert.getAttribute("aria-describedby")).toBe(reason.parentElement?.id);
   });
 
   it("shows no reason once the lead is qualified and owned, and Convert is available", async () => {

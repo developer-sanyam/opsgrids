@@ -13,8 +13,8 @@ import { SupplierProfileFormDialog } from "@/forms/SupplierProfileFormDialog";
 /** One labelled fact on a settings card. */
 function Fact({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
   return (
-    <div className="flex flex-col gap-0.5">
-      <dt className="text-xs font-semibold uppercase tracking-wide text-faint">{label}</dt>
+    <div className="flex flex-col gap-1">
+      <dt className="text-caption font-semibold uppercase tracking-wide text-faint">{label}</dt>
       <dd className={mono ? "money break-all text-sm text-ink-soft" : "text-sm font-medium text-ink-soft"}>
         {value}
       </dd>
@@ -109,7 +109,7 @@ export function SettingsPage() {
             <Fact label="GSTIN" value={registration.gstin} mono />
             <Fact label="State" value={`${registration.state_code} — ${registration.state_name || gstStateName(registration.state_code)}`} />
             <Fact label="Legal name" value={registration.legal_name} />
-            <Fact label="Trade name" value={registration.trade_name || "—"} />
+            <Fact label="Trade name" value={registration.trade_name || "Not set"} />
             <div className="col-span-2">
               <Fact label="Registered address" value={data ? addressOf(data) || "Not set" : ""} />
             </div>
@@ -139,9 +139,9 @@ export function SettingsPage() {
             <Fact label="Account name" value={data.profile.bank.account_name || "Not set"} />
             <Fact label="Account number" value={data.profile.bank.account_number || "Not set"} mono />
             <Fact label="IFSC" value={data.profile.bank.ifsc || "Not set"} mono />
-            <Fact label="Bank" value={data.profile.bank.bank_name || "—"} />
-            <Fact label="Branch" value={data.profile.bank.branch || "—"} />
-            <Fact label="UPI ID" value={data.profile.bank.upi_id || "—"} />
+            <Fact label="Bank" value={data.profile.bank.bank_name || "Not set"} />
+            <Fact label="Branch" value={data.profile.bank.branch || "Not set"} />
+            <Fact label="UPI ID" value={data.profile.bank.upi_id || "Not set"} />
           </dl>
           <p className="text-xs text-muted">
             The account number is stored encrypted and shown masked here. It appears in full only on

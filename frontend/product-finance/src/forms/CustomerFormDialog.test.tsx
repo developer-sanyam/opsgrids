@@ -145,7 +145,7 @@ describe("CustomerFormDialog", () => {
     await waitFor(() => expect(createCustomerMock).toHaveBeenCalled());
     const [payload] = createCustomerMock.mock.calls[0] as [Record<string, unknown>];
     expect(payload).toMatchObject({
-      phone: "98765 43210",
+      phone: "+919876543210",
       address_line1: "12 FC Road",
       pincode: "411004",
       state_code: "27",
@@ -179,5 +179,15 @@ describe("CustomerFormDialog", () => {
 
     await waitFor(() => expect(createCustomerMock).toHaveBeenCalled());
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("Acme Pvt Ltd");
+  });
+
+  it("refuses a phone with no country code that is not an Indian mobile, beside the field", async () => {
+    const user = userEvent.setup();
+    render(<CustomerFormDialog customer={null} onClose={noop} onSaved={noop} />);
+    await user.type(screen.getByLabelText("Name"), "Acme");
+    await user.type(screen.getByLabelText(/^Phone/), "12345");
+    await user.click(screen.getByRole("button", { name: /create customer/i }));
+    expect(await screen.findByText("Enter a 10-digit mobile, or the number with its country code, like +91 98765 43210.")).toBeTruthy();
+    expect(screen.getByLabelText(/^Phone/).getAttribute("inputmode")).toBe("tel");
   });
 });

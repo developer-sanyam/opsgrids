@@ -17,6 +17,7 @@ import {
   PREVIEW_UPDATE_ROWS_WITHOUT_ID,
   PREVIEW_UPDATE_UNUSABLE_BASELINE,
   PREVIEW_WITH_ERRORS,
+  PREVIEW_WITH_EXISTING,
   PROGRESS_RUNNING,
   PROGRESS_UPDATING,
   PROGRESS_WAITING,
@@ -132,6 +133,11 @@ export const Reading: Story = { args: { state: stateFor({ phase: "reading" }) } 
 /** Rows to fix come first, each with its reason; sample rows are named and skipped; counts are words. */
 export const PreviewWithErrors: Story = {
   args: { state: stateFor({ phase: "preview", preview: PREVIEW_WITH_ERRORS }) },
+};
+
+/** A row already on file is "Already exists", apart from the one that needs fixing. */
+export const PreviewWithExistingRows: Story = {
+  args: { state: stateFor({ phase: "preview", preview: PREVIEW_WITH_EXISTING }) },
 };
 
 /** A required column is missing: the reason is at the top and the import cannot start. */

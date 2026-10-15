@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import { INVOICES } from "@/api/fixtures";
 
+const override = vi.hoisted(() => ({ roundOff: 0 }));
+
 vi.mock("@/api/client", async (importOriginal) => {
   const original = await importOriginal<typeof import("@/api/client")>();
   const fixtures = await import("@/api/fixtures");
@@ -12,7 +14,7 @@ vi.mock("@/api/client", async (importOriginal) => {
     getInvoice: async (id: string) => {
       const found = fixtures.INVOICES.find((i) => i.id === id);
       if (!found) throw new Error("not found");
-      return found;
+      return { ...found, round_off_minor: override.roundOff };
     },
     listFilings: async () => [],
   };
@@ -44,5 +46,21 @@ describe("InvoiceDetailPage line items", () => {
     );
     expect(labels).toEqual(["Qty", "Unit price", "Amount"]);
     expect(firstRow.querySelector("td.stack-title")?.textContent).toBe(sample.lines[0]?.description);
+  });
+
+  it("shows the round-off between the tax and the total, with a true minus", async () => {
+    override.roundOff = -48;
+    const sample = INVOICES.find((i) => i.document_type === "invoice" && i.lines.length > 0);
+    if (!sample) throw new Error("fixture invoice missing");
+    render(
+      <MemoryRouter initialEntries={[`/invoices/${sample.id}`]}>
+        <Routes>
+          <Route path="/invoices/:id" element={<InvoiceDetailPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText("Round-off")).toBeTruthy();
+    expect(screen.getByText("−₹0.48")).toBeTruthy();
+    override.roundOff = 0;
   });
 });

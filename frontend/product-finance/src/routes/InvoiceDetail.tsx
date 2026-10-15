@@ -231,6 +231,9 @@ function InvoiceBody({ invoice, onReload }: { invoice: Invoice; onReload: () => 
         <div className="ml-auto flex w-full max-w-xs flex-col gap-2.5">
           <TotalRow label="Subtotal" value={`${sign(invoice.subtotal_minor)}₹${formatAmount(Math.abs(invoice.subtotal_minor))}`} tone="muted" />
           <TotalRow label={`Tax (GST ${invoice.tax_rate_pct}%)`} value={`${sign(invoice.tax_minor)}₹${formatAmount(Math.abs(invoice.tax_minor))}`} tone="muted" />
+          {(invoice.round_off_minor ?? 0) !== 0 ? (
+            <TotalRow label="Round-off" value={formatMoney(invoice.round_off_minor ?? 0)} tone="muted" />
+          ) : null}
           <div className="border-t border-line pt-2.5">
             <TotalRow label="Total" value={`${sign(invoice.total_minor)}₹${formatAmount(Math.abs(invoice.total_minor))}`} strong />
           </div>

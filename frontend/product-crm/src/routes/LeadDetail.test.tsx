@@ -10,6 +10,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { Toaster } from "@opsgrids/ui";
 import { clearRevealedValues, setAccessToken, setUnauthorizedHandler } from "@opsgrids/client";
 
 import { LeadDetailPage } from "@/routes/LeadDetail";
@@ -157,6 +158,25 @@ describe("converting a lead", () => {
     expect(gateway.calls.find((c) => c.key === CONVERT)?.body).toBeUndefined();
   });
 
+  it("says the contact was made too, when the conversion made one", async () => {
+    routes[CONVERT] = () =>
+      json({ lead_id: "lead-1", company_id: "c", contact_id: "ct", deal_id: "d" });
+    routes["GET /api/v1/leads/lead-1"] = () => json(QUALIFIED);
+    gateway = stubGateway(routes);
+    renderScreen(
+      <Toaster>
+        <LeadDetailPage />
+      </Toaster>,
+      { at: "/leads/lead-1", path: "/leads/:id", grants: GRANTS },
+    );
+    await screen.findByRole("heading", { name: "Meera Iyer" });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Convert" }));
+    const dialog = await screen.findByRole("dialog", { name: /convert this lead/i });
+    await user.click(within(dialog).getByRole("button", { name: "Convert" }));
+    expect(await screen.findByText("Lead converted — a company, contact and deal now exist for it.")).toBeTruthy();
+  });
+
   it("refuses a value that is not money, in words, and sends nothing", async () => {
     const user = await openLead(QUALIFIED);
     await user.click(screen.getByRole("button", { name: "Convert" }));
@@ -185,5 +205,36 @@ describe("converting a lead", () => {
     });
     await screen.findByRole("heading", { name: "Meera Iyer" });
     expect(screen.queryByRole("button", { name: "Convert" })).toBeNull();
+  });
+});
+
+describe("Convert when it is not available yet", () => {
+  it("stays focusable, says every reason, and does not open the dialog", async () => {
+    const user = await openLead({ ...LEAD, status: "working", owner_id: null });
+    const convert = screen.getByRole("button", { name: "Convert" });
+    expect(convert.getAttribute("aria-disabled")).toBe("true");
+    expect((convert as HTMLButtonElement).disabled).toBe(false);
+    const reasons = document.getElementById(convert.getAttribute("aria-describedby") ?? "") as HTMLElement;
+    expect(reasons.textContent).toMatch(/Qualify first/);
+    expect(reasons.textContent).toMatch(/Assign an owner first/);
+    await user.click(convert);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+});
+
+describe("a converted lead", () => {
+  it("links the company and the deal once each, underlined, with matching verbs", async () => {
+    await openLead({
+      ...LEAD,
+      status: "converted",
+      next_statuses: [],
+      converted_at: "2026-09-01T00:00:00Z",
+      converted_company_id: "co-1",
+      converted_contact_id: "ct-1",
+      converted_deal_id: "d-1",
+    });
+    const links = screen.getAllByRole("link").filter((a) => /\/(companies|deals)\//.test(a.getAttribute("href") ?? ""));
+    expect(links.map((a) => a.textContent)).toEqual(["Open the company", "Open the deal"]);
+    for (const a of links) expect(a.className).toContain("underline");
   });
 });

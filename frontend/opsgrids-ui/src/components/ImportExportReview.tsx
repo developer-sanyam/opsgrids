@@ -48,6 +48,13 @@ function RowAction({ row }: { row: ImportExportPreviewRow }) {
           <span className="text-ink-soft">{row.note}</span>
         </div>
       );
+    case "exists":
+      return (
+        <div className="flex min-w-48 flex-col items-start gap-1">
+          <StatusBadge tone="neutral" label="Already exists" />
+          <span className="text-ink-soft">{row.note ?? "It is skipped, not overwritten."}</span>
+        </div>
+      );
     case "create":
       return <StatusBadge tone="success" label="New" />;
   }
@@ -78,12 +85,14 @@ function columnsFor(preview: ImportExportPreview): ImportExportTableColumn<Impor
 
 /** The counts the preview leads with: what will be sent, and in update mode, of what kind. */
 function statsFor(preview: ImportExportPreview): { stats: ImportExportStat[]; columns: string } {
+  const exists = preview.exists ?? 0;
   if (preview.mode === "add") {
     return {
-      columns: "grid-cols-2 sm:grid-cols-4",
+      columns: exists > 0 ? "grid-cols-2 sm:grid-cols-5" : "grid-cols-2 sm:grid-cols-4",
       stats: [
         { label: "Rows in file", value: preview.total },
         { label: "Ready to import", value: preview.valid },
+        ...(exists > 0 ? [{ label: "Already exist", value: exists }] : []),
         { label: "Need fixing", value: preview.invalid },
         { label: "Sample rows skipped", value: preview.sample },
       ],
@@ -110,6 +119,13 @@ function Blocker({ preview }: { preview: ImportExportPreview }) {
       <InlineAlert tone="info" live="off" title="Nothing to change.">
         Every row already matches its record, so there is nothing to send. Change a cell, save the file, then choose it
         again.
+      </InlineAlert>
+    );
+  }
+  if (preview.invalid === 0 && (preview.exists ?? 0) > 0) {
+    return (
+      <InlineAlert tone="info" live="off" title="Nothing new to import.">
+        Every row already exists, so nothing would be added. Add new rows, save the file, then choose it again.
       </InlineAlert>
     );
   }

@@ -121,10 +121,19 @@ describe("summarySentence", () => {
 
   it("does not say everything imported when something was not", () => {
     expect(summarySentence(SUMMARY_WITH_PROBLEMS, META)).toBe(
-      "3 rows were not imported. 4 companies were created.",
+      "3 rows failed; 2 rows already existed and were skipped. 4 companies were created.",
     );
     expect(summarySentence(summary({ failed: 1 }), META)).toBe(
       "1 row was not imported. No companies were created.",
+    );
+  });
+
+  it("counts a skipped row apart from a failed one, so the sentence and the list agree", () => {
+    expect(summarySentence(summary({ failed: 1, skipped: 1 }), META)).toBe(
+      "1 row failed; 1 row already existed and was skipped. No companies were created.",
+    );
+    expect(summarySentence(summary({ created: 2, invalid: 1, failed: 1, skipped: 2 }), META)).toBe(
+      "2 rows failed; 2 rows already existed and were skipped. 2 companies were created.",
     );
   });
 
@@ -314,7 +323,7 @@ describe("summarySentence for a run that updated records", () => {
 
   it("leaves an add-only run's sentences as they were", () => {
     expect(summarySentence(SUMMARY_CLEAN, META)).toBe("Everything imported. 6 companies were created.");
-    expect(summarySentence(SUMMARY_WITH_PROBLEMS, META)).toBe("3 rows were not imported. 4 companies were created.");
+    expect(summarySentence(SUMMARY_WITH_PROBLEMS, META)).toBe("3 rows failed; 2 rows already existed and were skipped. 4 companies were created.");
   });
 });
 

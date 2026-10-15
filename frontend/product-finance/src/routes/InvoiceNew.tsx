@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { getInvoice, getSupplierSettings, issueInvoice, listCustomers, MAX_PAGE_SIZE } from "@/api/client";
@@ -8,7 +8,7 @@ import { isIntraState, previewInvoice } from "@/invoice/gstMath";
 import type { PreviewLine } from "@/invoice/gstMath";
 import { InvoiceTotals } from "@/invoice/InvoiceTotals";
 import { LineEditor } from "@/invoice/LineEditor";
-import { blankLine } from "@/invoice/lineDraft";
+import { blankLine, newLineId } from "@/invoice/lineDraft";
 import type { LineDraft } from "@/invoice/lineDraft";
 import { SupplierSetupPrompt } from "@/invoice/SupplierSetupPrompt";
 import { FORTY_PERCENT_FROM } from "@/invoice/vocabulary";
@@ -142,9 +142,18 @@ export function InvoiceNewPage() {
   );
 }
 
+/** The server's field name for each draft key, so an edit clears the error shown on that field. */
+const LINE_ERROR_FIELD: Record<string, string> = {
+  hsnSac: "hsn_sac",
+  unitPrice: "unit_price_minor",
+  discount: "discount_minor",
+  ratePct: "tax_rate_pct",
+};
+
 function linesFrom(correcting: Invoice | null): LineDraft[] {
   if (!correcting) return [blankLine()];
   return correcting.lines.map((l) => ({
+    id: newLineId(),
     description: `Return — ${l.description}`,
     hsnSac: l.hsn_sac ?? "",
     quantity: String(-Math.abs(l.quantity)),
@@ -198,6 +207,14 @@ function IssueForm({
   const [customerError, setCustomerError] = useState<string | undefined>(undefined);
   const [dateError, setDateError] = useState<string | undefined>(undefined);
   const [linesError, setLinesError] = useState<string | undefined>(undefined);
+  // Per-line, per-field problems from the last review, keyed `${line.id}.${field}`.
+  const [lineErrors, setLineErrors] = useState<Record<string, string>>({});
+  // Bumped when a review fails, so focus moves once the errors are on the page.
+  const [focusTick, setFocusTick] = useState(0);
+  const formRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (focusTick > 0) formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
+  }, [focusTick]);
   const [confirming, setConfirming] = useState(false);
   // Set on a successful issue, then handed to `onIssued` from an effect — never from the same
   // handler as the save — so `UnsavedChangesGuard`'s blocker has already dropped before the
@@ -234,6 +251,14 @@ function IssueForm({
   }, [issued, onIssued]);
 
   function updateLine(index: number, patch: Partial<LineDraft>) {
+    const id = lines[index]?.id;
+    if (id) {
+      setLineErrors((current) => {
+        const next = { ...current };
+        for (const key of Object.keys(patch)) delete next[`${id}.${LINE_ERROR_FIELD[key] ?? key}`];
+        return next;
+      });
+    }
     setLines((current) => current.map((l, i) => (i === index ? { ...l, ...patch } : l)));
   }
 
@@ -256,61 +281,43 @@ function IssueForm({
     }
 
     const parsedLines: InvoiceLineCreate[] = [];
+    const problems: Record<string, string> = {};
     for (const [i, line] of lines.entries()) {
-      const n = i + 1;
-      if (line.description.trim() === "") {
-        setLinesError(`Line ${n} needs a description.`);
-        return null;
-      }
-      if (line.hsnSac !== "" && !HSN_PATTERN.test(line.hsnSac)) {
-        setLinesError(`Line ${n}: an HSN or SAC code is 4, 6 or 8 numerals.`);
-        return null;
-      }
+      const at = (field: string, message: string) => {
+        problems[`${line.id}.${field}`] ??= message;
+      };
+      if (line.description.trim() === "") at("description", "Enter a description for this line.");
+      if (line.hsnSac !== "" && !HSN_PATTERN.test(line.hsnSac)) at("hsn_sac", "An HSN or SAC code is 4, 6 or 8 numerals.");
       const qty = parseQuantity(line.quantity);
-      if (!qty.ok) {
-        setLinesError(`Line ${n}: ${qty.message}`);
-        return null;
-      }
-      if (isCreditNote && qty.value > 0) {
-        setLinesError("A credit note's line quantities must be negative — it reduces what was billed.");
-        return null;
-      }
-      if (!isCreditNote && qty.value < 0) {
-        setLinesError("A quantity can't be negative on a tax invoice.");
-        return null;
-      }
+      if (!qty.ok) at("quantity", qty.message);
+      else if (isCreditNote && qty.value > 0) at("quantity", "Enter a negative quantity: a credit note reduces what was billed.");
+      else if (!isCreditNote && qty.value < 0) at("quantity", "A quantity can't be negative on a tax invoice.");
       const unit = parseMinor(line.unitPrice);
-      if (!unit.ok) {
-        setLinesError(`Line ${n}: ${unit.message}`);
-        return null;
-      }
+      if (!unit.ok) at("unit_price_minor", unit.message);
       const discount = line.discount.trim() === "" ? { ok: true as const, minor: 0 } : parseMinor(line.discount);
-      if (!discount.ok || discount.minor < 0) {
-        setLinesError(`Line ${n}: enter the discount as a positive amount, or leave it blank.`);
-        return null;
-      }
-      const figures = lineFigures[i];
-      const gross = Math.abs(preview.lines[i]?.gross ?? 0);
-      if (figures && discount.minor > gross) {
-        setLinesError(`Line ${n}: the discount is more than the line's value.`);
-        return null;
+      if (!discount.ok || discount.minor < 0) at("discount_minor", "Enter the discount as a positive amount, or leave it blank.");
+      else if (lineFigures[i] && discount.minor > Math.abs(preview.lines[i]?.gross ?? 0)) {
+        at("discount_minor", "The discount is more than the line's value.");
       }
       if (line.ratePct === "40" && issuedDate < FORTY_PERCENT_FROM) {
-        setLinesError(`Line ${n}: the 40% rate applies only to invoices dated from 22 September 2025.`);
-        return null;
+        at("tax_rate_pct", "The 40% rate applies only to invoices dated from 22 September 2025.");
       }
-      parsedLines.push({
-        description: line.description.trim(),
-        quantity: qty.value,
-        unit_price_minor: unit.minor,
-        discount_minor: discount.minor,
-        unit: line.unit === "" ? null : line.unit,
-        hsn_sac: line.hsnSac === "" ? null : line.hsnSac,
-        tax_rate_pct: Number(line.ratePct),
-        item_id: line.itemId,
-        item_sku: line.itemSku,
-      });
+      if (qty.ok && unit.ok && discount.ok) {
+        parsedLines.push({
+          description: line.description.trim(),
+          quantity: qty.value,
+          unit_price_minor: unit.minor,
+          discount_minor: discount.minor,
+          unit: line.unit === "" ? null : line.unit,
+          hsn_sac: line.hsnSac === "" ? null : line.hsnSac,
+          tax_rate_pct: Number(line.ratePct),
+          item_id: line.itemId,
+          item_sku: line.itemSku,
+        });
+      }
     }
+    setLineErrors(problems);
+    if (Object.keys(problems).length > 0) return null;
 
     if (isCreditNote && preview.total >= 0) {
       setLinesError("A credit note's total must be negative.");
@@ -339,7 +346,10 @@ function IssueForm({
   }
 
   function submit() {
-    if (validate() === null) return;
+    if (validate() === null) {
+      setFocusTick((t) => t + 1);
+      return;
+    }
     setConfirming(true);
   }
 
@@ -354,7 +364,7 @@ function IssueForm({
   return (
     <>
       <UnsavedChangesGuard when={dirty} subject={isCreditNote ? "this credit note" : "this invoice"} />
-      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-3">
+      <div ref={formRef} className="grid grid-cols-1 items-start gap-6 lg:grid-cols-3">
         <Card className="flex flex-col gap-5 p-6 lg:col-span-2 lg:p-8">
           {correcting ? (
             <InlineAlert tone="info" title={`Correcting ${correcting.number}`}>
@@ -408,15 +418,19 @@ function IssueForm({
             {linesError ? <InlineAlert tone="danger" title={linesError} /> : null}
             {lines.map((line, i) => (
               <LineEditor
-                key={i}
+                key={line.id}
                 index={i}
                 line={line}
                 figures={lineFigures[i] ?? null}
                 canPickItems={canPickItems}
                 canRemove={lines.length > 1}
+                negativeQuantity={isCreditNote}
                 onChange={(patch) => updateLine(i, patch)}
-                onRemove={() => setLines((current) => (current.length > 1 ? current.filter((_, j) => j !== i) : current))}
-                errorFor={(field) => fieldError(issueProblem, field)}
+                onRemove={() => {
+                  setLines((current) => (current.length > 1 ? current.filter((_, j) => j !== i) : current));
+                  setLineErrors({});
+                }}
+                errorFor={(field) => lineErrors[`${line.id}.${field}`] ?? fieldError(issueProblem, `lines.${i}.${field}`)}
               />
             ))}
             <Button
@@ -425,7 +439,7 @@ function IssueForm({
               size="sm"
               leadingIcon={<PlusIcon className="size-4" />}
               onClick={() => setLines((current) => [...current, blankLine(current.at(-1)?.ratePct ?? "18")])}
-              className="self-start"
+              className="relative hit-44 self-start"
             >
               Add line
             </Button>
@@ -505,8 +519,8 @@ function IssueForm({
       <StickyActionBar
         summary={
           <div className="flex min-w-0 flex-col leading-tight">
-            <span className="text-xs text-muted">Total</span>
-            <span className="money text-base font-extrabold text-ink">{formatMoney(preview.total)}</span>
+            <span className="text-caption text-muted">Total</span>
+            <span className="money text-card-title font-bold text-ink">{formatMoney(preview.total)}</span>
           </div>
         }
       >
