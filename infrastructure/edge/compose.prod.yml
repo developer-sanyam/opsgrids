@@ -272,6 +272,15 @@ services:
         '-c', 'max_parallel_workers_per_gather=0',
         '-c', 'max_parallel_workers=2',
         '-c', 'autovacuum_max_workers=2',
+        # Safety net, not the fix. A session that sits `idle in transaction` for 5 minutes is
+        # terminated, so a future leak of the kind found on 2026-10-15 (the pool's `reset`
+        # hook left one transaction open per service, forever, pinning a snapshot and holding
+        # back vacuum) costs one connection for 5 minutes instead of for the life of the
+        # process. The root fix is in platform-core `db.py`. Only *idle* time counts: a
+        # migration, backup or bulk statement that is actively running is unaffected, and
+        # request code follows docs/io-outside-transactions.md (no waits inside a transaction).
+        # Side effect: an operator's interactive `BEGIN` left open at a psql prompt is killed.
+        '-c', 'idle_in_transaction_session_timeout=300000',
       ]
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U opsgrids -d opsgrids']
