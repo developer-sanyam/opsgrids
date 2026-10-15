@@ -576,7 +576,7 @@ async def ensure_customer_for_crm_contact(
             created_by=str(ctx.principal.sub),
             name=summary.company_name or summary.full_name,
             contact_name=summary.full_name,
-            email=summary.email,
+            email=summary.email or "",
             crm_contact_id=crm_contact_id,
         )
         try:

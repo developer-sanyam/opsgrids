@@ -648,7 +648,7 @@ async def create_contact(
     ctx: ScopeContext,
     *,
     full_name: str,
-    email: str,
+    email: str | None,
     company_id: uuid.UUID,
     owner_id: uuid.UUID,
     title: str = "",
@@ -672,7 +672,11 @@ async def create_contact(
     neither get the previous behaviour exactly, which is why no existing caller changes.
     """
     await _assert_owner_assignable(session, ctx, owner_id)
-    if await selectors.get_contact_by_email(session, ctx.organization_id, email):
+    # A phone-only contact (ADR-0038 D-14) has no email: nothing to collide on, and any number of
+    # them coexist (a unique index treats NULLs as distinct).
+    if email is not None and await selectors.get_contact_by_email(
+        session, ctx.organization_id, email
+    ):
         raise ConflictProblem("A contact with that email already exists")
     company = await selectors.get_company(session, ctx.organization_id, company_id)
     if company is None:
@@ -1244,9 +1248,11 @@ async def ensure_company_and_contact_for_lead(
     check runs before `contact_email` is even looked at, so it applies the same way whether or
     not the lead carried an email. Absent a live row at that id, falls to the natural key (a
     lead converting into a company or person this book already has, under a *different* id —
-    reused rather than duplicated), then a fresh insert. `contact_email` absent skips the
-    contact entirely: `Contact.email` is not nullable, so a lead with no email becomes a
-    company with no contact yet, not a contact with a placeholder address.
+    reused rather than duplicated), then a fresh insert. A lead with an email, a phone or both
+    becomes a contact (ADR-0038 D-14: `Contact.email` is nullable, so a phone-only lead is a
+    phone-only contact -- matched by the number's blind index when there is no email to match
+    on); a lead with neither becomes a company with no contact yet, never a contact with a
+    placeholder address.
 
     A reuse by name or email leaves exactly one audit row on the reused record (the
     `*.reused_for_lead` marker, or the phone row `_reconcile_reused_contact_phone` wrote), and
@@ -1280,7 +1286,9 @@ async def ensure_company_and_contact_for_lead(
         )
 
     contact: Contact | None = None
-    if contact_email:
+    # The person is created when the lead carried *any* way to reach them: an email, a phone, or
+    # both. A phone-only lead used to convert into a company with no contact at all.
+    if contact_email or contact_raw_phone:
         contact = await selectors.get_contact_by_id_any_state(
             session, ctx.organization_id, contact_id
         )
@@ -1288,7 +1296,7 @@ async def ensure_company_and_contact_for_lead(
             raise ContactDeletedProblem(
                 "The contact this lead would convert into has been deleted from the CRM book"
             )
-        if contact is None:
+        if contact is None and contact_email:
             contact = await selectors.get_contact_by_email_for_update(
                 session, ctx.organization_id, contact_email
             )
@@ -1296,12 +1304,25 @@ async def ensure_company_and_contact_for_lead(
                 session, ctx, contact, raw_phone=contact_raw_phone
             ):
                 _record_reuse(session, ctx, "contact", contact.id, "email")
+        elif contact is None and contact_raw_phone:
+            # No email to match on: the number itself is the natural key, found through the keyed
+            # blind index so nothing is decrypted. The same person is the same person whichever
+            # lead brought them up.
+            contact = await selectors.get_contact_by_phone_index_for_update(
+                session,
+                ctx.organization_id,
+                blind_index(
+                    _canonical_e164(contact_raw_phone), kind="phone", settings=settings()
+                ),
+            )
+            if contact is not None:
+                _record_reuse(session, ctx, "contact", contact.id, "phone")
         if contact is None:
             contact = await create_contact(
                 session,
                 ctx,
                 full_name=contact_full_name,
-                email=contact_email,
+                email=contact_email or None,
                 company_id=company.id,
                 owner_id=owner_id,
                 raw_phone=contact_raw_phone,

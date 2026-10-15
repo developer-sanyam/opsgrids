@@ -48,7 +48,9 @@ class CrmContactSummary:
 
     contact_id: uuid.UUID
     full_name: str
-    email: str
+    #: None for a phone-only CRM contact (ADR-0038 D-14); the bridge stores "" -- finance's own
+    #: column default for "no address on file".
+    email: str | None
     company_id: uuid.UUID
     company_name: str
 
@@ -100,7 +102,7 @@ async def fetch_crm_contact(
         return CrmContactSummary(
             contact_id=uuid.UUID(data["contact_id"]),
             full_name=data["full_name"],
-            email=data["email"],
+            email=data.get("email"),
             company_id=uuid.UUID(data["company_id"]),
             company_name=data["company_name"],
         )

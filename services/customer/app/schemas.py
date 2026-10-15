@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from platform_core.validation import reject_explicit_null
 
@@ -164,13 +164,19 @@ class ContactIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     full_name: str = Field(min_length=1, max_length=160)
-    email: EmailStr = Field(max_length=254)
+    #: Optional (ADR-0038 D-14): a phone-only contact is a person. A blank string is `None`.
+    email: EmailStr | None = Field(default=None, max_length=254)
     company_id: uuid.UUID
     owner_id: uuid.UUID
     title: str = Field(default="", max_length=160)
     status: ContactStatus = "lead"
     #: E.164, with the country code. Optional — many contacts are added with no number yet.
     raw_phone: str | None = Field(default=None, min_length=4, max_length=40)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def _blank_email_is_none(cls, value: object) -> object:
+        return None if isinstance(value, str) and value.strip() == "" else value
 
 
 class ContactPatch(BaseModel):
@@ -203,7 +209,8 @@ class ContactOut(BaseModel):
     id: str
     full_name: str
     title: str
-    email: str
+    #: None for a phone-only contact (ADR-0038 D-14).
+    email: str | None
     phone: str
     company_id: str
     status: ContactStatus
@@ -255,7 +262,8 @@ class ContactSummaryOut(BaseModel):
 
     contact_id: str
     full_name: str
-    email: str
+    #: None for a phone-only contact (ADR-0038 D-14); the caller decides whether it can bill them.
+    email: str | None
     #: `Contact.company_id` is NOT NULL (a real in-schema FK), so a live contact always names a
     #: live company — `delete_company` refuses while it still has contacts — and both fields
     #: below are always present, never optional.

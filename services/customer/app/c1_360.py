@@ -317,7 +317,9 @@ async def assemble(
             tags=[],
             owner=OwnerRef(id=str(owner.id), name=owner.full_name) if owner else None,
             phone=contact.phone,
-            email=mask(contact.email, kind="email"),
+            # A phone-only contact (ADR-0038 D-14) has no address to mask; the 360 contract keeps a
+            # plain string, so "" reads as "none on file".
+            email=mask(contact.email, kind="email") if contact.email else "",
             city=(company.city or None) if company else None,
         ),
         crm=crm,

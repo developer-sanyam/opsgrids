@@ -168,7 +168,9 @@ class Contact(Base, TenantBase):
 
     full_name: Mapped[str] = mapped_column(String(160), nullable=False)
     title: Mapped[str] = mapped_column(String(160), nullable=False, default="")
-    email: Mapped[str] = mapped_column(String(254), nullable=False)
+    #: NULL for a phone-only contact (ADR-0038 D-14): company is the party, the contact is the
+    #: person, and a person is reachable by phone alone.
+    email: Mapped[str | None] = mapped_column(String(254), nullable=True)
     #: The masked display form — never a raw number. This column plays the `<field>_masked`
     #: role of the platform's sealed-envelope pattern; it keeps the name `phone` rather than
     #: becoming `phone_masked` because it is already the contract the CRM's read surface and
