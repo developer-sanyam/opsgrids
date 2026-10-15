@@ -29,13 +29,14 @@ def _payload(**overrides: object) -> dict[str, object]:
 
 
 class TestReadingWithNoTheme:
-    async def test_get_with_no_theme_is_a_clear_404(
+    async def test_get_with_no_theme_is_200_null(
         self, client, as_principal, org_id: uuid.UUID
     ) -> None:
+        # "No theme yet" is a state, not an error: a 404 logged on every load of the console.
         with as_principal(all_perms(org_id)):
             response = await client.get(THEME)
-        assert response.status_code == 404
-        assert "theme" in response.json()["detail"].lower()
+        assert response.status_code == 200
+        assert response.json() is None
 
 
 class TestAdoptAndSave:
@@ -94,7 +95,7 @@ class TestAdoptAndSave:
             readopted = await client.put(THEME, json=_payload())
 
         assert removed.status_code == 204
-        assert missing.status_code == 404
+        assert missing.status_code == 200 and missing.json() is None
         assert readopted.json()["version"] == 1
 
 
@@ -107,4 +108,4 @@ class TestCrossTenantIsolation:
         with as_principal(all_perms(org_id)):
             response = await client.get(THEME)
 
-        assert response.status_code == 404
+        assert response.status_code == 200 and response.json() is None

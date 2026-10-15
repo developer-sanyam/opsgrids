@@ -16,8 +16,8 @@
  * one-line change here, not a hunt through every screen.
  */
 
-import { apiRequest, buildQuery, settle } from "@opsgrids/client";
-import { isoOf, mondayOf, weekFrom } from "./dates";
+import { apiRequest, buildQuery, dateInZone, settle } from "@opsgrids/client";
+import { mondayOf, weekFrom } from "./dates";
 import {
   PROJECTS,
   STANDUPS,
@@ -59,7 +59,7 @@ export const USE_FIXTURES = import.meta.env.DEV && import.meta.env.VITE_USE_FIXT
 /** The fixture rows in `fixtures.ts` are generated from a pinned date, so the date itself is
  *  pinned too — move it and the standups, the timesheet week and the "due this week" rollups all
  *  drift out of sync with the rows built around it. Live traffic gets the real clock. */
-const LIVE_TODAY = isoOf(new Date());
+const LIVE_TODAY = dateInZone(new Date()); // browser-local, not UTC; module load is before sign-in
 
 /** The current week's Monday and its seven ISO dates — shared by the Overview and Timesheets. */
 export const TODAY = USE_FIXTURES ? FIXTURE_TODAY : LIVE_TODAY;

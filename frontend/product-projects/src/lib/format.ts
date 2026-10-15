@@ -3,12 +3,14 @@
  * regardless of the viewer's zone; money is handled as integer minor units and never as a float.
  */
 
+import { orgToday } from "@opsgrids/client";
+
 import { currencyDecimals } from "./money";
 
 /** The real "today", as an ISO calendar date. One `now()` for the whole app — injectable with a
  *  fixed `Date` in a test, and never the frozen fixture constant in live mode. */
 export function today(date: Date = new Date()): string {
-  return date.toISOString().slice(0, 10);
+  return orgToday(date);
 }
 
 /** "2026-03-15" -> "15 Mar 2026". `null` (an undated milestone, a task with no due date) reads

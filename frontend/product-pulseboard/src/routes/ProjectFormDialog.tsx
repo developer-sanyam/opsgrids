@@ -1,10 +1,10 @@
 import { useRef, useState } from "react";
 
-import { createProject, updateProject } from "@/api/client";
+import { createPerson, createProject, updateProject } from "@/api/client";
 import type { Person, Project, ProjectStatus } from "@/api/types";
 import { minorToInput, parseMinor } from "@/lib/money";
 import { withOptional } from "@/lib/optional";
-import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
+import { ApiError, problemMessage, resolveRosterRef, useMutation, useOrgMembers, useOrgProfile, withOrgMembers } from "@opsgrids/client";
 import { FormDialog, Select, Switch, TextField, useFormDirty } from "@opsgrids/ui";
 import type { SelectOption } from "@opsgrids/ui";
 
@@ -47,7 +47,7 @@ export function ProjectFormDialog({
   const [progress, setProgress] = useState(String(project?.progress_pct ?? 0));
   const [budget, setBudget] = useState(minorToInput(project?.budget_minor ?? 0));
   const [spent, setSpent] = useState(minorToInput(project?.spent_minor ?? 0));
-  const [currency, setCurrency] = useState(project?.currency ?? "USD");
+  const [currency, setCurrency] = useState(project?.currency ?? "");
   const [ownerRef, setOwnerRef] = useState(project?.owner_id ?? "");
   const [startDate, setStartDate] = useState(project?.start_date ?? "");
   const [dueDate, setDueDate] = useState(project?.due_date ?? "");
@@ -72,12 +72,16 @@ export function ProjectFormDialog({
   const [initial] = useState(fields);
   const dirty = useFormDirty(initial, fields);
 
+  const org = useOrgProfile();
+  const members = useOrgMembers();
+  const cur = (currency || org.currency).trim().toUpperCase();
+
   const [errors, setErrors] = useState<FormErrors>({});
   const codeRef = useRef<HTMLInputElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
 
   const save = useMutation(
-    () => {
+    async () => {
       const budgetParsed = parseMinor(budget);
       const spentParsed = parseMinor(spent);
       const budget_minor = budgetParsed.ok ? budgetParsed.minor : 0;
@@ -89,8 +93,13 @@ export function ProjectFormDialog({
         progress_pct: Number(progress),
         budget_minor,
         spent_minor,
-        currency: currency.trim().toUpperCase(),
-        owner_ref: ownerRef.trim() === "" ? null : ownerRef.trim(),
+        currency: cur,
+        owner_ref:
+          ownerRef.trim() === ""
+            ? null
+            : await resolveRosterRef(ownerRef.trim(), members, (ref, personName) =>
+                createPerson({ ref, name: personName, role: "", location: "", capacity_hours: 40 }),
+              ),
         start_date: startDate.trim() === "" ? null : startDate,
         due_date: dueDate.trim() === "" ? null : dueDate,
         billable,
@@ -120,7 +129,7 @@ export function ProjectFormDialog({
     if (!budgetParsed.ok) found.budget_minor = budgetParsed.message;
     const spentParsed = parseMinor(spent);
     if (!spentParsed.ok) found.spent_minor = spentParsed.message;
-    if (currency.trim().length !== 3) found.currency = "Use a 3-letter ISO currency code, like USD.";
+    if (cur.length !== 3) found.currency = "Use a 3-letter ISO currency code, like INR.";
     if (startDate.trim() !== "" && dueDate.trim() !== "" && dueDate < startDate) {
       found.dates = "The due date can't be before the start date.";
     }
@@ -133,10 +142,10 @@ export function ProjectFormDialog({
     void save.mutate(undefined);
   }
 
-  const ownerOptions: SelectOption[] = [
-    { value: "", label: "Unassigned" },
-    ...people.map((p) => ({ value: p.id, label: p.name })),
-  ];
+  const ownerOptions: SelectOption[] = withOrgMembers(
+    [{ value: "", label: "Unassigned" }, ...people.map((p) => ({ value: p.id, label: p.name }))],
+    members,
+  );
 
   const nonFieldError =
     save.error && Object.keys(save.fieldErrors).length === 0 ? problemMessage(save.error) : undefined;
@@ -207,7 +216,7 @@ export function ProjectFormDialog({
           {...withOptional("error", errors.progress_pct ?? save.fieldErrors.progress_pct)}
         />
         <TextField
-          label={`Budget (${currency || "USD"})`}
+          label={`Budget (${cur})`}
           inputMode="decimal"
           value={budget}
           onChange={(e) => setBudget(e.target.value)}
@@ -215,7 +224,7 @@ export function ProjectFormDialog({
           {...withOptional("error", errors.budget_minor ?? save.fieldErrors.budget_minor)}
         />
         <TextField
-          label={`Spent (${currency || "USD"})`}
+          label={`Spent (${cur})`}
           inputMode="decimal"
           value={spent}
           onChange={(e) => setSpent(e.target.value)}
@@ -226,6 +235,7 @@ export function ProjectFormDialog({
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <TextField
           label="Currency"
+          placeholder={org.currency}
           value={currency}
           onChange={(e) => setCurrency(e.target.value.toUpperCase())}
           maxLength={3}

@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { useAsync } from "@opsgrids/client";
+import { orgToday, useAsync } from "@opsgrids/client";
 import {
   ActivityIcon,
   ArrowLeftIcon,
@@ -31,7 +31,7 @@ import { LoadError } from "./LoadError";
  */
 
 function isoDay(date: Date): string {
-  return date.toISOString().slice(0, 10);
+  return orgToday(date);
 }
 
 function defaultRange(): { from: string; to: string } {

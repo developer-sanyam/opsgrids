@@ -6,7 +6,9 @@
  * consistent; `client.ts`'s `USE_FIXTURES` flag decides which one a screen should ask for.
  */
 
+import { orgToday } from "@opsgrids/client";
+
 /** Today, as an ISO calendar date (`yyyy-mm-dd`), read from the real clock. */
 export function today(): string {
-  return new Date().toISOString().slice(0, 10);
+  return orgToday();
 }
