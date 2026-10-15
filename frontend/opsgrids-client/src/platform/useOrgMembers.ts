@@ -5,7 +5,7 @@
  * through `resolveRosterRef`, which creates it first. Authorization stays on the server.
  */
 
-import { apiRequest } from "../http";
+import { ApiError, apiRequest } from "../http";
 import { useCan } from "../permissions/context";
 import { useAsync } from "../useAsync";
 
@@ -57,7 +57,13 @@ export async function resolveRosterRef(
   if (!value.startsWith(PREFIX)) return value;
   const id = value.slice(PREFIX.length);
   const member = members.find((m) => m.user_id === id);
-  const ref = `u-${id.slice(0, 8)}`;
-  if (member) await create(ref, member.name);
+  if (!member) throw new Error("That person is no longer a member of this organization.");
+  const ref = `u-${id}`; // the whole user id: a short prefix could collide and assign the wrong person
+  try {
+    await create(ref, member.name);
+  } catch (error) {
+    // 409: already on the roster from an earlier pick (and renamed since, so it was offered again).
+    if (!(error instanceof ApiError && error.status === 409)) throw error;
+  }
   return ref;
 }
