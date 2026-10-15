@@ -49,6 +49,7 @@ export interface LeadOut {
   phone: string | null;
   source: LeadSource;
   status: LeadStatus;
+  next_statuses: LeadStatus[];
   owner_id: string | null;
   notes: string;
   converted_company_id: string | null;
@@ -65,6 +66,12 @@ export interface LeadConvertOut {
   company_id: string;
   contact_id: string | null;
   deal_id: string;
+}
+
+/** Mirrors `LeadConvertIn` -- the optional body of `POST /leads/{id}:convert`. */
+export interface LeadConvertIn {
+  deal_value_minor?: number;
+  deal_stage?: string;
 }
 
 /** The body of `POST /leads/{id}:reveal` — which of the lead's two sealed values to read. */
@@ -101,7 +108,7 @@ export interface ContactOut {
   id: string;
   full_name: string;
   title: string;
-  email: string;
+  email: string | null;
   phone: string;
   company_id: string;
   status: ContactStatus;
@@ -253,7 +260,8 @@ export interface CompanyPatch {
 /** Mirrors `ContactIn`. Deliberately no `phone` — see `ContactPhoneIn` below. */
 export interface ContactIn {
   full_name: string;
-  email: string;
+  /** Optional: a phone-only contact is a person (ADR-0038 D-14). */
+  email?: string | null;
   company_id: string;
   owner_id: string;
   title?: string;

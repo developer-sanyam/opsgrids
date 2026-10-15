@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 
 import { EyeIcon, MailIcon, PhoneIcon } from "../icons";
 import { cn } from "../lib/cn";
+import { formatPhone } from "../lib/phone";
 import { Button } from "./Button";
 
 /**
@@ -93,7 +94,7 @@ export function RevealableField({ kind, label, noun, masked, canReveal, field }:
                 digits,
               )}
             >
-              {field.value}
+              {kind === "phone" ? formatPhone(field.value) : field.value}
             </a>
           ) : field.value !== null ? (
             <span className="min-w-0 break-words tnum">{field.value}</span>

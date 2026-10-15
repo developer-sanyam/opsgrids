@@ -274,7 +274,9 @@ describe("the Instructions sheet", () => {
     );
     expect(lines).toContain("Write dates as YYYY-MM-DD, e.g. 2026-03-04.");
     expect(lines).toContain("Write money in major units (1499.50, not 149950) with the currency in the currency column.");
-    expect(lines).toContain("Write phone numbers with the country code, starting with +.");
+    expect(lines).toContain(
+      "Write phone numbers with the country code, starting with +. For an Indian organization a 10-digit mobile is also accepted and read as +91.",
+    );
     expect(lines).toContain("Do not rename the headers on the Import sheet.");
     expect(lines.indexOf("Notes")).toBeLessThan(lines.indexOf("General rules"));
   });

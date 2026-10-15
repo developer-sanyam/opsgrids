@@ -155,6 +155,7 @@ export { UnsavedChangesGuard } from "./components/UnsavedChangesGuard";
 export { useAnnounce } from "./lib/announcer";
 export type { Announce } from "./lib/announcer";
 export { cn } from "./lib/cn";
+export { formatPhone, isMaskedPhone } from "./lib/phone";
 export { fieldSkin } from "./lib/field";
 export {
   formatDuration,

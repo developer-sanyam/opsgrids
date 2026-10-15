@@ -64,6 +64,9 @@ export interface Lead {
   phone: string | null;
   source: LeadSource;
   status: LeadStatus;
+  /** The statuses a plain status change may move this lead to -- the server's own state machine
+   *  (`LeadOut.next_statuses`). The status control offers exactly these. Never `converted`. */
+  next_statuses: LeadStatus[];
   owner_id: string | null;
   notes: string;
   converted_company_id: string | null;
@@ -71,6 +74,13 @@ export interface Lead {
   converted_deal_id: string | null;
   converted_at: string | null;
   created_at: string;
+}
+
+/** What the rep may set on the deal a conversion opens. Every field is optional: with none, the
+ *  deal opens at zero in the pipeline's entry stage. `deal_value_minor` is integer minor units. */
+export interface LeadConvertOptions {
+  deal_value_minor?: number;
+  deal_stage?: string;
 }
 
 /** The result of converting a lead — the company, contact (if any) and deal it became. */
@@ -103,7 +113,8 @@ export interface Contact {
   id: string;
   full_name: string;
   title: string;
-  email: string;
+  /** `null` for a phone-only contact (ADR-0038 D-14). */
+  email: string | null;
   phone: string;
   company_id: string;
   status: ContactStatus;
