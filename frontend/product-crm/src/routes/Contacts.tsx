@@ -93,6 +93,13 @@ function ContactDetail({
           Added <span className="tnum text-ink-soft">{formatDate(contact.created_at)}</span>
         </span>
         <Link
+          to={`/contacts/${contact.id}`}
+          className="relative hit-44 inline-flex items-center gap-2 font-semibold text-accent hover:text-accent-strong transition-colors"
+        >
+          Open contact
+          <ArrowRightIcon className="size-4" />
+        </Link>
+        <Link
           to={`/companies/${contact.company_id}`}
           className="relative hit-44 inline-flex items-center gap-1.5 font-semibold text-accent hover:text-accent-strong transition-colors"
         >

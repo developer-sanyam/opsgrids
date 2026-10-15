@@ -23,13 +23,12 @@ export function dashboardProductsUrl(): string {
   return `${getAuthOrigin() ?? DASHBOARD_ORIGIN_FALLBACK}/`;
 }
 
-/**
- * The CRM's contact book. Points at the **list**, not a per-contact record: `product-crm`'s router
- * (`frontend/product-crm/src/main.tsx`) has no `contacts/:id` route today — only `companies/:id`
- * and `deals/:id` do — so a conversation's `contact_id` has nowhere to deep-link to yet. Linking
- * to a route that would 404 is worse than linking to the list a person can search from, and this
- * moves to the specific record the day that route exists.
- */
+/** One CRM contact's page (`product-crm`'s `contacts/:id`), where the contact's Messaging card lives. */
+export function crmContactUrl(contactId: string): string {
+  return `${getPlatformHost("crm")}/contacts/${encodeURIComponent(contactId)}`;
+}
+
+/** The CRM's contact book, for a section with no single contact to point at. */
 export function crmContactsUrl(): string {
   return `${getPlatformHost("crm")}/contacts`;
 }

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/notification.delivery.message.failed/v1",
+  "title": "notification.delivery.message.failed",
+  "description": "A message failed for good (`attempts`, `last_error`), or a provider receipt reported failure (`status`, `rule_code`). The recipient address is deliberately not in the payload; read the message row for it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "message_id",
+    "channel"
+  ],
+  "properties": {
+    "organization_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "message_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "channel": {
+      "type": "string"
+    },
+    "attempts": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "last_error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status": {
+      "type": "string"
+    },
+    "rule_code": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}
