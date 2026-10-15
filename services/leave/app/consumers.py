@@ -295,6 +295,8 @@ async def on_approval_request_decided(envelope: dict[str, Any]) -> None:
     decided_at = _decided_at(payload)
     comment = payload.get("comment")
     decided_by_name = _display_name(payload, "decided_by_name")
+    decided_by_user_id = _uuid_or_none(payload.get("decided_by_user_id"))
+    self_approved = payload.get("self_approved") is True
 
     applied_status: str | None = None
     async with _session_scope(organization_id) as session:
@@ -345,6 +347,8 @@ async def on_approval_request_decided(envelope: dict[str, Any]) -> None:
                 decided_at=decided_at,
                 comment=comment,
                 decided_by_name=decided_by_name,
+                decided_by_user_id=decided_by_user_id,
+                self_approved=self_approved,
             )
             applied_status = req.status
         mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])

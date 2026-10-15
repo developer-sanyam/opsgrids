@@ -524,6 +524,8 @@ async def apply_regularization_decision(
     decided_at: datetime,
     comment: str | None = None,
     decided_by_name: str | None = None,
+    decided_by_user_id: uuid.UUID | None = None,
+    self_approved: bool = False,
 ) -> RegularizationRequest:
     """Apply `core.approval.request.decided` to a still-`pending` regularization request
     (ADR-0006 §12). Called only from `consumers.py`, which has already checked `reg.status ==
@@ -558,6 +560,8 @@ async def apply_regularization_decision(
 
     Either branch publishes `hrms.time.regularization.applied` from this same transaction.
     """
+    # The decider is the audit actor (a user id); `acting_as` keeps naming the consumer.
+    self_flag = {"self_approved": True} if self_approved else {}
     reg.approval_request_id = approval_request_id
     reg.decided_at = decided_at
     reg.decision_comment = comment
@@ -569,13 +573,13 @@ async def apply_regularization_decision(
             session,
             AuditLog,
             organization_id=reg.organization_id,
-            actor_id=None,
+            actor_id=decided_by_user_id,
             acting_as="attendance.consumer",
             action="attendance.regularization_rejected",
             entity="regularization_request",
             entity_id=reg.id,
             before={"status": "pending"},
-            after={"status": "rejected", "decided_by_name": decided_by_name},
+            after={"status": "rejected", "decided_by_name": decided_by_name, **self_flag},
             reason=comment,
         )
         _publish_regularization_applied(session, reg, outcome="applied")
@@ -595,7 +599,7 @@ async def apply_regularization_decision(
             session,
             AuditLog,
             organization_id=reg.organization_id,
-            actor_id=None,
+            actor_id=decided_by_user_id,
             acting_as="attendance.consumer",
             action="attendance.regularization_failed",
             entity="regularization_request",
@@ -621,13 +625,13 @@ async def apply_regularization_decision(
         session,
         AuditLog,
         organization_id=reg.organization_id,
-        actor_id=None,
+        actor_id=decided_by_user_id,
         acting_as="attendance.consumer",
         action="attendance.regularization_approved",
         entity="regularization_request",
         entity_id=reg.id,
         before={"status": "pending"},
-        after={"status": "approved", "decided_by_name": decided_by_name},
+        after={"status": "approved", "decided_by_name": decided_by_name, **self_flag},
         reason=comment,
     )
     # `reason` here is the requester's own stated reason for the correction (`reg.reason`), not
@@ -637,7 +641,7 @@ async def apply_regularization_decision(
         session,
         AuditLog,
         organization_id=reg.organization_id,
-        actor_id=None,
+        actor_id=decided_by_user_id,
         acting_as="attendance.consumer",
         action="attendance.regularized",
         entity="attendance",

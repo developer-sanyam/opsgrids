@@ -297,6 +297,7 @@ class TestOwnerSelfApproval:
         self, session: AsyncSession, org_id: uuid.UUID
     ) -> None:
         owner, request = await self._own_unassigned(session, org_id)
+        user = uuid.uuid4()
         async with session.begin():
             decided = await services.decide_request(
                 session,
@@ -308,8 +309,19 @@ class TestOwnerSelfApproval:
                 comment=None,
                 is_owner=True,
                 self_approve=True,
+                caller_user_id=user,
             )
         assert decided.status == "approved" and decided.self_approved is True
+        async with session.begin():
+            event = (
+                await session.execute(
+                    select(OutboxEvent).where(
+                        OutboxEvent.event_type == "core.approval.request.decided"
+                    )
+                )
+            ).scalar_one()
+        assert event.payload["decided_by_user_id"] == str(user)
+        assert event.payload["self_approved"] is True
         async with session.begin():
             audit = (
                 (

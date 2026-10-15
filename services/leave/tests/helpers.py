@@ -141,6 +141,8 @@ def approval_decided_envelope(
     request_type: str = "hrms.time.leave",
     decided_by_employee_id: uuid.UUID | None = None,
     decided_by_name: str | None = _UNSET,
+    decided_by_user_id: uuid.UUID | None = None,
+    self_approved: bool = False,
     acting_for_employee_id: uuid.UUID | None = None,
     comment: str | None = None,
     decided_at: str | None = None,
@@ -159,6 +161,9 @@ def approval_decided_envelope(
     }
     if decided_by_name is not _UNSET:
         payload["decided_by_name"] = decided_by_name
+    if decided_by_user_id is not None:
+        payload["decided_by_user_id"] = str(decided_by_user_id)
+        payload["self_approved"] = self_approved
     return {
         "event_id": str(event_id or uuid.uuid4()),
         "event_type": "core.approval.request.decided",

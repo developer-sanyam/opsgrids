@@ -90,6 +90,11 @@ EVT_APPROVAL_REQUEST_DECIDED = "core.approval.request.decided"
 REQUEST_TYPE_REGULARIZATION = "hrms.time.regularization"
 
 
+def _user_id(payload: dict[str, Any]) -> uuid.UUID | None:
+    raw = payload.get("decided_by_user_id")
+    return uuid.UUID(str(raw)) if raw else None
+
+
 def _decided_at(payload: dict[str, Any]) -> datetime:
     """`decided_at` is load-bearing (`ck_regularization_requests_decided_iff_not_pending`), but a
     malformed value must not dead-letter an otherwise-good decision — the same "logged and
@@ -215,6 +220,8 @@ async def on_approval_request_decided(envelope: dict[str, Any]) -> None:
     decided_at = _decided_at(payload)
     comment = payload.get("comment")
     decided_by_name = _display_name(payload, "decided_by_name")
+    decided_by_user_id = _user_id(payload)
+    self_approved = payload.get("self_approved") is True
 
     applied_status: str | None = None
     async with _session_scope(organization_id) as session:
@@ -260,6 +267,8 @@ async def on_approval_request_decided(envelope: dict[str, Any]) -> None:
                     decided_at=decided_at,
                     comment=comment,
                     decided_by_name=decided_by_name,
+                    decided_by_user_id=decided_by_user_id,
+                    self_approved=self_approved,
                 )
                 applied_status = reg.status
         mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])

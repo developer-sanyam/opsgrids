@@ -687,6 +687,8 @@ async def apply_leave_decision(
     decided_at: datetime,
     comment: str | None = None,
     decided_by_name: str | None = None,
+    decided_by_user_id: uuid.UUID | None = None,
+    self_approved: bool = False,
 ) -> LeaveRequest:
     """Apply `core.approval.request.decided` to a still-`pending` leave request (ADR-0006 §12).
     Called only from `app/consumers.py`, which has already validated `outcome` is `"approved"`
@@ -716,6 +718,9 @@ async def apply_leave_decision(
     intermediate state of this object either fully `pending` or fully decided, never caught
     mid-flush by its own CHECK constraint.
     """
+    # The decider is the audit actor (a user id, as every other row); `acting_as` keeps naming the
+    # consumer, which the audit read does not treat as an operator.
+    self_flag = {"self_approved": True} if self_approved else {}
     if outcome not in ("approved", "rejected"):
         raise ValueError(f"apply_leave_decision: unrecognised outcome {outcome!r}")
 
@@ -746,13 +751,13 @@ async def apply_leave_decision(
             session,
             AuditLog,
             organization_id=req.organization_id,
-            actor_id=None,
+            actor_id=decided_by_user_id,
             acting_as="leave.consumer",
             action="leave.request.rejected",
             entity="leave_request",
             entity_id=req.id,
             before={"status": "pending"},
-            after={"status": "rejected", "decided_by_name": decided_by_name},
+            after={"status": "rejected", "decided_by_name": decided_by_name, **self_flag},
             reason=comment,
         )
         _publish_leave_applied(session, req, outcome="applied")
@@ -778,7 +783,7 @@ async def apply_leave_decision(
             session,
             AuditLog,
             organization_id=req.organization_id,
-            actor_id=None,
+            actor_id=decided_by_user_id,
             acting_as="leave.consumer",
             action="leave.request.failed",
             entity="leave_request",
@@ -806,7 +811,7 @@ async def apply_leave_decision(
         session,
         AuditLog,
         organization_id=req.organization_id,
-        actor_id=None,
+        actor_id=decided_by_user_id,
         acting_as="leave.consumer",
         action="leave.request.approved",
         entity="leave_request",
@@ -816,6 +821,7 @@ async def apply_leave_decision(
             "status": "approved",
             "decided_by_name": decided_by_name,
             "ledger_entry_id": entry.id,
+            **self_flag,
         },
         reason=comment,
     )

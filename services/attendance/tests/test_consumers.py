@@ -21,7 +21,7 @@ from sqlalchemy import func, select
 from app import selectors, services
 from app.config import settings
 from app.consumers import on_approval_request_decided, on_approval_request_opened
-from app.models import OutboxEvent, ProcessedEvent
+from app.models import AuditLog, OutboxEvent, ProcessedEvent
 from app.schemas import RegularizationRequestIn
 from platform_core.auth import Scope
 from platform_core.db import dispose_engine, init_engine
@@ -74,6 +74,36 @@ async def _applied_event(session, aggregate_id: uuid.UUID):
 
 
 class TestApprovedDecisionApplies:
+    async def test_the_audit_row_names_the_decider_and_marks_self_approval(
+        self, session, org_id, records
+    ) -> None:
+        reg_id = await _pending_request(
+            session, org_id, records["alice"], records["alice_record"], requested_status="half_day"
+        )
+        decider = uuid.uuid4()
+
+        await on_approval_request_decided(
+            approval_decided_envelope(
+                organization_id=org_id,
+                source_ref=reg_id,
+                decided_by_user_id=decider,
+                self_approved=True,
+            )
+        )
+
+        session.expire_all()
+        row = (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.action == "attendance.regularization_approved",
+                    AuditLog.entity_id == reg_id,
+                )
+            )
+        ).scalar_one()
+        assert row.actor_id == decider
+        assert row.acting_as == "attendance.consumer"
+        assert row.after["self_approved"] is True
+
     async def test_a_legal_transition_is_applied_and_both_events_are_emitted(
         self, session, org_id, records
     ) -> None:

@@ -23,7 +23,7 @@ from app.consumers import (
     on_employee_onboarded,
     on_employee_updated,
 )
-from app.models import EmployeeDirectory, OutboxEvent, ProcessedEvent
+from app.models import AuditLog, EmployeeDirectory, OutboxEvent, ProcessedEvent
 from app.schemas import LeaveBalanceGrantIn, LeaveRequestIn
 from platform_core.auth import Scope
 from platform_core.db import dispose_engine, init_engine
@@ -152,6 +152,32 @@ class TestApprovalDecidedApplies:
             )
         ).scalar_one()
         assert applied.payload["outcome"] == "applied"
+
+    async def test_the_audit_row_names_the_decider_and_marks_self_approval(
+        self, session, org_id
+    ) -> None:
+        leave_type_id = await _leave_type_id(session, org_id)
+        req_id = await _pending_request(session, org_id, uuid.uuid4(), leave_type_id)
+        decider = uuid.uuid4()
+
+        await on_approval_request_decided(
+            approval_decided_envelope(
+                organization_id=org_id,
+                source_ref=req_id,
+                decided_by_user_id=decider,
+                self_approved=True,
+            )
+        )
+
+        session.expire_all()
+        row = (
+            await session.execute(
+                select(AuditLog).where(AuditLog.action == "leave.request.approved")
+            )
+        ).scalar_one()
+        assert row.actor_id == decider
+        assert row.acting_as == "leave.consumer"
+        assert row.after["self_approved"] is True
 
     async def test_rejected_leaves_the_balance_untouched(self, session, org_id) -> None:
         leave_type_id = await _leave_type_id(session, org_id)
