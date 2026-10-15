@@ -1280,7 +1280,7 @@ const TEMPLATES: TemplateCase[] = [
   {
     name: "contacts",
     entity: contactImport,
-    required: ["Full name", "Email", "Company"],
+    required: ["Full name", "Company"],
     lookups: { Company: ["Northwind Logistics", "Cobalt Financial"], "Owner email": TEAM },
     enums: ["Status"],
     firstExample: ["Asha Rao", "asha.rao@northwind.co", "Northwind Logistics", null, "VP Operations", "Customer", "+91 98765 43210"],

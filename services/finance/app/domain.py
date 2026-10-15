@@ -139,10 +139,201 @@ FILING_STATUSES: frozenset[str] = frozenset(
 )
 
 #: The statutory GST rate bands. 0.25 % and 3 % are the precious-stones and precious-metals
-#: bands — easy to forget, and wrong to reject.
+#: bands, 1.5 % the cut-and-polished-diamonds band — easy to forget, and wrong to reject.
+#:
+#: The September 2025 rationalisation ("GST 2.0", in force from 22 September 2025) made 5 % and
+#: 18 % the two standard slabs and added 40 % for demerit goods. 12 % and 28 % stay in this set on
+#: purpose: a credit note against an invoice issued before the change must be taxed at the rate
+#: the invoice was, and 28 % still applies to the tobacco goods that kept it with cess. Which
+#: slabs a person is *offered* is the screen's decision; which are *lawful* is this one.
 GST_RATE_BANDS: frozenset[Decimal] = frozenset(
-    Decimal(band) for band in ("0", "0.25", "3", "5", "12", "18", "28")
+    Decimal(band) for band in ("0", "0.25", "1.5", "3", "5", "12", "18", "28", "40")
 )
+
+#: The first day a band existed. A 40 % line on a document dated before the September 2025 change
+#: is a typo, not a rate, and is refused (`band_in_force`).
+GST_RATE_BAND_FROM: dict[Decimal, date] = {Decimal("40"): date(2025, 9, 22)}
+
+
+def band_in_force(rate_pct: Decimal, on: date) -> bool:
+    """Whether `rate_pct` was a GST band on `on`. Bands with no start date always were."""
+    start = GST_RATE_BAND_FROM.get(rate_pct)
+    return start is None or on >= start
+
+
+#: The GST portal's Unit Quantity Codes — the only units an e-invoice or a GSTR-1 HSN summary
+#: accepts (Rule 46(h) requires the unit on the invoice; the return requires it to be one of these).
+UQC_CODES: frozenset[str] = frozenset(
+    {
+        "BAG", "BAL", "BDL", "BKL", "BOU", "BOX", "BTL", "BUN", "CAN", "CBM", "CCM", "CMS",
+        "CTN", "DOZ", "DRM", "GGK", "GMS", "GRS", "GYD", "KGS", "KLR", "KME", "LTR", "MLT",
+        "MTR", "MTS", "NOS", "OTH", "PAC", "PCS", "PRS", "QTL", "ROL", "SET", "SQF", "SQM",
+        "SQY", "TBS", "TGM", "THD", "TON", "TUB", "UGS", "UNT", "YDS",
+    }
+)  # fmt: skip
+
+
+def normalise_uqc(raw: str | None) -> str | None:
+    """A unit quantity code, upper-cased, or None for an empty one. Raises `ValueError` for a code
+    that is not on the portal's list — `pcs` becomes `PCS`; `pieces` is refused, because the
+    return would refuse it later and nobody would know why."""
+    if raw is None or not raw.strip():
+        return None
+    code = raw.strip().upper()
+    if code not in UQC_CODES:
+        raise ValueError(f"{raw!r} is not a GST unit quantity code (NOS, KGS, MTR, PCS, …)")
+    return code
+
+
+def line_taxable_minor(gross_minor: int, discount_minor: int) -> int:
+    """A line's taxable value: its gross less the discount, the discount always reducing the
+    magnitude. A credit-note line's gross is negative, so its discount is added back rather than
+    subtracted, and the line never changes sign. Raises `ValueError` for a negative discount or
+    one larger than the gross."""
+    if discount_minor < 0:
+        raise ValueError("a discount cannot be negative")
+    if discount_minor > abs(gross_minor):
+        raise ValueError("a discount cannot be more than the line's value")
+    return gross_minor - discount_minor if gross_minor >= 0 else gross_minor + discount_minor
+
+
+def round_off_minor(total_minor: int, currency: str) -> int:
+    """The adjustment that takes a grand total to whole rupees: half a rupee or more rounds away
+    from zero, so a credit note rounds exactly as the invoice it reverses. Rupees only — another
+    currency's minor unit is not "paise", and rounding it here would be inventing a convention."""
+    if currency != "INR":
+        return 0
+    rupees = (Decimal(total_minor) / Decimal(100)).to_integral_value(rounding=ROUND_HALF_UP)
+    return int(rupees) * 100 - total_minor
+
+
+# --------------------------------------------------------------------- supplier identity
+
+_PAN_RE = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]$")
+_IFSC_RE = re.compile(r"^[A-Z]{4}0[A-Z0-9]{6}$")
+_PINCODE_RE = re.compile(r"^[1-9][0-9]{5}$")
+_ACCOUNT_RE = re.compile(r"^[0-9]{9,18}$")
+_UPI_RE = re.compile(r"^[A-Za-z0-9._\-]{2,256}@[A-Za-z][A-Za-z0-9.\-]{1,63}$")
+
+
+def normalise_pan(raw: str) -> str:
+    """A PAN, upper-cased, spaces removed. Raises `ValueError` when it is not shaped like one."""
+    value = re.sub(r"\s", "", raw).upper()
+    if not _PAN_RE.match(value):
+        raise ValueError("a PAN is five letters, four numerals and a letter (ABCDE1234F)")
+    return value
+
+
+def normalise_ifsc(raw: str) -> str:
+    value = re.sub(r"\s", "", raw).upper()
+    if not _IFSC_RE.match(value):
+        raise ValueError(
+            "an IFSC is four letters, a zero and six letters or numerals (HDFC0001234)"
+        )
+    return value
+
+
+def normalise_pincode(raw: str) -> str:
+    value = re.sub(r"\s", "", raw)
+    if not _PINCODE_RE.match(value):
+        raise ValueError("a PIN code is six numerals and does not start with 0")
+    return value
+
+
+def normalise_account_number(raw: str) -> str:
+    value = re.sub(r"[\s\-]", "", raw)
+    if not _ACCOUNT_RE.match(value):
+        raise ValueError("a bank account number is 9 to 18 numerals")
+    return value
+
+
+def normalise_upi(raw: str) -> str:
+    value = raw.strip()
+    if not _UPI_RE.match(value):
+        raise ValueError("a UPI ID looks like name@bank")
+    return value
+
+
+#: What a tax invoice cannot be issued without, in the order a settings screen asks for it. Each
+#: key names the field the screen focuses. PAN and bank details are not here: Rule 46 does not
+#: require them, so their absence never blocks an invoice.
+SUPPLIER_REQUIRED_FIELDS: tuple[str, ...] = (
+    "gst_registration",
+    "legal_name",
+    "address_line1",
+    "city",
+    "pincode",
+)
+
+
+def supplier_missing(
+    *,
+    has_registration: bool,
+    legal_name: str = "",
+    address_line1: str = "",
+    city: str = "",
+    pincode: str = "",
+) -> list[str]:
+    """The supplier facts a Rule 46 tax invoice must state that this organization has not given
+    yet, as `SUPPLIER_REQUIRED_FIELDS` keys. Empty means invoices may be issued."""
+    if not has_registration:
+        return list(SUPPLIER_REQUIRED_FIELDS)
+    present = {
+        "legal_name": legal_name.strip() != "",
+        "address_line1": address_line1.strip() != "",
+        "city": city.strip() != "",
+        "pincode": bool(_PINCODE_RE.match(pincode.strip())),
+    }
+    return [key for key in SUPPLIER_REQUIRED_FIELDS[1:] if not present[key]]
+
+
+#: CGST Rule 46(b): a tax invoice's serial number is at most sixteen characters.
+MAX_DOCUMENT_NUMBER_LENGTH = 16
+
+
+def document_number(prefix: str, financial_year: str, seq: int) -> str:
+    """`INV-2627-00042`: the series prefix, the financial year as four numerals, the sequence.
+
+    The year is written `2627`, not `2026-27`: Rule 46(b) caps the number at sixteen characters,
+    and `INV-2026-27-00042` is seventeen. Five places of sequence, widening on its own past
+    99 999 (still fifteen characters), so a busy year never truncates."""
+    start, _, end = financial_year.partition("-")
+    number = f"{prefix}-{start[-2:]}{end[-2:]}-{seq:05d}"
+    if len(number) > MAX_DOCUMENT_NUMBER_LENGTH:
+        raise ValueError(f"{number!r} is longer than a tax invoice number may be")
+    return number
+
+
+_E164_RE = re.compile(r"^\+[1-9]\d{7,14}$")
+_IN_MOBILE_RE = re.compile(r"^[6-9]\d{9}$")
+
+
+def normalise_phone(raw: str) -> str:
+    """A phone number as E.164. A number with a country code is taken as written (`00` counts as
+    `+`); a bare Indian mobile — ten numerals starting 6-9, alone or behind a trunk `0` or a bare
+    `91` — becomes `+91…`. Finance bills in India, so that is the one national format it reads;
+    anything else is refused rather than guessed, because a guessed country code reaches a
+    stranger. Raises `ValueError`, whose message never repeats the number."""
+    compact = re.sub(r"[\s\-().]", "", raw.strip())
+    if compact.startswith("00"):
+        compact = "+" + compact[2:]
+    if compact.startswith("+"):
+        if _E164_RE.match(compact):
+            return compact
+        raise ValueError("a phone number with a country code has 8 to 15 numerals after the +")
+    if _IN_MOBILE_RE.match(compact):
+        return "+91" + compact
+    if len(compact) == 11 and compact.startswith("0") and _IN_MOBILE_RE.match(compact[1:]):
+        return "+91" + compact[1:]
+    if len(compact) == 12 and compact.startswith("91") and _IN_MOBILE_RE.match(compact[2:]):
+        return "+" + compact
+    raise ValueError("give a 10-numeral Indian mobile, or the number with its country code (+…)")
+
+
+def compose_address(*parts: str) -> str:
+    """Address lines joined one per printed line, blanks dropped. Empty when every part is."""
+    return "\n".join(p.strip() for p in parts if p and p.strip())
+
 
 #: `document_type` → the IRP's own document-type code. A credit note is reportable exactly as an
 #: invoice is; it is the correction mechanism GST recognises, which is why the platform's

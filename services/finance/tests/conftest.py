@@ -56,6 +56,7 @@ TENANT_TABLES = (
     "einvoice_filings",
     "eway_bills",
     "gst_registrations",
+    "supplier_profiles",
     "gst_returns",
     "gst_return_transitions",
     "invoice_withholdings",

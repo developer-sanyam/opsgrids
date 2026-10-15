@@ -1,10 +1,15 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import type { SupplierSettings } from "@/api/types";
+
+const supplier = vi.hoisted(() => ({ ready: true }));
 
 vi.mock("@/api/client", async (importOriginal) => {
   const original = await importOriginal<typeof import("@/api/client")>();
   const customers = await import("@/data/customers");
+  const fixtures = await import("@/api/fixtures");
   return {
     ...original,
     listCustomers: async () => ({
@@ -14,6 +19,10 @@ vi.mock("@/api/client", async (importOriginal) => {
       size: 200,
       pages: 1,
     }),
+    getSupplierSettings: async (): Promise<SupplierSettings> => {
+      const settings = fixtures.fixtureSupplierSettings();
+      return supplier.ready ? settings : { ...settings, ready: false, missing: ["address_line1", "pincode"] };
+    },
   };
 });
 
@@ -32,13 +41,20 @@ function stubPhone(): void {
   }));
 }
 
+function renderPage() {
+  return render(<RouterProvider router={createMemoryRouter([{ path: "*", element: <InvoiceNewPage /> }])} />);
+}
+
+beforeEach(() => {
+  supplier.ready = true;
+});
 afterEach(() => vi.unstubAllGlobals());
 
 describe("InvoiceNewPage", () => {
-  it("keeps the estimate and the review button in a bar that is only for phones", async () => {
+  it("keeps the total and the review button in a bar that is only for phones", async () => {
     stubPhone();
-    render(<RouterProvider router={createMemoryRouter([{ path: "*", element: <InvoiceNewPage /> }])} />);
-    const total = await screen.findByText("Total (est.)", { selector: "span.text-xs" });
+    renderPage();
+    const total = await screen.findByText("Total", { selector: "span.text-xs" });
     const bar = total.closest("[data-action-bar]");
     expect(bar).not.toBeNull();
     if (!(bar instanceof HTMLElement)) throw new Error("bar missing");
@@ -48,5 +64,29 @@ describe("InvoiceNewPage", () => {
     // Reviewing from the bar validates exactly as the desktop button does.
     fireEvent.click(within(bar).getByRole("button", { name: "Review invoice" }));
     expect(await screen.findByText("Choose the customer being billed.")).toBeTruthy();
+  });
+
+  it("asks for the missing supplier details instead of offering the form", async () => {
+    supplier.ready = false;
+    renderPage();
+    expect(await screen.findByRole("heading", { name: "Complete your supplier details first" })).toBeTruthy();
+    expect(screen.getByText("Registered address")).toBeTruthy();
+    expect(screen.getByText("PIN code")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Review invoice" })).toBeNull();
+  });
+
+  it("previews discount, GST and round-off the way the server computes them", async () => {
+    stubPhone();
+    renderPage();
+    await screen.findByText("Total", { selector: "span.text-xs" });
+    fireEvent.change(screen.getByLabelText("Description"), { target: { value: "Steel brackets" } });
+    fireEvent.change(screen.getByLabelText("Quantity"), { target: { value: "10" } });
+    fireEvent.change(screen.getByLabelText("Rate (₹)"), { target: { value: "123.45" } });
+    fireEvent.change(screen.getByLabelText(/Discount/), { target: { value: "50" } });
+    // 1184.50 taxable, 18 % = 213.21, 1397.71 rounds to 1398.00 (+0.29).
+    expect(await screen.findByText(/Taxable value ₹1,184\.50/)).toBeTruthy();
+    expect(screen.getAllByText("₹1,398.00").length).toBeGreaterThan(0);
+    expect(screen.getByText("₹0.29")).toBeTruthy();
+    expect(screen.getByText(/One Thousand Three Hundred Ninety-Eight Only/)).toBeTruthy();
   });
 });

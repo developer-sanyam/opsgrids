@@ -37,3 +37,38 @@ needs_full_rebuild() {
 	! git -C "$repo" diff --quiet "$prev" "$next" -- \
 		libs ':!libs/contracts' pyproject.toml uv.lock .dockerignore
 }
+
+# build_each <build command...> -- <service...>
+#   Runs `<build command...> <service>` for one service at a time, in order, and stops at the
+#   first failure (returns 1, naming it). `remote.sh` passes `"${COMPOSE[@]}" build [--pull]`.
+#
+# One at a time on purpose (2026-10-15, batch 7). A single `docker compose build` of every
+# image goes through buildx bake, which builds them all at once and ignores
+# COMPOSE_PARALLEL_LIMIT (and, on compose v5, COMPOSE_BAKE=false): ~30 `uv sync` runs
+# downloading from PyPI together, and on this box one of them always stalled past uv's
+# timeout, so three deploys of the same commit failed at build. Every service's builder stage
+# is the same (root pyproject.toml/uv.lock + libs/), so built in sequence the first image
+# resolves the venv and every later one is a cache hit: one download, not thirty.
+build_each() {
+	local cmd=() svc
+	while [ $# -gt 0 ] && [ "$1" != "--" ]; do
+		cmd+=("$1")
+		shift
+	done
+	[ "${1:-}" = "--" ] || {
+		echo "build_each: usage: build_each <build command...> -- <service...>" >&2
+		return 2
+	}
+	shift
+	[ ${#cmd[@]} -gt 0 ] || {
+		echo "build_each: no build command given" >&2
+		return 2
+	}
+	for svc in "$@"; do
+		echo "--- building $svc"
+		"${cmd[@]}" "$svc" || {
+			echo "build_each: $svc failed to build; images built before it are kept" >&2
+			return 1
+		}
+	done
+}

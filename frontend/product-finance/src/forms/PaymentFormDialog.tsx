@@ -184,10 +184,11 @@ export function PaymentFormDialog({ invoice, customers, onClose, onSaved }: Paym
           onChange={(e) => setReference(e.target.value)}
           helper={
             method === "cash"
-              ? "Optional for cash. Leave blank and one is assigned."
+              ? "Leave blank and one is assigned."
               : "Bank UTR, cheque number or gateway reference."
           }
           required={method !== "cash"}
+          optional={method === "cash"}
           error={referenceError ?? fieldError(saveProblem, "reference")}
         />
         <TextField

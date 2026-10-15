@@ -109,7 +109,10 @@ other tools, that reads an Excel sheet, and a **downloadable sample sheet**.
 - **Updating existing records** from a sheet: not in the first release (no upsert exists); added as an opt-in mode, see the addendum.
 - **CSV and legacy `.xls`**: `.xlsx` only in this release; the dialog tells the user to "Save as
   Excel Workbook".
-- **Finance customers and Support agents**: follow-up (GSTIN checksum, ORG-scope floors).
+- **Support agents**: follow-up (ORG-scope floors). Finance customers were added on 2026-10-15
+  (`feat/finance-customer-import`): GSTIN is the natural key (a duplicate is a 409 "already exists",
+  so skipped); an unregistered name already on file is refused before sending; opening balances are
+  not imported because Finance has no general ledger to post them to.
 
 ## Consequences
 

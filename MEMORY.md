@@ -67,6 +67,24 @@ Recorded outside an ADR:
   item name on fulfilment tasks and packages are resolved server-side inside `operations`, and only
   for a caller with the matching org-wide read or a live offer on that task. No permission or role
   was widened, so there is no reconcile step.
+- **Finance tax invoice (2026-10-15, `feat/gst-tax-invoice`).** The Finance customer invoice is a
+  CGST Rule 46 tax invoice. Supplier address lives on `gst_registrations` (per state registration);
+  PAN and bank details on `supplier_profiles`, the account number sealed with `platform_core.pii`
+  and opened only by `GET /finance/invoices/{id}/print-details`, which audits
+  `supplier_profile.bank_disclosed` every time. Invoices freeze seller/buyer name and address,
+  buyer state and delivery address at issue. Lines carry UQC unit, discount (taxable = gross -
+  discount) and an inventory item reference (plain UUID + SKU, picked through the Operations API
+  in the browser, never joined). Round-off is opt-in per invoice and is inside `total_minor`
+  (`total = subtotal + tax + round_off_minor`; IRP payload carries it). New document numbers are
+  `INV-2627-00001` (Rule 46(b) caps a number at 16 characters; the old `INV-2026-27-00001` is 17);
+  the same counter row continues. GST bands add 1.5 % and 40 % (40 % only from 2025-09-22); 12/28 %
+  stay lawful. The issue screen refuses to start until `GET /finance/settings/supplier` is `ready`.
+  No new permission codes.
+- **Finance customer import (2026-10-15, `feat/finance-customer-import`).** ADR-0022 import/export on
+  Finance → Customers. Customers gain a phone (sealed `phone_enc` + `phone_masked`; a bare Indian
+  mobile is stored +91 server-side for every org). A live customer's GSTIN may not be repeated (409
+  "already exists", which the import reports as skipped). No opening balance: Finance has no GL. No
+  Tally mapping: the engine reads `.xlsx` with headers in row 1, which Tally's export does not have.
 - **Marketing site.** The owner chose a "Liquid Glass" look with real product screenshots. It lives in
   the separate marketing repository, not here; this entry records the decision, not the code.
 
@@ -135,4 +153,6 @@ Add one dated line per architecture change, decision, or fixed bug that a future
 - 2026-10-14 — Mobile-responsive shared UI and the layout sweep (#155, #157, #161, #163, #164); worker app shows real order numbers, bins and items (#159); audit fixes (#156); dead code removed (#158).
 - 2026-10-14 — Duplicate helpers consolidated into `platform-core`, `tools/`, `tests/infra` and `e2e` (#165–#169); visual baselines regenerated (#170).
 - 2026-10-15 — Production deployed to `main` @ `1dbeebd4` in three batches. Docs refreshed: HANDOVER, MEMORY, SPEC, `docs/operations.md`, `docs/production-readiness.md`; `docs/what-was-built.md`, `docs/theme-guide.md` and `docs/architecture.html` marked historical.
+- 2026-10-15 — CRM retest fixes (`fix/crm-retest-2026-10-15`): a lead with no explicit owner falls back to its creator when the round-robin picks nobody (`fallback_owner_id` when in the caller's scope -- an out-of-scope one is ignored, not a 403 -- else employee link, else ORG membership id; `manual` mode still assigns nobody), and the lead page can assign an owner. A self-serve org has `country: null`, so the SPA reads bare mobiles as +91 when the org runs in INR or on Asia/Kolkata. Gateway pool keep-alive (2 s) is now below uvicorn's 5 s and a dropped-connection GET is resent once: equal timers caused transient 500s on first load. `PUT /customers/owners/me` survives two concurrent first calls.
+- 2026-10-15 — Edge build resilience (`fix/edge-build-resilience`): the batch 7 deploy of #178 failed three times at build. A full rebuild was one `docker compose build`, i.e. one buildx bake of ~30 images at once (ignores `COMPOSE_PARALLEL_LIMIT`, and on compose v5 `COMPOSE_BAKE=false`), so ~30 concurrent `uv sync` runs, and one wheel always timed out after uv's 30 s x 3. `remote.sh build` now builds one service at a time (`build_each`, `lib/rebuild-decision.sh`, tested); the shared builder stage makes every image after the first a cache hit. Every service Dockerfile and the `tools/new_service.py` template set `UV_HTTP_TIMEOUT=120 UV_HTTP_RETRIES=5 UV_CONCURRENT_DOWNLOADS=4`. Also: #178's `_creator_owner_candidate` read raw `ctx.subject_ref` and broke `tests/infra/test_no_raw_subject_ref.py` (the R2.7 ratchet); it now reads `ctx.own_ref` (same id for lead today). Run `make test-infra` for any CRM service change.
 - 2026-10-15 — Session persistence checked after a tester was signed out between browser runs: the tenant refresh cookie is persistent (`Max-Age` 7d, host-only on `app.`, Lax, HttpOnly, Secure in prod) and every SPA boot-refreshes, so tenant apps were fine. The operator console (`opsgrids-internal`) never called `/auth/operator/refresh`: it now boot-refreshes and retries a 401 once. Logout now clears the cookie with the same Domain it was set with.

@@ -3,13 +3,20 @@ import { useRef, useState } from "react";
 import { createLead } from "@/api/client";
 import type { Lead, LeadSource, Owner } from "@/api/types";
 import { maybe } from "@/lib/optional";
-import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
+import { ApiError, normalisePhone, problemMessage, useMutation } from "@opsgrids/client";
 import { FormDialog, Select, TextArea, TextField, useFormDirty } from "@opsgrids/ui";
 
 interface LeadFormDialogProps {
   owners: Owner[];
   onClose: () => void;
   onSaved: (lead: Lead) => void;
+  /**
+   * The signed-in login's rep record, putting them on the roster first when they may
+   * (`useMyRep().ensure`). On "Auto-assign" it is sent as `fallback_owner_id`: the lead is theirs
+   * when no round-robin picks anyone, as in a one-person organization -- a lead with no owner
+   * cannot be converted.
+   */
+  ensureMyRep?: () => Promise<Owner | undefined>;
 }
 
 const SOURCE_OPTIONS: { value: LeadSource; label: string }[] = [
@@ -22,9 +29,10 @@ const SOURCE_OPTIONS: { value: LeadSource; label: string }[] = [
  * Capture a lead — `POST /leads`. `owner_id` left on "Auto-assign" omits the field entirely,
  * so the service assigns from the organization's round-robin the same way an inbound web-form
  * submission does; naming a rep here bypasses the rotation on purpose, the same "explicit wins"
- * rule `services.create_lead` documents.
+ * rule `services.create_lead` documents. When no rotation picks anyone, the lead goes to the
+ * person capturing it (`ensureMyRep`).
  */
-export function LeadFormDialog({ owners, onClose, onSaved }: LeadFormDialogProps) {
+export function LeadFormDialog({ owners, onClose, onSaved, ensureMyRep }: LeadFormDialogProps) {
   const [fullName, setFullName] = useState("");
   const [company, setCompany] = useState("");
   const [email, setEmail] = useState("");
@@ -38,28 +46,40 @@ export function LeadFormDialog({ owners, onClose, onSaved }: LeadFormDialogProps
   const dirty = useFormDirty(initial, fields);
 
   const [fullNameError, setFullNameError] = useState<string | undefined>(undefined);
+  const [phoneError, setPhoneError] = useState<string | undefined>(undefined);
   const nameRef = useRef<HTMLInputElement>(null);
 
+  // Sent as E.164: a bare Indian mobile is completed to +91 for an Indian organization.
+  const phoneE164 = phone.trim() ? normalisePhone(phone) : null;
+
   const save = useMutation(
-    () =>
-      createLead({
+    async () => {
+      const mine = ownerId === "" && ensureMyRep !== undefined ? await ensureMyRep() : undefined;
+      return createLead({
         full_name: fullName.trim(),
         company: company.trim() ? company.trim() : null,
         email: email.trim() ? email.trim() : null,
-        phone: phone.trim() ? phone.trim() : null,
+        phone: phoneE164,
         source,
         ...(ownerId ? { owner_id: ownerId } : {}),
+        ...(mine !== undefined ? { fallback_owner_id: mine.id } : {}),
         notes: notes.trim(),
-      }),
+      });
+    },
     { onSuccess: (lead) => onSaved(lead) },
   );
 
   function submit() {
     setFullNameError(undefined);
+    setPhoneError(undefined);
     const trimmedName = fullName.trim();
     if (trimmedName.length < 1) {
       setFullNameError("Enter their full name.");
       nameRef.current?.focus();
+      return;
+    }
+    if (phone.trim() && phoneE164 === null) {
+      setPhoneError("Enter a 10-digit mobile, or the number with its country code, like +91 98765 43210.");
       return;
     }
     void save.mutate(undefined);
@@ -112,8 +132,13 @@ export function LeadFormDialog({ owners, onClose, onSaved }: LeadFormDialogProps
         label="Phone"
         value={phone}
         onChange={(e) => setPhone(e.target.value)}
+        type="tel"
+        autoComplete="tel"
+        inputMode="tel"
         optional
-        {...maybe("error", save.fieldErrors.phone)}
+        placeholder="+91 98765 43210"
+        helper="A 10-digit mobile, or with country code."
+        {...maybe("error", phoneError ?? save.fieldErrors.phone)}
       />
       <Select
         label="Source"
@@ -129,6 +154,7 @@ export function LeadFormDialog({ owners, onClose, onSaved }: LeadFormDialogProps
           { value: "", label: "Auto-assign (round-robin)" },
           ...owners.filter((o) => o.is_active).map((o) => ({ value: o.id, label: o.full_name })),
         ]}
+        helper="With no rotation set up, the lead is yours."
       />
       <TextArea
         label="Notes"

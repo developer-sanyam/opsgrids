@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { listLeads } from "@/api/client";
 import type { Lead, LeadStatus } from "@/api/types";
 import { useDirectory } from "@/data/directoryContext";
+import { useMyRep } from "@/data/useMyRep";
 import { leadImport } from "@/data/importExport/leads";
 import type { LeadFilters } from "@/data/importExport/leads";
 import { formatDate } from "@/lib/format";
@@ -86,6 +87,7 @@ function buildColumns(): Column<Lead>[] {
 
 export function LeadsPage() {
   const directory = useDirectory();
+  const myRep = useMyRep();
   const [status, setStatus] = useState<StatusFilter>("all");
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(PAGE_SIZE);
@@ -212,6 +214,7 @@ export function LeadsPage() {
       {creating ? (
         <LeadFormDialog
           owners={directory.owners}
+          ensureMyRep={myRep.ensure}
           onClose={() => setCreating(false)}
           onSaved={() => {
             setCreating(false);
