@@ -26,6 +26,8 @@ export interface Customer {
   pincode?: string;
   /** GST state code of the billing address; null when not recorded. */
   state_code?: string | null;
+  /** The phone number, masked (`•••••• 3210`); empty when none is on file. Never the number. */
+  phone?: string;
   /**
    * Withholding facts about this buyer, decided by the customer record and applied to **future**
    * invoices only — a document already finalized keeps what it assessed at the time.
@@ -48,6 +50,8 @@ export interface CustomerCreate {
   address_line2?: string;
   pincode?: string;
   state_code?: string | null;
+  /** E.164, or a bare 10-numeral Indian mobile the server stores as +91. Write-only. */
+  phone?: string;
   is_tds_deductor?: boolean;
   deducts_tds_194q?: boolean;
   tcs_applicable?: boolean;
@@ -65,6 +69,8 @@ export interface CustomerUpdate {
   address_line2?: string;
   pincode?: string;
   state_code?: string | null;
+  /** A new number replaces the one on file; `""` removes it. */
+  phone?: string;
   is_tds_deductor?: boolean;
   deducts_tds_194q?: boolean;
   tcs_applicable?: boolean;

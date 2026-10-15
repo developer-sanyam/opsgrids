@@ -34,11 +34,13 @@ export function CustomerFormDialog({ customer, onClose, onSaved }: CustomerFormD
   const [addressLine1, setAddressLine1] = useState(customer?.address_line1 ?? "");
   const [addressLine2, setAddressLine2] = useState(customer?.address_line2 ?? "");
   const [pincode, setPincode] = useState(customer?.pincode ?? "");
+  // Write-only: the stored number is a mask, so the field starts empty and blank keeps it.
+  const [phone, setPhone] = useState("");
   const [isTdsDeductor, setIsTdsDeductor] = useState(customer?.is_tds_deductor ?? false);
   const [deducts194q, setDeducts194q] = useState(customer?.deducts_tds_194q ?? false);
   const [tcsApplicable, setTcsApplicable] = useState(customer?.tcs_applicable ?? false);
 
-  const fields = { name, contactName, email, gstin, city, stateCode, addressLine1, addressLine2, pincode, isTdsDeductor, deducts194q, tcsApplicable };
+  const fields = { name, contactName, email, gstin, city, stateCode, addressLine1, addressLine2, pincode, phone, isTdsDeductor, deducts194q, tcsApplicable };
   const [initial] = useState(fields);
   const dirty = useFormDirty(initial, fields);
 
@@ -47,6 +49,7 @@ export function CustomerFormDialog({ customer, onClose, onSaved }: CustomerFormD
   const [gstinError, setGstinError] = useState<string | undefined>(undefined);
   const [stateError, setStateError] = useState<string | undefined>(undefined);
   const [pincodeError, setPincodeError] = useState<string | undefined>(undefined);
+  const [phoneError, setPhoneError] = useState<string | undefined>(undefined);
   const [mutualError, setMutualError] = useState<string | undefined>(undefined);
   const nameRef = useRef<HTMLInputElement>(null);
 
@@ -62,6 +65,7 @@ export function CustomerFormDialog({ customer, onClose, onSaved }: CustomerFormD
     setGstinError(undefined);
     setStateError(undefined);
     setPincodeError(undefined);
+    setPhoneError(undefined);
     setMutualError(undefined);
 
     const trimmedName = name.trim();
@@ -88,6 +92,11 @@ export function CustomerFormDialog({ customer, onClose, onSaved }: CustomerFormD
       setPincodeError("A PIN code is six numerals and does not start with 0.");
       return;
     }
+    const trimmedPhone = phone.trim();
+    if (trimmedPhone !== "" && !/^\+?[0-9][0-9 ().-]{6,22}$/.test(trimmedPhone)) {
+      setPhoneError("Enter a 10-numeral mobile, or the number with its country code like +91 98765 43210.");
+      return;
+    }
     if (deducts194q && tcsApplicable) {
       setMutualError("A buyer is either liable under s.194Q or has TCS collected under s.206C(1H) — never both.");
       return;
@@ -104,6 +113,7 @@ export function CustomerFormDialog({ customer, onClose, onSaved }: CustomerFormD
       address_line1: addressLine1.trim(),
       address_line2: addressLine2.trim(),
       pincode: pincode.trim(),
+      ...(trimmedPhone !== "" ? { phone: trimmedPhone } : {}),
       is_tds_deductor: isTdsDeductor,
       deducts_tds_194q: deducts194q,
       tcs_applicable: tcsApplicable,
@@ -170,6 +180,20 @@ export function CustomerFormDialog({ customer, onClose, onSaved }: CustomerFormD
         />
       </div>
 
+      <TextField
+        label="Phone"
+        type="tel"
+        value={phone}
+        onChange={(e) => setPhone(e.target.value)}
+        maxLength={24}
+        optional
+        helper={
+          customer?.phone
+            ? `On file: ${customer.phone}. Leave empty to keep it.`
+            : "A 10-numeral Indian mobile is saved with +91. Stored encrypted and shown masked."
+        }
+        error={phoneError ?? save.fieldErrors.phone}
+      />
       <TextField
         label="Billing address"
         value={addressLine1}

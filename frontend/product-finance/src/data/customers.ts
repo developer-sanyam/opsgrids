@@ -40,6 +40,12 @@ export const FIXTURE_CUSTOMERS: ReadonlyMap<string, Customer> = MUTABLE_FIXTURE_
 let nextFixtureCustomerSeq = CUSTOMERS.length + 1;
 
 /** Fixture-mode `POST /finance/customers` — appends to both the array and the lookup map. */
+/** The mask the server returns for a phone: bullets and the last four numerals. Never the number. */
+function maskPhone(raw: string | undefined): string {
+  const digits = (raw ?? "").replace(/\D/g, "");
+  return digits === "" ? "" : `${"•".repeat(Math.max(digits.length - 4, 0))} ${digits.slice(-4)}`;
+}
+
 export function addFixtureCustomer(input: CustomerCreate): Customer {
   const customer: Customer = {
     id: `cust-fixture-${nextFixtureCustomerSeq++}`,
@@ -49,6 +55,11 @@ export function addFixtureCustomer(input: CustomerCreate): Customer {
     gstin: input.gstin ?? null,
     city: input.city ?? "",
     state: input.state ?? "",
+    address_line1: input.address_line1 ?? "",
+    address_line2: input.address_line2 ?? "",
+    pincode: input.pincode ?? "",
+    state_code: input.state_code ?? null,
+    phone: maskPhone(input.phone),
     is_tds_deductor: input.is_tds_deductor ?? false,
     deducts_tds_194q: input.deducts_tds_194q ?? false,
     tcs_applicable: input.tcs_applicable ?? false,
@@ -62,7 +73,8 @@ export function addFixtureCustomer(input: CustomerCreate): Customer {
 export function updateFixtureCustomer(id: string, patch: CustomerUpdate): Customer | null {
   const existing = MUTABLE_FIXTURE_CUSTOMERS.get(id);
   if (!existing) return null;
-  const updated: Customer = { ...existing, ...patch };
+  const { phone, ...rest } = patch;
+  const updated: Customer = { ...existing, ...rest, ...(phone !== undefined ? { phone: maskPhone(phone) } : {}) };
   MUTABLE_FIXTURE_CUSTOMERS.set(id, updated);
   const index = CUSTOMERS.findIndex((c) => c.id === id);
   if (index >= 0) CUSTOMERS[index] = updated;

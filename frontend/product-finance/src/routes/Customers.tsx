@@ -2,12 +2,14 @@ import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { archiveCustomer, listCustomers } from "@/api/client";
+import { customerImport } from "@/data/customerImport";
+import type { CustomerFilters } from "@/data/customerImport";
 import type { CustomerSort } from "@/api/client";
 import type { CustomerStanding, CustomerSummary } from "@/api/types";
 import { formatDate } from "@/lib/format";
 import { formatAmount } from "@/lib/money";
-import { Can, problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
-import { cn, PlusIcon, useDebouncedValue, UsersIcon, useToast } from "@opsgrids/ui";
+import { Can, problemMessage, useAsync, useCan, useImportExport, useMutation } from "@opsgrids/client";
+import { cn, ImportExportButton, PlusIcon, SM_QUERY, useDebouncedValue, useMediaQuery, UsersIcon, useToast } from "@opsgrids/ui";
 import {
   Avatar,
   Button,
@@ -71,6 +73,19 @@ export function CustomersPage() {
     [debouncedSearch, sort, page, size],
   );
   const customers = useAsync(loader, [debouncedSearch, sort, page, size]);
+
+  // Import / Export (ADR-0022): the export writes the list as filtered on screen; an import adds
+  // customers through the ordinary create endpoint, then the list starts again from page 1.
+  const exportFilters = useMemo<CustomerFilters>(() => ({ search: debouncedSearch, sort }), [debouncedSearch, sort]);
+  const { reload: reloadCustomers } = customers;
+  const reloadAfterImport = useCallback(() => {
+    setPage(1);
+    reloadCustomers();
+  }, [reloadCustomers]);
+  const dx = useImportExport(customerImport, { filters: exportFilters, onImported: reloadAfterImport });
+  // From 640px Import / Export is its own button; below it, an item in the header's menu.
+  const roomy = useMediaQuery(SM_QUERY, true);
+  const [ioOpen, setIoOpen] = useState(false);
 
   const archive = useMutation((row: CustomerSummary) => archiveCustomer(row.customer.id), {
     onSuccess: (_result, row) => {
@@ -181,8 +196,21 @@ export function CustomersPage() {
       <PageHeader
         eyebrow="Accounts receivable"
         title="Customers"
+        secondaryActions={
+          roomy ? undefined : [{ label: "Import / Export", onSelect: () => setIoOpen(true), hidden: !(canWrite || dx.meta.canExport) }]
+        }
         actions={
           <div className="flex flex-wrap items-center gap-2">
+            <ImportExportButton
+              meta={dx.meta}
+              state={dx.state}
+              actions={dx.actions}
+              canImport={canWrite}
+              canExport
+              open={ioOpen}
+              onOpenChange={setIoOpen}
+              hideTrigger={!roomy}
+            />
             <span className="rounded-full bg-surface shadow-card px-4 h-11 inline-flex items-center gap-2 text-sm font-semibold">
               <UsersIcon className="size-4 text-muted" />
               <span className="tnum">{customers.status === "success" ? customers.data.total : "—"}</span>
