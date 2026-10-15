@@ -1,10 +1,11 @@
 import { useCallback, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { convertLead, getLead, revealLeadField, updateLead } from "@/api/client";
+import { getLead, revealLeadField, updateLead } from "@/api/client";
 import type { LeadStatus } from "@/api/types";
 import { useDirectory } from "@/data/directoryContext";
 import { ownerById } from "@/data/lookups";
+import { ConvertLeadDialog } from "@/forms/ConvertLeadDialog";
 import { formatDate } from "@/lib/format";
 import { RevealField } from "@/reveal/RevealField";
 import {
@@ -18,13 +19,13 @@ import {
   ArrowLeftIcon,
   ArrowRightIcon,
   BuildingIcon,
+  InlineAlert,
   useToast,
 } from "@opsgrids/ui";
 import {
   Avatar,
   Button,
   Card,
-  ConfirmDialog,
   LeadStatusPill,
   SectionHeader,
   Select,
@@ -48,13 +49,25 @@ function RevealNotice({ hasPermission }: { hasPermission: boolean }) {
   return <>Revealing one is recorded.</>;
 }
 
-/** Plain status edits — everything except `converted`, which only `:convert` can reach. */
-const STATUS_OPTIONS: { value: LeadStatus; label: string }[] = [
-  { value: "new", label: "New" },
-  { value: "working", label: "Working" },
-  { value: "qualified", label: "Qualified" },
-  { value: "disqualified", label: "Disqualified" },
-];
+const STATUS_LABELS: Record<LeadStatus, string> = {
+  new: "New",
+  working: "Working",
+  qualified: "Qualified",
+  disqualified: "Disqualified",
+  converted: "Converted",
+};
+
+/**
+ * The status control's options: the lead's current status, then only the moves the server will
+ * accept (`LeadOut.next_statuses` -- its own state machine, so this can never offer New -> Qualified
+ * or the status the lead already has). `converted` is never among them: only Convert reaches it.
+ */
+function statusOptions(current: LeadStatus, next: readonly LeadStatus[]): { value: LeadStatus; label: string }[] {
+  return [current, ...next.filter((s) => s !== current)].map((value) => ({
+    value,
+    label: value === current ? `${STATUS_LABELS[value]} (current)` : `Mark as ${STATUS_LABELS[value]}`,
+  }));
+}
 
 function LeadDetailSkeleton() {
   return (
@@ -89,16 +102,13 @@ export function LeadDetailPage() {
       toast.success("Status updated.");
       lead.reload();
     },
-    onError: (error) => toast.error(problemMessage(error)),
   });
 
-  const convert = useMutation(() => convertLead(id), {
-    onSuccess: () => {
-      setConfirmingConvert(false);
-      toast.success("Lead converted — a company and deal now exist for it.");
-      lead.reload();
-    },
-  });
+  function handleConverted() {
+    setConfirmingConvert(false);
+    toast.success("Lead converted — a company and deal now exist for it.");
+    lead.reload();
+  }
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -175,15 +185,28 @@ export function LeadDetailPage() {
                         label="Status"
                         value={l.status}
                         disabled={setStatus.pending}
-                        onChange={(e) => void setStatus.mutate(e.target.value as LeadStatus)}
-                        options={STATUS_OPTIONS}
+                        onChange={(e) => {
+                          const next = e.target.value as LeadStatus;
+                          if (next !== l.status) void setStatus.mutate(next);
+                        }}
+                        options={statusOptions(l.status, l.next_statuses)}
                         helper={
-                          l.status !== "qualified"
-                            ? "Qualify this lead before it can be converted."
-                            : "Ready to convert."
+                          l.status === "qualified"
+                            ? "Ready to convert."
+                            : l.status === "new"
+                              ? "Mark it Working once you start on it; then Qualify it to convert."
+                              : l.status === "working"
+                                ? "Qualify this lead before it can be converted."
+                                : "Reopen it to work on it again."
                         }
                         containerClassName="max-w-xs"
                       />
+                      {setStatus.error ? (
+                        // Said where the rep is looking, in the server's own plain words.
+                        <InlineAlert tone="danger" title="Couldn't change the status">
+                          {problemMessage(setStatus.error)}
+                        </InlineAlert>
+                      ) : null}
                     </Can>
                   )}
                 </Card>
@@ -248,20 +271,13 @@ export function LeadDetailPage() {
                   </Card>
                 </div>
 
-                <ConfirmDialog
-                  open={confirmingConvert}
-                  onClose={() => {
-                    setConfirmingConvert(false);
-                    convert.reset();
-                  }}
-                  onConfirm={() => void convert.mutate(undefined)}
-                  title="Convert this lead?"
-                  body={`${l.full_name} becomes a company${l.email ? " and a contact" : ""} and a deal. This can't be undone.`}
-                  confirmLabel="Convert"
-                  pendingLabel="Converting…"
-                  pending={convert.pending}
-                  {...(convert.error ? { error: problemMessage(convert.error) } : {})}
-                />
+                {confirmingConvert ? (
+                  <ConvertLeadDialog
+                    lead={l}
+                    onClose={() => setConfirmingConvert(false)}
+                    onConverted={handleConverted}
+                  />
+                ) : null}
               </>
             );
           })()

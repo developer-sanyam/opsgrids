@@ -124,11 +124,15 @@ describe("deals: toPayload", () => {
     );
   });
 
-  it("refuses a blank owner when the signed-in account is not an active rep", () => {
-    vi.mocked(getMySubjectRef).mockReturnValue(null);
-    expect(() => payloadFor(MINIMAL)).toThrow(RowProblem);
-    vi.mocked(getMySubjectRef).mockReturnValue("own-3");
-    expect(() => payloadFor(MINIMAL)).toThrow(RowProblem);
+  it("refuses a blank owner when the signed-in account is not an active rep", async () => {
+    // `self` is decided when the lookups load, so load them as each kind of account.
+    for (const sref of [null, "own-3"]) {
+      vi.mocked(getMySubjectRef).mockReturnValue(sref);
+      gateway();
+      const asThem = contextWith(await loadLookups(new AbortController().signal));
+      vi.unstubAllGlobals();
+      expect(() => dealImport.toPayload(parsedRow(dealImport.columns, MINIMAL), asThem)).toThrow(RowProblem);
+    }
   });
 });
 

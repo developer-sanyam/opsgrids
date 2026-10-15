@@ -65,13 +65,20 @@ function ContactDetail({
   return (
     <div className="grid grid-cols-1 gap-4 rounded-tile bg-ground/50 p-4 sm:grid-cols-2">
       <div className="flex flex-col gap-2 text-sm">
-        <a
-          href={`mailto:${contact.email}`}
-          className="relative hit-44 inline-flex items-center gap-2 text-ink-soft hover:text-accent transition-colors"
-        >
-          <MailIcon className="size-4 text-faint" />
-          {contact.email}
-        </a>
+        {contact.email !== null ? (
+          <a
+            href={`mailto:${contact.email}`}
+            className="relative hit-44 inline-flex items-center gap-2 text-ink-soft hover:text-accent transition-colors"
+          >
+            <MailIcon className="size-4 text-faint" />
+            {contact.email}
+          </a>
+        ) : (
+          <span className="inline-flex items-center gap-2 text-muted">
+            <MailIcon className="size-4 text-faint" />
+            No email on file
+          </span>
+        )}
         <RevealField
           kind="phone"
           masked={contact.phone}

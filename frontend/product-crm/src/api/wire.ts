@@ -49,7 +49,8 @@ export interface LeadOut {
   phone: string | null;
   source: LeadSource;
   status: LeadStatus;
-  next_statuses: LeadStatus[];
+  /** Absent only from a service that predates it; the mapper reads that as "no moves offered". */
+  next_statuses?: LeadStatus[];
   owner_id: string | null;
   notes: string;
   converted_company_id: string | null;

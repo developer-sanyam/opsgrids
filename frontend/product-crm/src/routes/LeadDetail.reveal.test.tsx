@@ -30,6 +30,7 @@ const LEAD = {
   phone: "•••••• 4821",
   source: "form",
   status: "qualified",
+  next_statuses: ["working", "disqualified"],
   owner_id: null,
   notes: "",
   converted_company_id: null,

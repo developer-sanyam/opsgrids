@@ -73,6 +73,7 @@ const LEAD: Lead = {
   phone: null,
   source: "import",
   status: "working",
+  next_statuses: [],
   owner_id: null,
   notes: "",
   converted_company_id: null,

@@ -61,7 +61,7 @@ describe("ContactFormDialog — create", () => {
     const { user } = open();
 
     await user.type(screen.getByLabelText(/full name/i), "Asha Rao");
-    await user.type(screen.getByLabelText(/^email$/i), "asha@northwind.co");
+    await user.type(screen.getByLabelText(/^email/i), "asha@northwind.co");
     await user.click(screen.getByRole("button", { name: /create contact/i }));
 
     expect(await screen.findByText(/choose a company\./i)).toBeTruthy();
@@ -73,7 +73,7 @@ describe("ContactFormDialog — create", () => {
     const { user, onSaved } = open();
 
     await user.type(screen.getByLabelText(/full name/i), "Asha Rao");
-    await user.type(screen.getByLabelText(/^email$/i), "asha@northwind.co");
+    await user.type(screen.getByLabelText(/^email/i), "asha@northwind.co");
     await user.selectOptions(screen.getByLabelText(/^company$/i), COMPANY.id);
     await user.selectOptions(screen.getByLabelText(/^owner$/i), OWNER.id);
     await user.click(screen.getByRole("button", { name: /create contact/i }));
@@ -83,6 +83,49 @@ describe("ContactFormDialog — create", () => {
     expect(sent).toMatchObject({ full_name: "Asha Rao", email: "asha@northwind.co" });
     expect(sent).not.toHaveProperty("phone");
     expect(sent).not.toHaveProperty("raw_phone");
+  });
+
+  it("creates a phone-only contact: no email is sent, and a bare Indian mobile goes as +91 E.164", async () => {
+    vi.spyOn(client, "createContact").mockResolvedValue({ ...EXISTING, email: null });
+    const { user, onSaved } = open();
+
+    await user.type(screen.getByLabelText(/full name/i), "Ravi Kapoor");
+    await user.selectOptions(screen.getByLabelText(/^company$/i), COMPANY.id);
+    await user.selectOptions(screen.getByLabelText(/^owner$/i), OWNER.id);
+    await user.type(screen.getByLabelText(/^phone/i), "90000 00012");
+    await user.click(screen.getByRole("button", { name: /create contact/i }));
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    const sent = vi.mocked(client.createContact).mock.calls[0]?.[0];
+    expect(sent).toMatchObject({ full_name: "Ravi Kapoor", raw_phone: "+919000000012" });
+    expect(sent).not.toHaveProperty("email");
+  });
+
+  it("asks for an email or a phone, not both and not neither", async () => {
+    const spy = vi.spyOn(client, "createContact");
+    const { user } = open();
+
+    await user.type(screen.getByLabelText(/full name/i), "Ravi Kapoor");
+    await user.selectOptions(screen.getByLabelText(/^company$/i), COMPANY.id);
+    await user.selectOptions(screen.getByLabelText(/^owner$/i), OWNER.id);
+    await user.click(screen.getByRole("button", { name: /create contact/i }));
+
+    expect(await screen.findByText(/add an email or a phone number/i)).toBeTruthy();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("refuses a number that is neither +country-code nor an Indian mobile, in words", async () => {
+    const spy = vi.spyOn(client, "createContact");
+    const { user } = open();
+
+    await user.type(screen.getByLabelText(/full name/i), "Ravi Kapoor");
+    await user.selectOptions(screen.getByLabelText(/^company$/i), COMPANY.id);
+    await user.selectOptions(screen.getByLabelText(/^owner$/i), OWNER.id);
+    await user.type(screen.getByLabelText(/^phone/i), "415 555 2671");
+    await user.click(screen.getByRole("button", { name: /create contact/i }));
+
+    expect(await screen.findByText(/10-digit mobile, or the number with its country code/i)).toBeTruthy();
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it("disables submit while pending and blocks a second submission", async () => {
@@ -95,7 +138,7 @@ describe("ContactFormDialog — create", () => {
     const { user } = open();
 
     await user.type(screen.getByLabelText(/full name/i), "Asha Rao");
-    await user.type(screen.getByLabelText(/^email$/i), "asha@northwind.co");
+    await user.type(screen.getByLabelText(/^email/i), "asha@northwind.co");
     await user.selectOptions(screen.getByLabelText(/^company$/i), COMPANY.id);
     await user.selectOptions(screen.getByLabelText(/^owner$/i), OWNER.id);
     const submit = screen.getByRole("button", { name: /create contact/i });
@@ -121,7 +164,7 @@ describe("ContactFormDialog — create", () => {
     const { user } = open();
 
     await user.type(screen.getByLabelText(/full name/i), "Asha Rao");
-    await user.type(screen.getByLabelText(/^email$/i), "asha@northwind.co");
+    await user.type(screen.getByLabelText(/^email/i), "asha@northwind.co");
     await user.selectOptions(screen.getByLabelText(/^company$/i), COMPANY.id);
     await user.selectOptions(screen.getByLabelText(/^owner$/i), OWNER.id);
     await user.click(screen.getByRole("button", { name: /create contact/i }));
@@ -142,7 +185,7 @@ describe("ContactFormDialog — create", () => {
     const { user } = open();
 
     await user.type(screen.getByLabelText(/full name/i), "Asha Rao");
-    await user.type(screen.getByLabelText(/^email$/i), "asha@northwind.co");
+    await user.type(screen.getByLabelText(/^email/i), "asha@northwind.co");
     await user.selectOptions(screen.getByLabelText(/^company$/i), COMPANY.id);
     await user.selectOptions(screen.getByLabelText(/^owner$/i), OWNER.id);
     await user.click(screen.getByRole("button", { name: /create contact/i }));

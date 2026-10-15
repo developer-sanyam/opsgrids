@@ -12,6 +12,7 @@ import type {
   Contact,
   Deal,
   Lead,
+  LeadStatus,
   Owner,
 } from "./types";
 
@@ -124,10 +125,26 @@ export const ACTIVITIES: Activity[] = [
 
 // email/phone are already the masked form here — fixtures render exactly what the live
 // service returns, and the raw value never reaches this client either way.
-export const LEADS: Lead[] = [
+/** The moves the live service's state machine allows, in its order (`LeadOut.next_statuses`).
+ *  Fixture mode answers like the server does; the live app never reads this table. */
+const FIXTURE_LEAD_MOVES: Record<LeadStatus, LeadStatus[]> = {
+  new: ["working", "disqualified"],
+  working: ["new", "qualified", "disqualified"],
+  qualified: ["working", "disqualified"],
+  disqualified: ["new", "working"],
+  converted: [],
+};
+
+export function nextStatusesFor(status: LeadStatus): LeadStatus[] {
+  return [...FIXTURE_LEAD_MOVES[status]];
+}
+
+const RAW_LEADS: Omit<Lead, "next_statuses">[] = [
   { id: "lead-1", full_name: "Meera Iyer", company: "Solstice Energy", email: "m•••@s•••", phone: "•••••• 4821", source: "form", status: "new", owner_id: null, notes: "Requested a demo from the pricing page.", converted_company_id: null, converted_contact_id: null, converted_deal_id: null, converted_at: null, created_at: "2026-08-20T09:00:00Z" },
   { id: "lead-2", full_name: "Devansh Rao", company: "Kestrel Freight", email: "d•••@k•••", phone: null, source: "manual", status: "working", owner_id: "own-2", notes: "Referral from Vikram's LinkedIn outreach.", converted_company_id: null, converted_contact_id: null, converted_deal_id: null, converted_at: null, created_at: "2026-08-18T14:30:00Z" },
   { id: "lead-3", full_name: "Ananya Bose", company: "Cobalt Financial", email: "a•••@c•••", phone: "•••••• 7710", source: "form", status: "qualified", owner_id: "own-4", notes: "Confirmed budget for Q4; ready to convert.", converted_company_id: null, converted_contact_id: null, converted_deal_id: null, converted_at: null, created_at: "2026-08-10T11:15:00Z" },
   { id: "lead-4", full_name: "Farhan Sheikh", company: null, email: null, phone: "•••••• 9042", source: "import", status: "disqualified", owner_id: "own-3", notes: "Not a fit — outside our supported region.", converted_company_id: null, converted_contact_id: null, converted_deal_id: null, converted_at: null, created_at: "2026-07-29T08:45:00Z" },
   { id: "lead-5", full_name: "Priyanka Nair", company: "Umbra Studio", email: "p•••@u•••", phone: null, source: "form", status: "converted", owner_id: "own-1", notes: "Converted after the founder walkthrough.", converted_company_id: "comp-14", converted_contact_id: "con-15", converted_deal_id: "deal-14", converted_at: "2026-08-11T10:30:00Z", created_at: "2026-07-15T09:00:00Z" },
 ];
+
+export const LEADS: Lead[] = RAW_LEADS.map((lead) => ({ ...lead, next_statuses: nextStatusesFor(lead.status) }));

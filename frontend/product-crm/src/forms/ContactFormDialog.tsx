@@ -3,7 +3,7 @@ import { useRef, useState } from "react";
 import { createContact, setContactPhone, updateContact } from "@/api/client";
 import type { Company, Contact, ContactStatus, Owner } from "@/api/types";
 import { maybe } from "@/lib/optional";
-import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
+import { ApiError, normalisePhone, problemMessage, useMutation } from "@opsgrids/client";
 import { FormDialog, InlineAlert, Select, TextField, useFormDirty } from "@opsgrids/ui";
 import { OwnerPicker } from "./OwnerPicker";
 
@@ -61,30 +61,37 @@ export function ContactFormDialog({
   const [phoneError, setPhoneError] = useState<string | undefined>(undefined);
   const nameRef = useRef<HTMLInputElement>(null);
 
+  // What the number is sent as: E.164. A bare Indian mobile is completed to +91 for an Indian
+  // organization (`normalisePhone`); anything else needs its country code.
+  const phoneE164 = newPhone.trim() ? normalisePhone(newPhone) : null;
+
   const save = useMutation(
     async (): Promise<Contact> => {
       if (contact) {
         let saved = await updateContact(contact.id, {
           full_name: fullName.trim(),
           title: title.trim(),
-          email: email.trim(),
+          // A phone-only contact has no address; the service cannot clear one, so a blank field
+          // means "unchanged" (submit() refuses a blank where one was already saved).
+          ...(email.trim() ? { email: email.trim() } : {}),
           company_id: companyId,
           owner_id: ownerId,
           status,
         });
         if (newPhone.trim()) {
-          saved = await setContactPhone(contact.id, { raw_phone: newPhone.trim() });
+          saved = await setContactPhone(contact.id, { raw_phone: phoneE164 ?? newPhone.trim() });
         }
         return saved;
       }
       return createContact({
         full_name: fullName.trim(),
-        email: email.trim(),
+        // Optional (ADR-0038 D-14): a person reachable by phone alone is a contact.
+        ...(email.trim() ? { email: email.trim() } : {}),
         company_id: companyId,
         owner_id: ownerId,
         title: title.trim(),
         status,
-        ...(newPhone.trim() ? { raw_phone: newPhone.trim() } : {}),
+        ...(phoneE164 !== null ? { raw_phone: phoneE164 } : {}),
       });
     },
     { onSuccess: (saved) => onSaved(saved) },
@@ -103,8 +110,16 @@ export function ContactFormDialog({
       nameRef.current?.focus();
       return;
     }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-      setEmailError("Enter a valid email address.");
+    if (email.trim() === "" && contact?.email) {
+      setEmailError("An email address can't be removed once saved, only replaced.");
+      return;
+    }
+    if (email.trim() !== "" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      setEmailError("Enter a valid email address, or leave it blank for a contact reached by phone.");
+      return;
+    }
+    if (!contact && email.trim() === "" && newPhone.trim() === "") {
+      setEmailError("Add an email or a phone number so you can reach them.");
       return;
     }
     if (companyId === "") {
@@ -115,8 +130,8 @@ export function ContactFormDialog({
       setOwnerError("Choose an owner.");
       return;
     }
-    if (newPhone.trim() && newPhone.trim().length < 4) {
-      setPhoneError("Enter the number with a country code, like +91 98765 43210.");
+    if (newPhone.trim() && phoneE164 === null) {
+      setPhoneError("Enter a 10-digit mobile, or the number with its country code, like +91 98765 43210.");
       return;
     }
     void save.mutate(undefined);
@@ -154,7 +169,7 @@ export function ContactFormDialog({
         type="email"
         value={email}
         onChange={(e) => setEmail(e.target.value)}
-        required
+        optional
         {...maybe("error", emailError ?? save.fieldErrors.email)}
       />
 
@@ -211,7 +226,7 @@ export function ContactFormDialog({
             inputMode="tel"
             optional
             placeholder="+91 98765 43210"
-            helper="With country code. Leave blank to keep the number on file."
+            helper="A 10-digit mobile, or with country code. Leave blank to keep the number on file."
             {...maybe("error", phoneError)}
           />
         </div>
@@ -225,7 +240,7 @@ export function ContactFormDialog({
           inputMode="tel"
           optional
           placeholder="+91 98765 43210"
-          helper="With country code, e.g. +91 98765 43210."
+          helper="A 10-digit mobile, or with country code, e.g. +91 98765 43210. A contact needs an email or a phone."
           {...maybe("error", phoneError)}
         />
       )}

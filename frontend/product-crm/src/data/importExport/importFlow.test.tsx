@@ -967,12 +967,13 @@ describe("contacts: import and export", () => {
           { fullName: "Daniel Okafor", email: "daniel.okafor@cobaltfin.com", company: "Cobalt Financial" },
           // Row 4: on file, but only in other capitals.
           { fullName: "Kiran Bose", email: "KIRAN.BOSE@northwind.co", company: "Northwind Logistics" },
-          // Row 5: a phone number without a country code.
+          // Row 5: a phone number without a country code that is not an Indian mobile either
+          // (a bare 10-digit mobile starting 6-9 is read as +91 for an Indian organization).
           {
             fullName: "Vikram Shah",
             email: "vikram.shah@northwind.co",
             company: "Northwind Logistics",
-            phone: "98765 43210",
+            phone: "415 555 2671",
           },
           // Row 6: on file with exactly these capitals, so the address goes to the server as
           // typed and the server's 409 decides.
