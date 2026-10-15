@@ -27,11 +27,8 @@ function symbolFor(currency: string): string {
 }
 
 /** A number formatter for a currency's own fraction digits (INR 2, JPY 0, KWD 3). */
-function numberFormat(digits: number, compact = false): Intl.NumberFormat {
-  return new Intl.NumberFormat("en-IN", {
-    ...(compact ? { notation: "compact" as const, maximumFractionDigits: 2 } : {}),
-    ...(compact ? {} : { minimumFractionDigits: digits, maximumFractionDigits: digits }),
-  });
+function numberFormat(places: number): Intl.NumberFormat {
+  return new Intl.NumberFormat("en-IN", { minimumFractionDigits: places, maximumFractionDigits: places });
 }
 
 /** "₹12,34,567.00" — full precision with the Indian digit grouping and the currency sign. */
@@ -49,9 +46,20 @@ export function formatMoneyWhole(minor: Minor, currency: string = CURRENCY): str
   return `${symbolFor(currency)}${numberFormat(0).format(Math.round(toMajor(minor, currency)))}`;
 }
 
-/** "₹12.35L" / "₹1.24Cr" — Indian compact notation for headline KPI figures. */
+/**
+ * "₹96,760" / "₹12.35L" / "₹1.24Cr" — Indian compact notation for headline KPI figures. Below a
+ * lakh the full grouped figure is shown (never "K", which Indian readers do not use); a lakh is
+ * 1,00,000 and a crore is 1,00,00,000.
+ */
 export function formatMoneyCompact(minor: Minor, currency: string = CURRENCY): string {
-  return `${symbolFor(currency)}${numberFormat(0, true).format(toMajor(minor, currency))}`;
+  const major = toMajor(minor, currency);
+  const magnitude = Math.abs(major);
+  const sign = major < 0 ? "-" : "";
+  const trimmed = (value: number) =>
+    new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2 }).format(value);
+  if (magnitude >= 10_000_000) return `${sign}${symbolFor(currency)}${trimmed(magnitude / 10_000_000)}Cr`;
+  if (magnitude >= 100_000) return `${sign}${symbolFor(currency)}${trimmed(magnitude / 100_000)}L`;
+  return `${sign}${symbolFor(currency)}${numberFormat(0).format(Math.round(magnitude))}`;
 }
 
 /** A signed amount: "+₹4,500.00" / "−₹4,500.00" (true minus sign, never a hyphen). */

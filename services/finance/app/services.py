@@ -1303,8 +1303,11 @@ async def record_payment(
     resolved_today = _today(today)
     if payload.received_date > resolved_today:
         raise BusinessRuleProblem("A payment's received date cannot be in the future")
-    if await selectors.reference_exists(session, ctx.organization_id, payload.reference):
-        raise ConflictProblem(f"A payment referenced {payload.reference!r} already exists")
+    # Cash carries no bank reference; the schema lets only a cash payment omit it, and the
+    # service numbers it so the per-organization uniqueness still holds.
+    reference = payload.reference or f"CASH-{uuid.uuid4().hex[:12].upper()}"
+    if await selectors.reference_exists(session, ctx.organization_id, reference):
+        raise ConflictProblem(f"A payment referenced {reference!r} already exists")
     customer = await selectors.get_customer(
         session, ctx.organization_id, payload.customer_id, for_update=True
     )
@@ -1366,7 +1369,7 @@ async def record_payment(
     payment = Payment(
         organization_id=ctx.organization_id,
         created_by=str(ctx.principal.sub),
-        reference=payload.reference,
+        reference=reference,
         customer_id=payload.customer_id,
         received_date=payload.received_date,
         method=payload.method,

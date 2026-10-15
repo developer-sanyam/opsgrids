@@ -8,13 +8,14 @@ import { csvCell, problemMessage, useAsync } from "@opsgrids/client";
 import {
   Button,
   Card,
+  EmptyState,
   ErrorState,
   PageHeader,
   SampleChip,
   SectionHeader,
   Skeleton,
 } from "@/ui";
-import { DownloadIcon } from "@opsgrids/ui";
+import { DownloadIcon, ReceiptIcon } from "@opsgrids/ui";
 
 /** Revenue less contra-revenue; expenses; and the profit that falls out of the two. */
 function summarise(accounts: LedgerAccount[]) {
@@ -91,9 +92,13 @@ export function LedgerPage() {
   const ledger = useAsync(getLedger, []);
   const [exported, setExported] = useState(false);
 
+  /** True once the report has loaded and carries real account rows. No general ledger exists
+   *  behind the live report yet, so it arrives with none — and nothing is drawn or exportable. */
+  const hasAccounts = ledger.status === "success" && ledger.data.accounts.length > 0;
+
   const summary = useMemo(
-    () => (ledger.status === "success" ? summarise(ledger.data.accounts) : null),
-    [ledger],
+    () => (ledger.status === "success" && hasAccounts ? summarise(ledger.data.accounts) : null),
+    [ledger, hasAccounts],
   );
 
   const totals = useMemo(() => {
@@ -112,21 +117,22 @@ export function LedgerPage() {
         actions={
           <div className="flex flex-wrap items-center gap-2">
             {ledger.status === "success" && ledger.data.sample ? <SampleChip /> : null}
-            <Button
-              variant="outline"
-              size="md"
-              leadingIcon={<DownloadIcon className="size-4" />}
-              disabled={ledger.status !== "success"}
-              onClick={() => {
-                if (ledger.status === "success") {
-                  exportCsv(ledger.data);
-                  setExported(true);
-                  window.setTimeout(() => setExported(false), 4000);
-                }
-              }}
-            >
-              Export CSV
-            </Button>
+            {hasAccounts ? (
+              <Button
+                variant="outline"
+                size="md"
+                leadingIcon={<DownloadIcon className="size-4" />}
+                onClick={() => {
+                  if (ledger.status === "success") {
+                    exportCsv(ledger.data);
+                    setExported(true);
+                    window.setTimeout(() => setExported(false), 4000);
+                  }
+                }}
+              >
+                Export CSV
+              </Button>
+            ) : null}
           </div>
         }
       />
@@ -135,8 +141,10 @@ export function LedgerPage() {
         {exported
           ? "Trial balance exported as CSV."
           : ledger.status === "success"
-            ? `Representative figures for ${ledger.data.period_label}, as of ${formatDate(ledger.data.as_of)} — there is no general ledger behind this report yet, so nothing here is this organization's own booked data.`
-            : "Profit & loss and trial balance, straight from the ledger."}
+            ? hasAccounts
+              ? `Representative figures for ${ledger.data.period_label}, as of ${formatDate(ledger.data.as_of)} — not this organization's own booked data.`
+              : "Profit & loss and trial balance, once the general ledger is available."
+            : "Profit & loss and trial balance."}
       </p>
 
       {ledger.status === "loading" ? (
@@ -157,6 +165,16 @@ export function LedgerPage() {
       {ledger.status === "error" ? (
         <Card className="p-6">
           <ErrorState message={problemMessage(ledger.error)} onRetry={ledger.reload} />
+        </Card>
+      ) : null}
+
+      {ledger.status === "success" && !hasAccounts ? (
+        <Card className="p-6">
+          <EmptyState
+            icon={<ReceiptIcon className="size-6" />}
+            title="Ledger reports are not available yet"
+            description="Profit and loss and the trial balance need a general ledger, which is not built yet. Your invoices, payments and GST returns are unaffected, and nothing here is estimated."
+          />
         </Card>
       ) : null}
 

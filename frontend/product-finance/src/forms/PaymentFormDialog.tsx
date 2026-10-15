@@ -89,7 +89,7 @@ export function PaymentFormDialog({ invoice, customers, onClose, onSaved }: Paym
     setDateError(undefined);
     setAllocationError(undefined);
 
-    if (reference.trim() === "") {
+    if (reference.trim() === "" && method !== "cash") {
       setReferenceError("Enter the bank UTR, cheque number or gateway reference.");
       referenceRef.current?.focus();
       return;
@@ -129,7 +129,7 @@ export function PaymentFormDialog({ invoice, customers, onClose, onSaved }: Paym
     }
 
     void save.mutate({
-      reference: reference.trim(),
+      ...(reference.trim() === "" ? {} : { reference: reference.trim() }),
       customer_id: customerId,
       received_date: receivedDate,
       method,
@@ -182,8 +182,12 @@ export function PaymentFormDialog({ invoice, customers, onClose, onSaved }: Paym
           label="Reference"
           value={reference}
           onChange={(e) => setReference(e.target.value)}
-          helper="Bank UTR, cheque number or gateway reference."
-          required
+          helper={
+            method === "cash"
+              ? "Optional for cash. Leave blank and one is assigned."
+              : "Bank UTR, cheque number or gateway reference."
+          }
+          required={method !== "cash"}
           error={referenceError ?? fieldError(saveProblem, "reference")}
         />
         <TextField

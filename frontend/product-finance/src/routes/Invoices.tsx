@@ -33,7 +33,7 @@ import { DownloadIcon, PlusIcon, ReceiptIcon, useDebouncedValue } from "@opsgrid
 
 const STATUS_FILTERS: { value: InvoiceStatusFilter; label: string }[] = [
   { value: "all", label: "All" },
-  { value: "sent", label: "Sent" },
+  { value: "sent", label: "Issued" },
   { value: "overdue", label: "Overdue" },
   { value: "paid", label: "Paid" },
   { value: "draft", label: "Draft" },
@@ -209,7 +209,7 @@ export function InvoicesPage() {
       header: "Status",
       align: "right",
       mobile: "status",
-      render: (inv) => <InvoiceStatusPill status={inv.status} />,
+      render: (inv) => <InvoiceStatusPill status={inv.status} amountPaidMinor={inv.amount_paid_minor} />,
     },
   ];
 

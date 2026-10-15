@@ -428,8 +428,11 @@ export interface PaymentAllocationCreate {
 
 /** `POST /finance/payments`. */
 export interface PaymentCreate {
-  /** Bank UTR / cheque number / gateway reference. Unique per organization (409 on a repeat). */
-  reference: string;
+  /**
+   * Bank UTR / cheque number / gateway reference. Unique per organization (409 on a repeat).
+   * Omitted only for cash, which has none; the service then assigns one.
+   */
+  reference?: string;
   customer_id: string;
   received_date: string;
   method: PaymentMethod;

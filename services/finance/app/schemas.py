@@ -22,7 +22,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # --------------------------------------------------------------------- service metadata
 
@@ -354,8 +354,8 @@ class LedgerReport(BaseModel):
     period_label: str
     as_of: date
     accounts: list[LedgerAccount]
-    #: Always true today: there is no general ledger table behind this report, only the
-    #: representative accounts in `app.domain.LEDGER_ACCOUNTS`. Never served unflagged.
+    #: Always true today: there is no general ledger table behind this report, so `accounts`
+    #: is empty. Never served with invented figures.
     sample: bool = True
 
 
@@ -550,12 +550,20 @@ class PaymentCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     #: Bank UTR / cheque number / gateway reference. Unique per organization (409 on a repeat).
-    reference: str = Field(min_length=1, max_length=40)
+    #: Cash has no external reference, so only a cash payment may omit it: the service then
+    #: assigns one of its own.
+    reference: str | None = Field(default=None, min_length=1, max_length=40)
     customer_id: uuid.UUID
     received_date: date
     method: PaymentMethod
     allocations: list[PaymentAllocationCreate] = Field(min_length=1)
     note: str | None = None
+
+    @model_validator(mode="after")
+    def _reference_required_unless_cash(self) -> PaymentCreate:
+        if self.reference is None and self.method != "cash":
+            raise ValueError("A reference is required unless the payment was received in cash")
+        return self
 
 
 # --------------------------------------------------------------------- purchases

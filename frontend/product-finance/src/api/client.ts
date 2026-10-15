@@ -701,7 +701,7 @@ export async function recordPayment(input: PaymentCreate): Promise<Payment> {
     });
     const payment: Payment = {
       id: `fixture-pmt-${fixturePaymentSeq++}`,
-      reference: input.reference,
+      reference: input.reference ?? `CASH-${fixturePaymentSeq}`,
       customer_id: input.customer_id,
       received_date: input.received_date,
       method: input.method,

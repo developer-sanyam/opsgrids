@@ -320,14 +320,11 @@ class TestRevenueHistory:
 
 
 class TestLedger:
-    async def test_ledger_returns_the_trial_balance(self, client, book) -> None:
+    async def test_ledger_serves_no_invented_figures(self, client, book) -> None:
         res = await client.get("/api/v1/finance/ledger")
         assert res.status_code == 200
         body = res.json()
-        assert body["period_label"].startswith("FY 2026")
-        assert len(body["accounts"]) == len(domain.LEDGER_ACCOUNTS)
-        codes = {a["code"] for a in body["accounts"]}
-        assert "4000" in codes and "5000" in codes
-        # There is no ledger table behind this report — always flagged, never served as fact.
+        # There is no ledger table behind this report: flagged, and no fabricated accounts.
+        assert body["accounts"] == []
         assert body["sample"] is True
         assert body["as_of"] == datetime.now(UTC).date().isoformat()

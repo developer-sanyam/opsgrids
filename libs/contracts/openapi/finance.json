@@ -3314,14 +3314,20 @@
             "type": "string"
           },
           "reference": {
-            "maxLength": 40,
-            "minLength": 1,
-            "title": "Reference",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference"
           }
         },
         "required": [
-          "reference",
           "customer_id",
           "received_date",
           "method",

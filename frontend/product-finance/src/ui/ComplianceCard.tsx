@@ -98,7 +98,7 @@ function Position({
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <Figure
           value={`${summary.filed}/${summary.required}`}
-          label="Filed"
+          label="Filed (simulated)"
           qualifier={`Documents raised in ${summary.periodLabel} that need an IRN`}
         />
         <Figure
