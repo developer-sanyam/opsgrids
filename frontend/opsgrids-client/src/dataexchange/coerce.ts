@@ -18,6 +18,7 @@ import {
 } from "./cells";
 import type { AnyEntity, CellInput } from "./cells";
 import { EMAIL_MAX, normaliseEmail } from "./email";
+import { normalisePhone } from "../phone";
 import { compareDecimals, parseMajorUnits, plainNumberString, describeMoneyProblem } from "./money";
 import type { ImportColumn, ImportContext, Lookup, LookupSet, ParsedRow, ParsedValue } from "./types";
 import { RowProblem } from "./types";
@@ -259,13 +260,18 @@ function coerceEmail(column: ImportColumn, cell: CellInput): Coerced {
   return address === null ? invalid : ok(address);
 }
 
+/**
+ * A phone cell, as E.164. A number with a country code is taken as written; a bare national number
+ * is completed only for an organization whose own country is India (`normalisePhone`: ten digits
+ * starting 6-9, with or without a leading 0 or 91) and refused for every other. Nothing is guessed.
+ */
 function coercePhone(column: ImportColumn, cell: CellInput): Coerced {
   const text = textOf(cell);
-  const digits = text === null ? null : text.replace(/[\s\-().]/g, "");
-  if (digits === null || !/^\+[1-9]\d{7,14}$/.test(digits)) {
+  const phone = text === null ? null : normalisePhone(text);
+  if (phone === null) {
     return fail(`${column.header} must start with + and the country code, e.g. +919876543210`);
   }
-  return ok(digits);
+  return ok(phone);
 }
 
 /**

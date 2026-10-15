@@ -173,8 +173,10 @@ class TestCreateDeal:
     async def test_a_caller_with_no_rep_identity_must_name_an_owner(
         self, client, org_id, data
     ) -> None:
-        """Nobody to attribute the deal to is a 422, not a row owned by nothing."""
-        principal = principal_for(org_id, ["crm.pipeline.deal.write:ORG"], subject_ref=None)
+        """Nobody to attribute the deal to is a 422, not a row owned by nothing. (An ORG-scoped
+        caller falls back to their membership id -- `test_unlinked_owner.py`; an OWN-scoped one
+        has no truthful fallback.)"""
+        principal = principal_for(org_id, ["crm.pipeline.deal.write:OWN"], subject_ref=None)
         with as_principal(principal):
             response = await client.post(
                 "/api/v1/deals",

@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RowProblem, makeLookup } from "@opsgrids/client";
 
 import { getMySubjectRef } from "@/lib/subject";
-import { OWNERS_WIRE, companyWire, contactWire, contextWith, pageOf, parsedRow, stubGateway } from "./entityTestKit";
+import { OWNERS_WIRE, companyWire, contactWire, contextWith, pageOf, parsedRow, stubApi, stubGateway } from "./entityTestKit";
 import {
   labelFor,
   loadCompanyLookup,
@@ -43,7 +43,8 @@ const ctx = contextWith({
   ]),
 });
 
-const NO_ACTIVE_REP = "Your account has no active sales-rep record, so name an owner in the Owner email column.";
+const NO_ACTIVE_REP =
+  "Your account is not a sales rep yet, so name an owner in the Owner email column, or ask an administrator to add you as a rep.";
 
 describe("ownerIdOrSelf", () => {
   it("is the rep the cell names, whoever is signed in", () => {
@@ -77,11 +78,84 @@ describe("ownerIdOrSelf", () => {
   });
 });
 
+describe("the signed-in login as a rep (a blank Owner cell means me)", () => {
+  const ME = {
+    user_id: "user-1",
+    email: "owner@acme.example",
+    full_name: "Asha Owner",
+    organization_id: "org-1",
+    membership_id: "mem-1",
+    roles: [],
+    amr: [],
+    must_change_password: false,
+    mfa_enabled: false,
+    organizations: [],
+  };
+
+  beforeEach(() => {
+    vi.mocked(getMySubjectRef).mockReturnValue(null);
+  });
+
+  function gateway(ownersOnRoster: unknown[], put: (body: unknown) => { body: unknown; status?: number }) {
+    return stubApi((request) => {
+      if (request.url.pathname.endsWith("/auth/me")) return { body: ME };
+      if (request.url.pathname.endsWith("/customers/owners/me")) return put(request.body);
+      return { body: ownersOnRoster };
+    });
+  }
+
+  it("makes an organization owner with no employee record a rep, so blank Owner cells are theirs", async () => {
+    const made = { id: "mem-1", full_name: "Asha Owner", email: "owner@acme.example", role: "", is_active: true };
+    const calls = gateway([], () => ({ body: made }));
+
+    const lookups = await loadOwnerLookups(signal);
+
+    const put = calls.find((c) => c.method === "PUT");
+    expect(put?.url.pathname).toMatch(/\/customers\/owners\/me$/);
+    expect(put?.body).toEqual({ full_name: "Asha Owner", email: "owner@acme.example" });
+    expect(ownerIdOrSelf(rowWithOwner(null), contextWith(lookups))).toBe("mem-1");
+    // And the new rep is a valid named owner too.
+    expect(lookups.owners?.resolve("owner@acme.example")).toBe("mem-1");
+  });
+
+  it("finds a rep already on the roster by membership id without writing anything", async () => {
+    const mine = { id: "mem-1", full_name: "Asha Owner", email: "different@acme.example", role: "", is_active: true };
+    const calls = gateway([mine], () => ({ body: {}, status: 500 }));
+
+    const lookups = await loadOwnerLookups(signal);
+
+    expect(calls.some((c) => c.method === "PUT")).toBe(false);
+    expect(ownerIdOrSelf(rowWithOwner(null), contextWith(lookups))).toBe("mem-1");
+  });
+
+  it("finds the rep the old one-click claim made, by the login's own email", async () => {
+    const legacy = { id: "own-77", full_name: "Asha Owner", email: "Owner@Acme.example", role: "", is_active: true };
+    const calls = gateway([legacy], () => ({ body: {}, status: 500 }));
+
+    const lookups = await loadOwnerLookups(signal);
+
+    expect(calls.some((c) => c.method === "PUT")).toBe(false);
+    expect(ownerIdOrSelf(rowWithOwner(null), contextWith(lookups))).toBe("own-77");
+  });
+
+  it("says plainly what to do when the login may not become a rep (the server refuses)", async () => {
+    gateway([], () => ({ body: { title: "Forbidden", status: 403, detail: "no" }, status: 403 }));
+
+    const lookups = await loadOwnerLookups(signal);
+
+    expect(lookups.selfOwner).toBeUndefined();
+    expect(() => ownerIdOrSelf(rowWithOwner(null), contextWith(lookups))).toThrow(
+      /ask an administrator to add you as a rep/,
+    );
+  });
+});
+
 describe("loadOwnerLookups", () => {
   it("offers active reps to the column and keeps every rep for the export", async () => {
     stubGateway(() => OWNERS_WIRE);
     const lookups = await loadOwnerLookups(signal);
-    expect(Object.keys(lookups).sort()).toEqual(["owners", "ownersAll"]);
+    // The mocked subject ref is own-1, a rep on the roster: that is `self`.
+    expect(Object.keys(lookups).sort()).toEqual(["owners", "ownersAll", "selfOwner"]);
     expect(lookups.owners?.labels).toEqual(["sofia@example.com", "Grace@Example.com"]);
     expect(lookups.ownersAll?.labelOf("own-3")).toBe("former@example.com");
     expect(lookups.owners?.labelOf("own-3")).toBeUndefined();

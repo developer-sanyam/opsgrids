@@ -1458,7 +1458,7 @@ export function __createFixtureEmployee(body: EmployeeIn): EmployeeOut {
   const created: EmployeeOut = {
     id: uuid(9000 + employeeSeq),
     membership_id: null,
-    employee_no: body.employee_no,
+    employee_no: body.employee_no ?? `EMP${String(employeeSeq).padStart(4, "0")}`,
     full_name: body.full_name,
     designation: body.designation ?? null,
     job_title: body.job_title ?? null,

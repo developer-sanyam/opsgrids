@@ -21,6 +21,7 @@ const CREATED: Lead = {
   phone: null,
   source: "manual",
   status: "new",
+  next_statuses: [],
   owner_id: null,
   notes: "",
   converted_company_id: null,

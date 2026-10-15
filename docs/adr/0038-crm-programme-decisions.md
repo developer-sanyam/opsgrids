@@ -348,3 +348,40 @@ None yet. One line per signed or completed piece of evidence, `D-n: <what was si
   leads); `approvals-for-tenants-without-hrms` (0042) is filed by R4.5, proposed, and accepted
   before the approval deploy (D-18); `crm-quotes-in-deal` (0043) is filed with R4.5 (D-19). 0040 is
   `faster-ci`, merged (#118).
+
+## Amended 2026-10-15: what the first self-serve owner needed, delivered ahead of the programme
+
+A real signup (owner account, trials started) could not log an activity, import without an Owner
+column, create a company without being told to "choose an owner", or convert a lead into more than a
+company and a ₹0 deal named with an id fragment. Four of the programme's open items are partly or
+wholly delivered by the fixes, in the direction the decisions already point; nothing here changes a
+decision's state.
+
+- **The roster id for a login with no employee link is its membership id** (D-7/D-8/R2.6 and the
+  `OwnerSubject.MEMBERSHIP` direction of ADR-0008 Q5). `PUT /customers/owners/me` ensures the
+  caller's own roster row with `id = membership id` -- idempotent, `crm.book.owner.write` at ORG, a
+  row already made for the same email by the old one-click claim is returned as is. deal-service
+  defaults an unnamed owner for an ORG-scoped caller with no `sref` to the membership id
+  (`app/api/routes.py::default_owner`), so it needs no cross-schema read. OWN scope still compares
+  `subject_ref` and an OWN-scoped caller with no link still gets a plain 422: R2.7 (CRM's scope on
+  the membership) is **not** delivered, and these rows need no data move when it is. The SPA finds
+  "my rep" by employee id, then membership id, then the login's own email (for the legacy rows), and
+  chooses it as the default owner everywhere an owner is asked for.
+- **D-14 is delivered: `contacts.email` is nullable.** Migration `a7c3e91d5b24`; `ContactIn.email`
+  is optional (a blank string is `None`); a lead with a phone and no email now converts into a
+  phone-only contact, matched on re-conversion by the number's keyed blind index, never by decrypting
+  anything. Contact responses and finance's `ContactSummaryOut` carry `email: null`; finance's
+  identity bridge stores its own empty-address value. The contact form asks for an email **or** a
+  phone.
+- **Lead status moves are published by the server.** `LeadOut.next_statuses` is computed from
+  `domain.can_transition`, the only copy of the state machine, so the SPA offers exactly the moves
+  the server accepts (never New -> Qualified, never the current status, never Converted), and a
+  refusal reads as a sentence ("A New lead has to be marked Working before it can be Qualified.").
+- **Conversion names the deal "<Company> -- <Lead name>"**, with deal-service numbering a clash
+  ("... (2)") instead of the lead-id fragment, and takes an optional deal value (integer minor units)
+  and stage from a convert dialog (`POST /leads/{id}:convert` with an optional body; no body is the
+  old behaviour).
+- **Phones**: the server stays strict -- E.164 only, never a guessed country. For an organization
+  whose country is India the SPA reads a bare 10-digit mobile (6-9 first digit, optionally behind a
+  `0` or `91`) as `+91...` before sending, in the forms and in imports; a revealed number is shown
+  `+91 90000 00021`. The organization's country comes from `GET /organization`, India until it is known.

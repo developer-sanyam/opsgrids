@@ -410,6 +410,26 @@ async def get_contact_by_email_for_update(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def get_contact_by_phone_index_for_update(
+    session: AsyncSession, org_id: uuid.UUID, phone_index: str
+) -> Contact | None:
+    """`get_contact_by_phone_index`, row-locked, for a phone-only lead's conversion to reuse the
+    person who already holds the number (see `get_contact_by_email_for_update`)."""
+    stmt = (
+        select(Contact)
+        .where(
+            Contact.phone_index == phone_index,
+            Contact.organization_id == org_id,
+            Contact.deleted_at.is_(None),
+        )
+        .order_by(Contact.created_at.asc())
+        .limit(1)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    return (await session.execute(stmt)).scalars().first()
+
+
 async def get_contact_with_company(
     session: AsyncSession, org_id: uuid.UUID, contact_id: uuid.UUID
 ) -> tuple[Contact, Company] | None:

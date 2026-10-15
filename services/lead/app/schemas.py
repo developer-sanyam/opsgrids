@@ -102,6 +102,10 @@ class LeadOut(BaseModel):
     phone: str | None
     source: LeadSource
     status: LeadStatus
+    #: The statuses a plain status change may move this lead to, from the server's own state
+    #: machine (`domain.allowed_next_statuses`). The SPA offers exactly these. Never contains
+    #: `converted`: that is only `:convert`.
+    next_statuses: list[LeadStatus]
     owner_id: str | None
     notes: str
     converted_company_id: str | None
@@ -109,6 +113,19 @@ class LeadOut(BaseModel):
     converted_deal_id: str | None
     converted_at: datetime | None
     created_at: datetime
+
+
+class LeadConvertIn(BaseModel):
+    """Optional say over the deal a conversion opens. The whole body is optional, and so is each
+    field: `POST /leads/{id}:convert` with no body opens a zero-value deal in the pipeline's
+    entry stage, exactly as before. `deal_value_minor` is integer minor units (INR) -- never a
+    float; `deal_stage` is a stage key of the organization's pipeline (deal-service checks it
+    and refuses an unknown or archived one)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    deal_value_minor: int = Field(default=0, ge=0, le=10**13, strict=True)
+    deal_stage: str | None = Field(default=None, min_length=1, max_length=40)
 
 
 class LeadConvertOut(BaseModel):

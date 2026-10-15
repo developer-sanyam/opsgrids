@@ -17,6 +17,7 @@ from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -245,8 +246,21 @@ async def create_employee(
             "PATCH /api/v1/members/{membership_id} instead."
         )
 
-    if await selectors.get_by_employee_no(session, ctx.organization_id, payload.employee_no):
-        raise ConflictProblem(f"An employee numbered {payload.employee_no!r} already exists")
+    employee_no = payload.employee_no
+    if employee_no is None:
+        # Serialised per organization: two "create my record" calls racing would otherwise read
+        # the same maximum and both take the same number (the unique constraint would catch the
+        # second, as a 500 rather than a number).
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+            {"key": f"employee_no:{ctx.organization_id}"},
+        )
+        employee_no = (
+            f"{selectors.GENERATED_NO_PREFIX}"
+            f"{await selectors.highest_generated_number(session, ctx.organization_id) + 1:04d}"
+        )
+    elif await selectors.get_by_employee_no(session, ctx.organization_id, employee_no):
+        raise ConflictProblem(f"An employee numbered {employee_no!r} already exists")
 
     await _assert_manager_exists(session, ctx.organization_id, payload.reporting_manager_id)
     await _assert_manager_exists(
@@ -265,7 +279,8 @@ async def create_employee(
         # this path cannot write the frozen column even if that guard is ever moved or relaxed
         # (ADR-0008 §3) — the value is always `None` by the time we get here, and stating it
         # keeps the mass assignment from quietly becoming a writer again.
-        **payload.model_dump(exclude={"pii", "membership_id"}),
+        **payload.model_dump(exclude={"pii", "membership_id", "employee_no"}),
+        employee_no=employee_no,
     )
     session.add(employee)
     # `hierarchy_version`'s server default is fetched back automatically here (SQLAlchemy 2.0's

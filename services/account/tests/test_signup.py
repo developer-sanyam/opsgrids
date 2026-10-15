@@ -130,6 +130,47 @@ class TestAStrangerSignsUp:
             assert "core.org.created" in staged or any(e.endswith("org.created") for e in staged)
             assert any(e.endswith("user.created") for e in staged)
 
+    async def test_the_owner_holds_every_contributed_core_slice_from_the_first_minute(
+        self, app_engine: None, admin_session: AsyncSession, directory_session: AsyncSession
+    ) -> None:
+        """A fresh self-serve owner must be able to open /approvals and every employee page.
+
+        `core` is a merge of account's and approval's slices (ADR-0007 §2). Organization creation
+        used to install only account's in-code slice, so the approval permissions reached an
+        organization only through the reconcile -- a brand-new owner got 403 on
+        `/approvals/inbox` and "Missing permission: core.approval.request.read".
+        """
+        out = await routes.signup(_payload(), directory_session, _request())
+
+        async with admin_session.begin():
+            user = await selectors.get_user_by_email(admin_session, out.email)
+            assert user is not None
+            membership = (
+                await admin_session.execute(
+                    select(Membership).where(
+                        Membership.organization_id == out.organization_id,
+                        Membership.user_id == user.id,
+                    )
+                )
+            ).scalar_one()
+            grants = set(await selectors.resolve_grants(admin_session, membership.id))
+
+        assert "core.approval.request.read:ORG" in grants
+        assert "core.approval.request.decide:ORG" in grants
+        assert "core.approval.delegation.write:ORG" in grants
+
+    async def test_a_member_role_carries_the_own_approval_reads(
+        self, app_engine: None, admin_session: AsyncSession, directory_session: AsyncSession
+    ) -> None:
+        """The default MEMBER role is how an invited employee reaches /approvals/mine."""
+        out = await routes.signup(_payload(), directory_session, _request())
+        async with admin_session.begin():
+            role = await selectors.get_role_by_code(admin_session, out.organization_id, "MEMBER")
+            assert role is not None
+            await admin_session.refresh(role, ["grants"])
+            held = {f"{g.permission.code}:{g.scope}" for g in role.grants}
+        assert "core.approval.request.read:OWN" in held
+
     async def test_the_payload_carries_no_password_field(self) -> None:
         """The auth schema is another service's. Sign-up cannot accept a password because the
         contract has nowhere to put one; the owner sets it by link once the inbox has proved

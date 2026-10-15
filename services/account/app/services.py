@@ -26,7 +26,7 @@ from starlette.requests import Request
 
 from app import dns_check, selectors
 from app import domain as domain_module
-from app.catalogue import CORE_REGISTRATION, ProductManifest
+from app.catalogue import CORE_REGISTRATION, ProductManifest, load_product_manifest
 from app.models import (
     AuditLog,
     Invitation,
@@ -155,6 +155,17 @@ async def create_organization(
     # A new organization gets the core role templates immediately, so its first member
     # has something to hold.
     await install_registration(session, org.id, CORE_REGISTRATION)
+    # `core` is a merge of every contributing service's slice (account's, approval's, ...), and
+    # only the committed manifest carries all of them (ADR-0007 §2). The in-code registration
+    # above is the floor that never depends on a file lookup; the manifest is installed on top
+    # of it (union only, so it can only widen) so a brand-new owner holds the approval
+    # permissions from the first minute instead of waiting for a reconcile. A missing manifest
+    # directory is loud in the log but does not stop the organization being created.
+    core_manifest = load_product_manifest("core")
+    if core_manifest is None:
+        log.warning("core_manifest_missing", organization_id=str(org.id))
+    else:
+        await install_registration(session, org.id, core_manifest.registration)
 
     record_audit(
         session,

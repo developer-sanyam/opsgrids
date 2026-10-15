@@ -35,6 +35,7 @@ export function leadFromWire(row: LeadOut): Lead {
     phone: row.phone,
     source: row.source,
     status: row.status,
+    next_statuses: row.next_statuses ?? [],
     owner_id: row.owner_id,
     notes: row.notes,
     converted_company_id: row.converted_company_id,

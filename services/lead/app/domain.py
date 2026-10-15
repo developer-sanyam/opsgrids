@@ -48,6 +48,49 @@ def can_transition(current: str, new: str) -> bool:
     return new in _TRANSITIONS.get(current, frozenset())
 
 
+def allowed_next_statuses(current: str) -> tuple[str, ...]:
+    """Every status a plain status change may move `current` to, in `STATUS_ORDER`.
+
+    Derived from `can_transition` rather than from `_TRANSITIONS` directly, so the list the API
+    publishes (`LeadOut.next_statuses`) and the move the API accepts can never disagree: the SPA
+    offers exactly these, and a client that sends anything else is refused by the same function.
+    """
+    return tuple(new for new in STATUS_ORDER if can_transition(current, new))
+
+
+#: How a status reads to a person. The words the SPA's own pills use.
+_STATUS_LABEL: dict[str, str] = {
+    "new": "New",
+    "working": "Working",
+    "qualified": "Qualified",
+    "disqualified": "Disqualified",
+    "converted": "Converted",
+}
+
+
+def refusal_for_transition(current: str, new: str) -> str:
+    """The sentence a refused status change answers with -- plain words, no internal quoting.
+
+    Names the moves that *are* open, so the rep learns what to do next instead of only what they
+    cannot do ("A new lead has to be marked Working before it can be Qualified").
+    """
+    cur = _STATUS_LABEL.get(current, current)
+    target = _STATUS_LABEL.get(new, new)
+    if current == new:
+        return f"This lead is already {cur}."
+    if current == "converted":
+        return "This lead has already been converted, so its status can no longer change."
+    if new == "converted":
+        return "A lead becomes Converted only through Convert, not by changing its status."
+    open_moves = [_STATUS_LABEL[s] for s in allowed_next_statuses(current)]
+    if current == "new" and new == "qualified":
+        return "A New lead has to be marked Working before it can be Qualified."
+    return (
+        f"A {cur} lead can't be moved to {target}. From {cur} you can move it to "
+        f"{' or '.join(open_moves)}."
+    )
+
+
 def can_convert(status: str) -> bool:
     """Only a qualified lead may convert. Not `new` or `working` — conversion creates a real
     company and deal, and doing that from an unqualified lead is exactly the noise a pipeline
@@ -157,25 +200,21 @@ DEAL_NAME_MAX_LENGTH = 200
 _TRUNCATION_MARK = "…"
 
 
-def deal_name(company: str, full_name: str, lead_id: uuid.UUID, generation: int = 0) -> str:
-    """The name `:convert` gives the deal it creates for `lead_id` — bounded to fit
-    deal-service's column, and suffixed with a short, fixed-width slice of the lead's own id
-    so two different leads naming the same company and the same person still produce two
-    distinguishable deal names instead of one that silently reads as a single duplicate.
+def deal_name(company: str, full_name: str) -> str:
+    """The name `:convert` gives the deal it creates: ``"<Company> — <Lead name>"``, bounded to
+    fit deal-service's column.
 
-    `generation` (`Lead.conversion_generation`) is folded into the suffix for every generation
-    after the first — `"… · a5065d10/1"`. Deal-service refuses a second live deal with the same
-    name, and an earlier generation's deal is usually still live (the record that made a new
-    generation necessary is more often the company or contact, or an abort that could not take
-    the deal back), so a bumped generation that reused the old name would trade one permanent
-    dead end for another. Generation `0` names are exactly what they always were.
+    No id fragment. It used to carry ``" · 68d1da6a"`` (and ``"/generation"``) so two leads
+    naming the same company and person would not collide on deal-service's one-live-deal-per-name
+    rule -- which put a meaningless token in front of every rep. Uniqueness is handled where the
+    names live instead: deal-service's lead-conversion route picks the first free ``"… (2)"``,
+    ``"… (3)"`` when the plain name is taken (`deal/app/services.unique_deal_name`), and it is
+    idempotent by the deal's own deterministic id, so a replay never renames anything.
     """
-    suffix = f" · {str(lead_id)[:8]}" + (f"/{generation}" if generation else "")
-    budget = DEAL_NAME_MAX_LENGTH - len(suffix)
     base = f"{company} — {full_name}"
-    if len(base) > budget:
-        base = base[: budget - len(_TRUNCATION_MARK)].rstrip() + _TRUNCATION_MARK
-    return f"{base}{suffix}"
+    if len(base) > DEAL_NAME_MAX_LENGTH:
+        base = base[: DEAL_NAME_MAX_LENGTH - len(_TRUNCATION_MARK)].rstrip() + _TRUNCATION_MARK
+    return base
 
 
 def next_owner(owner_ids: Sequence[uuid.UUID], cursor: int) -> tuple[uuid.UUID | None, int]:

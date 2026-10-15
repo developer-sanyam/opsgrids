@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+
+import { setDefaultPhoneRegion } from "../phone";
 
 import { InvalidCell } from "./cells";
 import type { CellInput } from "./cells";
@@ -381,16 +383,44 @@ describe("phone", () => {
     expect(value(phone, "  +44 20 7946 0958 ")).toBe("+442079460958");
   });
 
-  it("never guesses a country code", () => {
-    const hint = "Phone must start with + and the country code, e.g. +919876543210";
-    expect(error(phone, "9876543210")).toBe(hint);
-    expect(error(phone, "09876543210")).toBe(hint);
-    expect(error(phone, "0091 98765 43210")).toBe(hint);
+  describe("for an organization whose country is India", () => {
+    beforeEach(() => setDefaultPhoneRegion("IN"));
+
+    it("reads a bare ten-digit mobile as +91", () => {
+      expect(value(phone, "9000000012")).toBe("+919000000012");
+      expect(value(phone, "90000 00012")).toBe("+919000000012");
+      expect(value(phone, "09000000012")).toBe("+919000000012");
+      expect(value(phone, "919000000012")).toBe("+919000000012");
+    });
+
+    it("reads an Excel number cell, which has dropped any plus", () => {
+      expect(value(phone, 9000000012)).toBe("+919000000012");
+      expect(value(phone, 919876543210)).toBe("+919876543210");
+    });
+
+    it("still refuses what is not an Indian mobile rather than guessing", () => {
+      const hint = "Phone must start with + and the country code, e.g. +919876543210";
+      expect(error(phone, "5000000012")).toBe(hint); // does not start 6-9
+      expect(error(phone, "900000001")).toBe(hint); // nine digits
+      expect(error(phone, "90000000123")).toBe(hint); // eleven digits, no trunk 0
+      expect(error(phone, "4155552671")).toBe(hint); // a US number is not completed with +91
+    });
+
+    it("leaves a number that already has a country code alone", () => {
+      expect(value(phone, "+14155552671")).toBe("+14155552671");
+      expect(value(phone, "0091 98765 43210")).toBe("+919876543210");
+    });
   });
 
-  it("turns a numeric cell into digits and then refuses it for having no plus", () => {
-    // Excel drops the + when a number-formatted cell holds "+919876543210".
-    expect(error(phone, 919876543210)).toBe("Phone must start with + and the country code, e.g. +919876543210");
+  describe("for any other organization, or one with no country", () => {
+    beforeEach(() => setDefaultPhoneRegion("GB"));
+
+    it("never guesses a country code", () => {
+      const hint = "Phone must start with + and the country code, e.g. +919876543210";
+      expect(error(phone, "9876543210")).toBe(hint);
+      expect(error(phone, "09876543210")).toBe(hint);
+      expect(error(phone, 919876543210)).toBe(hint);
+    });
   });
 
   it("enforces E.164 length and a non-zero first digit", () => {

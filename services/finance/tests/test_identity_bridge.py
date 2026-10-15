@@ -106,6 +106,33 @@ class TestEnsureCustomerForCrmContact:
         assert row is not None
         assert row.id == customer.id
 
+    async def test_a_phone_only_crm_contact_bridges_with_an_empty_address(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        """ADR-0038 D-14: customer answers `email: null` for a phone-only contact. The bridge
+        stores finance's "no address" value rather than failing on a NOT NULL column."""
+        ctx = services.crm_bridge_ctx(org_id)
+        crm_contact_id = uuid.uuid4()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "contact_id": str(crm_contact_id),
+                    "full_name": "Ravi Kapoor",
+                    "email": None,
+                    "company_id": str(uuid.uuid4()),
+                    "company_name": "Northwind",
+                },
+            )
+
+        async with _mock_client(handler) as client:
+            customer = await services.ensure_customer_for_crm_contact(
+                session, ctx, crm_contact_id, client=client
+            )
+        assert customer.email == ""
+        assert customer.crm_contact_id == crm_contact_id
+
     async def test_no_company_name_falls_back_to_the_contacts_full_name(
         self, session: AsyncSession, org_id: uuid.UUID
     ) -> None:

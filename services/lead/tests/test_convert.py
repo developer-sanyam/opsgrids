@@ -99,7 +99,7 @@ class TestConvertHappyPath:
         deal_call = next(kwargs for name, kwargs in calls if name == "deal")
         assert deal_call["deal_id"] == expected_deal
 
-    async def test_the_deal_name_carries_a_lead_id_suffix_and_fits_the_column(
+    async def test_the_deal_name_is_company_and_lead_with_no_id_fragment_and_fits_the_column(
         self, session, org_id, data, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         calls: list = []
@@ -110,9 +110,8 @@ class TestConvertHappyPath:
         await services.convert_lead(session, ctx, data["lead_a_id"])
 
         deal_call = next(kwargs for name, kwargs in calls if name == "deal")
-        assert deal_call["name"] == domain.deal_name(
-            "Stellar Robotics", "Priya Sharma", data["lead_a_id"]
-        )
+        assert deal_call["name"] == "Stellar Robotics \u2014 Priya Sharma"
+        assert deal_call["name"] == domain.deal_name("Stellar Robotics", "Priya Sharma")
         assert len(deal_call["name"]) <= domain.DEAL_NAME_MAX_LENGTH
 
     async def test_converting_stages_an_audit_row_and_an_outbox_event(
@@ -583,16 +582,24 @@ class TestConvertConcurrency:
         assert events == 1
 
 
-def _stateful_deal_service(monkeypatch, live_names: set[str], calls: list):
-    """A deal-service that behaves like the real one where it matters here: it refuses a second
-    live deal with the same name (a 409 -> `DealNameConflict`), and is idempotent by `deal_id`
-    only in the sense the lead cares about — a name it has already seen is a conflict."""
+def _stateful_deal_service(
+    monkeypatch, live_names: set[str], calls: list, *, disambiguates: bool = True
+):
+    """A deal-service that behaves like the real one where it matters here. One live deal per
+    name: with `disambiguates` (the lead-conversion route's behaviour) a taken name resolves to
+    the first free "<name> (2)", "(3)"...; without it, a taken name is the residual race, a 409
+    -> `DealNameConflict`. The name actually stored is recorded as `resolved_name`."""
 
     async def _fake(settings, organization_id, **kwargs):
-        calls.append(("deal", kwargs))
-        if kwargs["name"] in live_names:
+        name = kwargs["name"]
+        if name in live_names and not disambiguates:
+            calls.append(("deal", {**kwargs, "resolved_name": None}))
             raise clients.DealNameConflict("a deal with that name already exists")
-        live_names.add(kwargs["name"])
+        resolved, n = name, 2
+        while resolved in live_names:
+            resolved, n = f"{name} ({n})", n + 1
+        live_names.add(resolved)
+        calls.append(("deal", {**kwargs, "resolved_name": resolved}))
         return kwargs["deal_id"]
 
     monkeypatch.setattr(clients, "ensure_deal", _fake)
@@ -613,16 +620,17 @@ async def _aborted_events(session, lead_id: uuid.UUID) -> list[OutboxEvent]:
 
 
 class TestGenerationsAndDealNames:
-    """Fix round 4, findings 3 and 6. A bumped `conversion_generation` gives the retry fresh
-    company/contact/deal *ids* — but deal-service also refuses a second live deal with the same
-    *name*, and the earlier generation's deal is usually still live, so the name has to change
-    with the generation or the retry trades one permanent dead end for another."""
+    """A bumped `conversion_generation` gives the retry fresh company/contact/deal *ids*, but
+    deal-service refuses a second live deal with the same *name* and the earlier generation's
+    deal is usually still live. The name no longer carries an id fragment: the retry asks for the
+    same plain name and deal-service resolves the clash ("... (2)"), so neither a dead end nor a
+    meaningless suffix."""
 
     async def test_a_bumped_generation_does_not_collide_with_the_earlier_generations_live_deal(
         self, session, org_id, data, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         lead_id = data["lead_a_id"]
-        generation_zero_name = domain.deal_name("Stellar Robotics", "Priya Sharma", lead_id, 0)
+        generation_zero_name = domain.deal_name("Stellar Robotics", "Priya Sharma")
         live_names = {generation_zero_name}
         calls: list = []
         _fake_ensure_company_and_contact(monkeypatch, calls)
@@ -637,23 +645,24 @@ class TestGenerationsAndDealNames:
         ctx = ctx_for(org_id, "crm.lead.lead.convert", Scope.ORG)
         await services.convert_lead(session, ctx, lead_id)
 
-        new_name = next(kw["name"] for kind, kw in calls if kind == "deal")
-        assert new_name != generation_zero_name
-        assert new_name.endswith("/1")
+        deal_call = next(kw for kind, kw in calls if kind == "deal")
+        assert deal_call["name"] == generation_zero_name  # the plain name is what is asked for
+        assert deal_call["resolved_name"] == f"{generation_zero_name} (2)"
         # The earlier generation's deal is still live: nothing here removed it.
         assert generation_zero_name in live_names
 
     async def test_the_same_generation_still_conflicts_with_a_live_deal_of_that_name(
         self, session, org_id, data, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The control for the test above, and the 422 the rep sees: generation 0 against a
-        live deal already holding its name is a clear, specific refusal — not the generic
-        "check the lead's details" — and the claim is released."""
+        """The residual race: deal-service normally resolves a clash itself, but if two
+        conversions pick the same free name at once the loser gets a 409. That is a clear,
+        specific refusal — not the generic "check the lead's details" — and the claim is
+        released."""
         lead_id = data["lead_a_id"]
-        live_names = {domain.deal_name("Stellar Robotics", "Priya Sharma", lead_id, 0)}
+        live_names = {domain.deal_name("Stellar Robotics", "Priya Sharma")}
         calls: list = []
         _fake_ensure_company_and_contact(monkeypatch, calls)
-        _stateful_deal_service(monkeypatch, live_names, calls)
+        _stateful_deal_service(monkeypatch, live_names, calls, disambiguates=False)
 
         ctx = ctx_for(org_id, "crm.lead.lead.convert", Scope.ORG)
         with pytest.raises(ValidationProblem, match="deal with this name already exists"):
@@ -728,8 +737,8 @@ class TestGenerationsAndDealNames:
         assert retry_company["owner_id"] == new_owner
         assert retry_deal["owner_id"] == new_owner
         # The abandoned attempt's deal is still live, and the retry's name did not collide.
-        assert first_deal["name"] in live_names
-        assert retry_deal["name"] != first_deal["name"]
+        assert first_deal["resolved_name"] in live_names
+        assert retry_deal["resolved_name"] != first_deal["resolved_name"]
 
         async with session.begin():
             converted = await selectors.get_lead(session, org_id, lead_id)
@@ -806,10 +815,10 @@ class TestGenerationsAndDealNames:
         assert retry_company["contact_id"] != first_company["contact_id"]
         assert retry_deal["deal_id"] != first_deal["deal_id"]
         # The aborted attempt's deal is still live and deal refuses a second live deal with
-        # one name, so the retry's name carries the new generation.
-        assert first_deal["name"] in live_names
-        assert retry_deal["name"] != first_deal["name"]
-        assert retry_deal["name"].endswith("/1")
+        # one name, so deal-service numbers the retry's.
+        assert first_deal["resolved_name"] in live_names
+        assert retry_deal["resolved_name"] != first_deal["resolved_name"]
+        assert retry_deal["resolved_name"].endswith(" (2)")
 
         async with session.begin():
             converted = await selectors.get_lead(session, org_id, lead_id)

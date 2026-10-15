@@ -24,6 +24,7 @@ import { formatHalfDays, formatLeaveRange, leaveStatusCopy } from "@/lib/leaveCo
 import { getMyEmployeeId } from "@/lib/subject";
 import { ApplyLeaveDialog } from "@/ui/ApplyLeaveDialog";
 import { CancelLeaveDialog } from "@/ui/CancelLeaveDialog";
+import { LinkMyLoginCard } from "@/ui/LinkMyLoginCard";
 
 type LoadState =
   | { status: "loading" }
@@ -63,6 +64,9 @@ function MyLeaveScreen() {
   const announce = useAnnounce();
   const myEmployeeId = getMyEmployeeId();
   const canWriteOwn = useCan("hrms.time.leave_request.write", "OWN");
+  // Bumped once the login has been linked and the session refreshed: re-renders, which re-reads
+  // the (now present) employee id from the token.
+  const [, setLinkedNonce] = useState(0);
 
   const [balances, setBalances] = useState<LeaveBalanceOut[]>([]);
   const [requests, setRequests] = useState<LeaveRequestOut[]>([]);
@@ -151,12 +155,7 @@ function MyLeaveScreen() {
     return (
       <div className="rise flex flex-col gap-6">
         <PageHeader eyebrow="Leave" title="Your leave" />
-        <Card className="p-6">
-          <EmptyState
-            title="No employee record linked to your account"
-            description="Ask an administrator to link your membership to an employee record before applying for leave."
-          />
-        </Card>
+        <LinkMyLoginCard onLinked={() => setLinkedNonce((n) => n + 1)} />
       </div>
     );
   }

@@ -129,6 +129,20 @@ organization against the committed `core.json` and asserts the outcome this ADR 
 holds `policy.write`, `MEMBER` holds the OWN pair, and `APPROVAL_ADMIN` installs as a new system
 role. That test would have caught the original gap; a file-shape comparison would not.
 
+> **Amended 2026-10-15 -- organization creation now installs the merged `core` manifest on top of
+> the in-code registration.** The first real self-serve owner got 403 on every `/approvals/*` route
+> and "Missing permission: core.approval.request.read" on every employee page. The cause is the
+> paragraph above taken literally: a new organization installed only account's in-code slice, so the
+> approval permissions (and the `APPROVAL_ADMIN` role) reached an organization only through this
+> ADR's reconcile -- and a brand-new organization is not "an existing tenant" anyone reconciles. The
+> "must not depend on a file lookup" worry stays honoured: `create_organization` still installs
+> `CORE_REGISTRATION` first, unconditionally (the floor), and then installs
+> `load_product_manifest("core")` through the same union-only `install_registration`; a missing
+> manifest directory is a `core_manifest_missing` warning, not a failed signup. The subset pin below
+> is unchanged and still the right test. Organizations that predate this change still need the one
+> `reconcile_permissions.py core --all` (RUNBOOK, "Owner identity and CRM flows"). Pinned by
+> `services/account/tests/test_signup.py` (a fresh owner holds `core.approval.request.read:ORG`).
+
 Installation was always right and is unchanged: the reconciler loads the **merged** manifest
 (`load_product_manifest("core")`), so a tenant receives every contributor's slice, not just
 account's. `tools/export_permissions.py --check` still fails the build when a committed manifest is

@@ -26,7 +26,7 @@ function respond(body: unknown, status = 200): Response {
 describe("useOrgProfile", () => {
   it("reads GET /organization once for every caller in the session", async () => {
     const fetchMock = vi.fn<(url: string) => Promise<Response>>(() =>
-      Promise.resolve(respond({ id: "org-1", timezone: "Asia/Dubai", currency: "AED", locale: "en-AE" })),
+      Promise.resolve(respond({ id: "org-1", timezone: "Asia/Dubai", currency: "AED", locale: "en-AE", country: "AE" })),
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -36,7 +36,13 @@ describe("useOrgProfile", () => {
     expect(first.result.current.status).toBe("loading");
     await waitFor(() => expect(first.result.current.status).toBe("success"));
     await waitFor(() => expect(second.result.current.status).toBe("success"));
-    expect(first.result.current).toEqual({ timezone: "Asia/Dubai", currency: "AED", locale: "en-AE", status: "success" });
+    expect(first.result.current).toEqual({
+      timezone: "Asia/Dubai",
+      currency: "AED",
+      locale: "en-AE",
+      country: "AE",
+      status: "success",
+    });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/organization");
 
@@ -50,6 +56,12 @@ describe("useOrgProfile", () => {
     const { result } = renderHook(() => useOrgProfile());
 
     await waitFor(() => expect(result.current.status).toBe("fallback"));
-    expect(result.current).toEqual({ timezone: "Asia/Kolkata", currency: "INR", locale: "en-IN", status: "fallback" });
+    expect(result.current).toEqual({
+      timezone: "Asia/Kolkata",
+      currency: "INR",
+      locale: "en-IN",
+      country: "IN",
+      status: "fallback",
+    });
   });
 });

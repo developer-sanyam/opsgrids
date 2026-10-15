@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { logActivity } from "@/api/client";
 import type { Activity, ActivityDirection, ActivityType, Company, Contact } from "@/api/types";
+import { useMyRep } from "@/data/useMyRep";
 import { maybe } from "@/lib/optional";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
 import {
@@ -80,9 +81,16 @@ export function ActivityFormDialog({
   const pickTarget = context === undefined;
   const contactOptions = contacts.filter((c) => c.company_id === companyId);
 
+  const myRep = useMyRep();
+
   const save = useMutation(
-    () =>
-      logActivity({
+    async () => {
+      // The entry belongs to the signed-in login's rep record. The organization owner has no
+      // employee record, so the first activity they log also puts them on the roster; the server
+      // defaults an unnamed owner to their membership id, which is that same record's id.
+      const mine = await myRep.ensure();
+      return logActivity({
+        ...(mine !== undefined ? { owner_id: mine.id } : {}),
         type,
         subject: subject.trim(),
         ...(body.trim() ? { body: body.trim() } : {}),
@@ -93,7 +101,8 @@ export function ActivityFormDialog({
         ...(!context && contactId ? { contact_id: contactId } : {}),
         ...(hasDirection ? { direction } : {}),
         ...(occurredAt ? { occurred_at: occurredAt } : {}),
-      }),
+      });
+    },
     { onSuccess: (saved) => onSaved(saved) },
   );
 

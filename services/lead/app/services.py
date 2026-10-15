@@ -595,7 +595,7 @@ async def update_lead(
     if "status" in changes:
         new_status = changes["status"]
         if not domain.can_transition(lead.status, new_status):
-            raise ConflictProblem(f"A lead in {lead.status!r} cannot move to {new_status!r}")
+            raise ConflictProblem(domain.refusal_for_transition(lead.status, new_status))
 
     before = {field: getattr(lead, field) for field in changes}
     for field, value in changes.items():
@@ -1336,9 +1336,15 @@ async def convert_lead(
     ctx: ScopeContext,
     lead_id: uuid.UUID,
     *,
+    deal_value_minor: int = 0,
+    deal_stage: str | None = None,
     request: Request | None = None,
 ) -> tuple[uuid.UUID, uuid.UUID | None, uuid.UUID]:
     """Convert a qualified lead into a company (+ contact) and a deal — claim, call, record.
+
+    `deal_value_minor` (integer minor units, INR) and `deal_stage` (a pipeline stage key; `None`
+    is the entry stage) are the rep's optional say over the deal that opens. A replay of an
+    already-converted lead ignores them: the deal already exists and is never rewritten here.
 
     Three steps, three transactions (`claim_conversion`, then customer's and deal's
     `/internal/v1` with **no transaction open**, then `finalize_conversion` or
@@ -1392,7 +1398,9 @@ async def convert_lead(
             company_id=company_id,
             contact_id=contact_id,
             owner_id=owner_id,
-            name=domain.deal_name(company_name, claim.full_name, claim.lead_id, claim.generation),
+            name=domain.deal_name(company_name, claim.full_name),
+            value_minor=deal_value_minor,
+            stage=deal_stage,
             close_date=close_date.isoformat(),
             source=claim.source,
             actor_id=ctx.principal.sub,

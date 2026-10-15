@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { loadOrgProfile } from "../platform/useOrgProfile";
 import { recordIdHeader } from "./cells";
 import type { AnyEntity } from "./cells";
 import { IDLE_STATE, createExchange } from "./exchange";
@@ -54,6 +55,12 @@ export function useImportExport<Payload, Item = unknown, Filters = void>(
     });
   }
   const exchange = exchangeRef.current;
+
+  // The organization's own country decides how a bare phone number is read (`normalisePhone`);
+  // fetched once per session and never rejects (a failed read leaves the India default).
+  useEffect(() => {
+    void loadOrgProfile();
+  }, []);
 
   useEffect(() => {
     exchange.attach();

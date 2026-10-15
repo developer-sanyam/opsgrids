@@ -217,6 +217,7 @@ class TestEndpointAuthorization:
             "phone",
             "source",
             "status",
+            "next_statuses",
             "owner_id",
             "notes",
             "converted_company_id",

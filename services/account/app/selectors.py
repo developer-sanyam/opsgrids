@@ -113,6 +113,7 @@ def members_stmt(
     org_unit_id: uuid.UUID | None = None,
     status: str | None = None,
     linked: bool | None = None,
+    employee_id: uuid.UUID | None = None,
 ) -> Select[Any]:
     """Scope-filtered member list. `ctx.apply` is the enforcement point."""
     stmt = (
@@ -164,6 +165,11 @@ def members_stmt(
         stmt = stmt.where(
             Membership.employee_id.is_not(None) if linked else Membership.employee_id.is_(None)
         )
+    if employee_id is not None:
+        # "Who is linked to this employee record" -- the HRMS employee page's Linked member field
+        # (ADR-0008 Q1). Narrows within the scope above, like `linked`; the partial unique index
+        # means at most one active membership answers.
+        stmt = stmt.where(Membership.employee_id == employee_id)
 
     return stmt.order_by(User.full_name)
 

@@ -1,7 +1,8 @@
-import { useContext, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 
-import { createOwner } from "@/api/client";
+import { ensureMyOwner } from "@/api/client";
 import type { Owner } from "@/api/types";
+import { findMyRep, repSeed } from "@/lib/myRep";
 import { maybe } from "@/lib/optional";
 import { ApiError, AuthContext, problemMessage, useCan, useMutation } from "@opsgrids/client";
 import { Button, InlineAlert, Select } from "@opsgrids/ui";
@@ -24,10 +25,15 @@ interface OwnerPickerProps {
  *
  * The empty directory is also, almost always, one person: whoever just signed up is the org
  * owner and the first rep. Asking them to fill in their own name and email a second time to
- * unblock the very first deal they try to create is the kind of friction that reads as a bug —
+ * unblock the very first deal they try to create is the kind of friction that reads as a bug --
  * so the caller who holds `crm.book.owner.write` at ORG gets a one-click "make me the owner"
- * built from their own session, with the full multi-field form kept one tap away for the case
- * that is actually someone else.
+ * built from their own session (`PUT /customers/owners/me`, idempotent), with the full
+ * multi-field form kept one tap away for the case that is actually someone else.
+ *
+ * **The owner is never left blank when it is obvious.** When the picker has nothing chosen, it
+ * chooses the signed-in login's own rep record, or the only active rep there is. A Select showing
+ * a name while its value is still empty is what produced "Choose an owner" beside an owner that
+ * looked chosen.
  */
 export function OwnerPicker({ owners, value, onChange, error, onOwnerCreated, disabled }: OwnerPickerProps) {
   const [addingOwner, setAddingOwner] = useState(false);
@@ -39,18 +45,28 @@ export function OwnerPicker({ owners, value, onChange, error, onOwnerCreated, di
   // product's `<AuthProvider>`, but a picker rendered in isolation (a story, a narrower test)
   // should degrade to "no one-click claim on offer" rather than crash.
   const user = useContext(AuthContext)?.user ?? null;
+  const seed = repSeed(user);
   // The service requires a non-empty name, so a session without one gets the full form instead
   // of a button that reads "Make  the owner" and can only be refused.
-  const claimant = user !== null && user.full_name.trim() !== "" ? user : null;
+  const claimant = seed !== null && user !== null ? user : null;
+  const myRep = findMyRep(owners, user);
+  const activeOwners = owners.filter((o) => o.is_active);
 
   const claimOwner = useMutation(
-    () =>
-      createOwner({
-        full_name: claimant?.full_name.trim() ?? "",
-        email: claimant?.email ?? "",
-      }),
+    () => ensureMyOwner({ full_name: seed?.full_name ?? "", email: seed?.email ?? "" }),
     { onSuccess: (owner) => onOwnerCreated(owner) },
   );
+
+  // Choose the obvious owner when nothing is chosen yet.
+  const only = activeOwners.length === 1 ? activeOwners[0] : undefined;
+  const obvious = myRep !== undefined && myRep.is_active ? myRep : only;
+  const obviousId = obvious?.id ?? "";
+  useEffect(() => {
+    if (value === "" && obviousId !== "" && disabled !== true) onChange(obviousId);
+    // `onChange` is the caller's setter and changes identity each render; only a changed
+    // choice or an emptied value should re-run this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, obviousId, disabled]);
 
   if (owners.length === 0 && !canAddOwner) {
     return (
@@ -120,6 +136,26 @@ export function OwnerPicker({ owners, value, onChange, error, onOwnerCreated, di
         {...(error !== undefined ? { error } : {})}
         {...(disabled !== undefined ? { disabled } : {})}
       />
+      {claimOwner.error ? (
+        <InlineAlert
+          tone="danger"
+          title="Couldn't add you as a rep"
+          {...maybe("reference", (claimOwner.error as ApiError).problem?.request_id)}
+        >
+          {problemMessage(claimOwner.error)}
+        </InlineAlert>
+      ) : null}
+      {canAddOwner && claimant !== null && myRep === undefined ? (
+        // The roster has other people but not this login: one tap puts them on it.
+        <button
+          type="button"
+          disabled={claimOwner.pending}
+          onClick={() => void claimOwner.mutate(undefined)}
+          className="relative hit-44 w-fit text-xs font-semibold text-accent hover:text-accent-strong transition-colors disabled:opacity-60"
+        >
+          {claimOwner.pending ? "Adding you…" : "+ Add me as a sales rep"}
+        </button>
+      ) : null}
       {canAddOwner ? (
         <button
           type="button"

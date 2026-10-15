@@ -34,12 +34,13 @@ def principal_for(
     entitlements: list[str] | None = None,
     locations: list[str] | None = None,
     amr: list[str] | None = None,
+    membership_id: uuid.UUID | None = None,
 ) -> Principal:
     """The principal the gateway would have forwarded for a CRM caller."""
     return Principal(
         sub=uuid.uuid4(),
         organization_id=org_id,
-        membership_id=uuid.uuid4(),
+        membership_id=membership_id or uuid.uuid4(),
         subject_ref=subject_ref,
         perms=perms,
         entitlements=entitlements if entitlements is not None else ["crm"],

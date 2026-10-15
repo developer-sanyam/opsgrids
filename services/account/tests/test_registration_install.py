@@ -248,7 +248,9 @@ class TestNegativeCases:
             )
             assert int(permissions.scalar_one()) == 0
             roles = await selectors.list_roles(session, org.id)
-        assert {r.code for r in roles} == {"ORG_OWNER", "ORG_ADMIN", "MEMBER"}
+        # Core's own roles plus approval's `APPROVAL_ADMIN`, both installed at creation; the
+        # unknown product added nothing on top.
+        assert {r.code for r in roles} == {"ORG_OWNER", "ORG_ADMIN", "MEMBER", "APPROVAL_ADMIN"}
 
     async def test_a_de_entitling_subscription_event_installs_nothing(
         self, session: AsyncSession, org: Organization, owner: Membership

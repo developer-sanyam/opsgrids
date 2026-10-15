@@ -211,7 +211,11 @@ function generalRules(entity: AnyEntity, columns: readonly ImportColumn[]): stri
   if (has("money")) {
     rules.push("Write money in major units (1499.50, not 149950) with the currency in the currency column.");
   }
-  if (has("phone")) rules.push("Write phone numbers with the country code, starting with +.");
+  if (has("phone")) {
+    rules.push(
+      "Write phone numbers with the country code, starting with +. For an Indian organization a 10-digit mobile is also accepted and read as +91.",
+    );
+  }
   rules.push(
     "Hidden rows and columns are imported like any others",
     "Formulas are read as their last calculated value",

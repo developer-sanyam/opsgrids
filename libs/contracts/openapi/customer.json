@@ -325,10 +325,17 @@
             "type": "string"
           },
           "email": {
-            "format": "email",
-            "maxLength": 254,
-            "title": "Email",
-            "type": "string"
+            "anyOf": [
+              {
+                "format": "email",
+                "maxLength": 254,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
           },
           "full_name": {
             "maxLength": 160,
@@ -374,7 +381,6 @@
         },
         "required": [
           "full_name",
-          "email",
           "company_id",
           "owner_id"
         ],
@@ -394,8 +400,15 @@
             "type": "string"
           },
           "email": {
-            "title": "Email",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
           },
           "full_name": {
             "title": "Full Name",
@@ -1906,6 +1919,58 @@
           }
         },
         "summary": "Add a rep to the directory",
+        "tags": [
+          "customer"
+        ]
+      }
+    },
+    "/api/v1/customers/owners/me": {
+      "put": {
+        "description": "Idempotent. The roster row's id is the caller's membership id, so a login with no\nemployee link (the self-serve owner) can own records and log activities. Declared before\n`/customers/owners/{owner_id}` so `me` is never parsed as an id. Needs the same\n`crm.book.owner.write` at ORG as adding any rep: an OWN-scoped rep cannot mint roster rows.",
+        "operationId": "ensure_my_owner_api_v1_customers_owners_me_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OwnerIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerOut"
+                }
+              }
+            },
+            "description": "The rep was created"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Make my own login a sales rep",
         "tags": [
           "customer"
         ]

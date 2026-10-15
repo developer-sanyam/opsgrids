@@ -31,6 +31,7 @@ const OPEN: Lead = {
   phone: "+•• ••••• ••345",
   source: "import",
   status: "working",
+  next_statuses: [],
   owner_id: "own-2",
   notes: "Asked for a demo.",
   converted_company_id: null,

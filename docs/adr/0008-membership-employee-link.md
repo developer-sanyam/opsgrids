@@ -869,3 +869,47 @@ including the `lead` scope that ADR-0017 ships on `subject_ref`. It changes for 
 timesheet and standup in the PulseBoard rebuild (C14/Q11), and for ITSM in its own slice. The
 platform-core resolver change and the ITSM change are **not covered by any ledger item. New
 backlog items needed.** C15 and C14 must name this in their scope.
+
+## Amendment 2026-10-15: the screens that write the link, and why signup links nobody
+
+A real self-serve customer signed up, started trials and found that the owner's login had no
+employee identity and no way to give itself one: HRMS Attendance said "No employee record is linked
+to your account" and Leave said "Ask an administrator to link...", and the administrator was the
+person reading it. Q1 above decided *which screen* writes the link (the HRMS employee page) but
+nothing had built it, so the link remained curl-only. This amendment records what was built and the
+one decision it turned on.
+
+**Built (all on the existing `PATCH /api/v1/members/{membership_id}`, no new permission, no new
+service-to-service call, no change to who writes the column):**
+
+- **Employee page -> "Linked member"** (`frontend/product-hrms/src/ui/LinkedMemberCard.tsx`).
+  Renders only for a caller holding `core.identity.membership.write:ORG` (a hint; the server's ORG
+  floor is the control). Shows the login linked to this employee, or a picker of `?linked=false`
+  members to link one; **Unlink** is a confirmation that says it refreshes everyone's sign-in (§7).
+  To answer "who is linked to *this* employee" without paging the directory, `GET /members` gained
+  an `employee_id` filter -- a filter inside the scope `members_stmt` already applies, like
+  `linked`, so it narrows and never widens (`services/account/tests/test_member_employee_filter.py`).
+- **"Create my employee record"** where the empty states used to dead-end (Attendance, Leave;
+  `LinkMyLoginCard.tsx`). For a caller who may both write memberships and write employees at ORG: it
+  creates an employee named as the login is (`employee_no` is now optional on `POST /employees`: the
+  next free `EMP####` is generated under a per-organization advisory lock), then links the login
+  through account, then refreshes the session so the new `sref` reaches the page. The two writes are
+  not one transaction -- they are two services, and account is the link's only writer (§1) -- so a
+  failed link keeps the created employee in the component and the retry reuses it; a page left in
+  between leaves a normal employee record that is linked from its page.
+  Someone who may link but not create is sent to Employees; everyone else is told whom to ask.
+
+**Decided: the signup does not create or link an employee, for the owner or anyone.** The tempting
+fix was for `signup` to mint an employee for the new owner. It is rejected, for the reasons this ADR
+already holds: (1) at signup no product is active, so there is no employee service entitled to hold
+the record and nothing to write it to; the trial starts later, by a different event; (2) the link is
+an authorization fact (§1) and a product service must not be able to write it, so the write would
+have to come from account to employee synchronously -- the cross-service call §4 refuses on an
+interactive write -- or as an event consumer in employee, which would be a product service deciding
+who a platform principal *is*; (3) a tenant that buys CRM alone has no employee service at all, and
+inventing an HR record for it would be wrong data. What replaces it is that the owner can do it in
+one tap, when and where they need it (above), and that CRM no longer needs the link at all for the
+owner to work (ADR-0038, "Amended 2026-10-15").
+
+Nothing here changes §7: a link set for the first time takes effect at the login's next token refresh
+(the card asks for one); unlinking or changing one bumps `pv` as before.

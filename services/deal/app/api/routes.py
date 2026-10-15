@@ -64,6 +64,28 @@ DealDelete = Annotated[ScopeContext, Depends(require("crm.pipeline.deal.delete")
 ActivityRead = Annotated[ScopeContext, Depends(require("crm.pipeline.activity.read"))]
 ActivityWrite = Annotated[ScopeContext, Depends(require("crm.pipeline.activity.write"))]
 
+#: Said when nothing can name an owner: no employee link, and a scope narrower than ORG, so the
+#: membership fallback does not apply. Plain words, with the action that fixes it.
+NO_OWNER_MESSAGE = (
+    "We couldn't tell who should own this. Ask an administrator to link your login to a sales "
+    "rep, or pick an owner."
+)
+
+
+def default_owner(ctx: ScopeContext) -> uuid.UUID | None:
+    """The rep a record is attributed to when the caller named none.
+
+    The employee link when there is one (OWN/TEAM compare it). Otherwise, for an ORG-scoped
+    caller only, their membership id: the self-serve organization owner has no employee record,
+    and `PUT /customers/owners/me` gives them a roster row whose id is that same membership id.
+    A narrower scope never falls back -- OWN reads compare the employee link, so a record
+    attributed to a membership id would be invisible to the person who just made it."""
+    if ctx.subject_ref is not None:
+        return ctx.subject_ref
+    if ctx.scope is Scope.ORG:
+        return ctx.principal.membership_id
+    return None
+
 
 @router.get("/deal/info", response_model=ServiceInfo, summary="What this service is")
 async def info() -> ServiceInfo:
@@ -124,9 +146,9 @@ async def create_deal(
     act: `assert_can_touch` re-applies the caller's scope to the named owner exactly as
     the detail routes re-apply it to a named row, so an OWN-scoped rep cannot hand a new
     deal to a colleague any more than they could edit that colleague's existing one."""
-    owner_id = payload.owner_id if payload.owner_id is not None else ctx.subject_ref
+    owner_id = payload.owner_id if payload.owner_id is not None else default_owner(ctx)
     if owner_id is None:
-        raise ValidationProblem("No owner could be determined for this deal")
+        raise ValidationProblem(NO_OWNER_MESSAGE)
     ctx.assert_can_touch(owner_id=owner_id)
     deal = await services.create_deal(
         session,
@@ -298,9 +320,9 @@ async def log_activity(
     if ctx.scope is Scope.OWN:
         owner_id = ctx.subject_ref
     else:
-        owner_id = payload.owner_id if payload.owner_id is not None else ctx.subject_ref
+        owner_id = payload.owner_id if payload.owner_id is not None else default_owner(ctx)
     if owner_id is None:
-        raise ValidationProblem("No owner could be determined for this activity")
+        raise ValidationProblem(NO_OWNER_MESSAGE)
 
     #: The company is the deal's, not the body's — an entry cannot name two accounts.
     company_id = payload.company_id

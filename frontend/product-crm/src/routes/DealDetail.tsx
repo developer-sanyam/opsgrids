@@ -307,13 +307,15 @@ export function DealDetailPage() {
                       </div>
                       {primary ? (
                         <div className="flex flex-col gap-1.5 border-t border-line pt-4 text-sm">
-                          <a
-                            href={`mailto:${primary.email}`}
-                            className="relative hit-44 inline-flex items-center gap-2 text-ink-soft hover:text-accent transition-colors"
-                          >
-                            <MailIcon className="size-4 text-faint" />
-                            {primary.email}
-                          </a>
+                          {primary.email !== null ? (
+                            <a
+                              href={`mailto:${primary.email}`}
+                              className="relative hit-44 inline-flex items-center gap-2 text-ink-soft hover:text-accent transition-colors"
+                            >
+                              <MailIcon className="size-4 text-faint" />
+                              {primary.email}
+                            </a>
+                          ) : null}
                           <RevealField
                             kind="phone"
                             masked={primary.phone}

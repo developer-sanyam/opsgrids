@@ -48,16 +48,20 @@ function Harness({
   grants = ["crm.book.owner.write:ORG"],
   onOwnerCreated = vi.fn(),
   me = USER,
+  value = "",
+  onChange = vi.fn(),
 }: {
   owners?: Owner[];
   signedIn?: boolean;
   grants?: string[];
   onOwnerCreated?: (owner: Owner) => void;
   me?: MeOut;
+  value?: string;
+  onChange?: (ownerId: string) => void;
 }) {
   const body = (
     <PermissionProvider grants={grants}>
-      <OwnerPicker owners={owners} value="" onChange={vi.fn()} onOwnerCreated={onOwnerCreated} />
+      <OwnerPicker owners={owners} value={value} onChange={onChange} onOwnerCreated={onOwnerCreated} />
     </PermissionProvider>
   );
   return signedIn ? <AuthContext value={{ ...AUTH_VALUE, user: me }}>{body}</AuthContext> : body;
@@ -79,7 +83,7 @@ describe("OwnerPicker — empty directory", () => {
   });
 
   it("creates the owner from the session's name and email, not a typed form", async () => {
-    vi.spyOn(client, "createOwner").mockResolvedValue({
+    vi.spyOn(client, "ensureMyOwner").mockResolvedValue({
       id: "own-new",
       full_name: USER.full_name,
       email: USER.email,
@@ -92,7 +96,7 @@ describe("OwnerPicker — empty directory", () => {
     await user.click(screen.getByRole("button", { name: "Make Priya Nair the owner" }));
 
     await waitFor(() =>
-      expect(client.createOwner).toHaveBeenCalledWith({
+      expect(client.ensureMyOwner).toHaveBeenCalledWith({
         full_name: "Priya Nair",
         email: "priya.nair@opsgrids.example.com",
       }),
@@ -104,7 +108,7 @@ describe("OwnerPicker — empty directory", () => {
 
   it("disables the claim button while the write is in flight, so a second click cannot double-submit", async () => {
     let resolve!: (value: Owner) => void;
-    vi.spyOn(client, "createOwner").mockReturnValue(
+    vi.spyOn(client, "ensureMyOwner").mockReturnValue(
       new Promise((r) => {
         resolve = r;
       }),
@@ -117,11 +121,11 @@ describe("OwnerPicker — empty directory", () => {
     await user.click(claim); // ignored — one write in flight
 
     resolve(OWNER);
-    await waitFor(() => expect(client.createOwner).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(client.ensureMyOwner).toHaveBeenCalledTimes(1));
   });
 
   it("surfaces a failed claim inline without losing the option to try again", async () => {
-    vi.spyOn(client, "createOwner").mockRejectedValue(
+    vi.spyOn(client, "ensureMyOwner").mockRejectedValue(
       new ApiError(409, "A team member with that email already exists.", {
         title: "Conflict",
         status: 409,
@@ -167,9 +171,73 @@ describe("OwnerPicker — empty directory", () => {
 });
 
 describe("OwnerPicker — populated directory", () => {
-  it("renders the Select instead of the claim, and defaults to nothing selected", () => {
+  it("renders the Select instead of the claim", () => {
     open({ owners: [OWNER] });
     expect(screen.queryByRole("button", { name: /make .* the owner/i })).toBeNull();
-    expect((screen.getByLabelText(/^owner$/i) as HTMLSelectElement).value).toBe("");
+    expect(screen.getByLabelText(/^owner$/i)).toBeTruthy();
+  });
+
+  it("chooses the only active rep when nothing is chosen, so the form never says 'Choose an owner' beside a lone owner", () => {
+    const onChange = vi.fn();
+    open({ owners: [OWNER], onChange });
+    expect(onChange).toHaveBeenCalledWith("own-1");
+  });
+
+  it("chooses the signed-in login's own rep first -- matched by membership id", () => {
+    const mine: Owner = { id: "mem-1", full_name: "Priya Nair", email: "someone@else.example", role: "", is_active: true };
+    const onChange = vi.fn();
+    open({ owners: [OWNER, mine], onChange });
+    expect(onChange).toHaveBeenCalledWith("mem-1");
+  });
+
+  it("chooses the rep made by the old one-click claim -- matched by the login's own email", () => {
+    const legacy: Owner = { id: "own-9", full_name: "Priya Nair", email: "Priya.Nair@opsgrids.example.com", role: "", is_active: true };
+    const onChange = vi.fn();
+    open({ owners: [OWNER, legacy], onChange });
+    expect(onChange).toHaveBeenCalledWith("own-9");
+  });
+
+  it("does not choose for the user when several reps are active and none is theirs", () => {
+    const other: Owner = { id: "own-2", full_name: "Sam Cole", email: "sam@example.com", role: "", is_active: true };
+    const onChange = vi.fn();
+    open({ owners: [OWNER, other], onChange });
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("never overrides a choice already made", () => {
+    const onChange = vi.fn();
+    open({ owners: [OWNER], value: "own-1", onChange });
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("does not choose a deactivated rep", () => {
+    const onChange = vi.fn();
+    open({ owners: [{ ...OWNER, is_active: false }], onChange });
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("offers to add the signed-in login to a roster that has other people but not them", async () => {
+    vi.spyOn(client, "ensureMyOwner").mockResolvedValue({
+      id: "mem-1",
+      full_name: USER.full_name,
+      email: USER.email,
+      role: "",
+      is_active: true,
+    });
+    const onOwnerCreated = vi.fn();
+    const user = open({ owners: [OWNER], onOwnerCreated });
+    await user.click(screen.getByRole("button", { name: "+ Add me as a sales rep" }));
+    await waitFor(() => expect(onOwnerCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "mem-1" })));
+  });
+
+  it("offers no 'add me' once the login is on the roster, or without org-level owner write", () => {
+    const mine: Owner = { id: "mem-1", full_name: "Priya Nair", email: "p@example.com", role: "", is_active: true };
+    open({ owners: [OWNER, mine] });
+    expect(screen.queryByRole("button", { name: "+ Add me as a sales rep" })).toBeNull();
+  });
+
+  it("offers no 'add me' to someone who may not write the roster", () => {
+    open({ owners: [OWNER], grants: [] });
+    expect(screen.queryByRole("button", { name: "+ Add me as a sales rep" })).toBeNull();
   });
 });

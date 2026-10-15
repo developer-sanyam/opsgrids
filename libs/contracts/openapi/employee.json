@@ -53,11 +53,18 @@
             "title": "Dotted Line Manager Id"
           },
           "employee_no": {
-            "maxLength": 40,
-            "minLength": 1,
-            "pattern": "^[A-Za-z0-9_-]+$",
-            "title": "Employee No",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employee No"
           },
           "employment_type": {
             "default": "full_time",
@@ -147,7 +154,6 @@
           }
         },
         "required": [
-          "employee_no",
           "full_name"
         ],
         "title": "EmployeeIn",

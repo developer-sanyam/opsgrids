@@ -203,6 +203,29 @@ async def create_owner(payload: OwnerIn, session: SessionDep, ctx: OwnerWrite) -
     return selectors.owner_out(owner)
 
 
+@router.put(
+    "/customers/owners/me",
+    response_model=OwnerOut,
+    status_code=status.HTTP_200_OK,
+    responses={status.HTTP_201_CREATED: {"model": OwnerOut, "description": "The rep was created"}},
+    summary="Make my own login a sales rep",
+    dependencies=[Entitled],
+)
+async def ensure_my_owner(
+    payload: OwnerIn, session: SessionDep, ctx: OwnerWrite, response: Response
+) -> OwnerOut:
+    """Idempotent. The roster row's id is the caller's membership id, so a login with no
+    employee link (the self-serve owner) can own records and log activities. Declared before
+    `/customers/owners/{owner_id}` so `me` is never parsed as an id. Needs the same
+    `crm.book.owner.write` at ORG as adding any rep: an OWN-scoped rep cannot mint roster rows."""
+    owner, created = await services.ensure_own_owner(
+        session, ctx, full_name=payload.full_name, email=payload.email, role=payload.role
+    )
+    if created:
+        response.status_code = status.HTTP_201_CREATED
+    return selectors.owner_out(owner)
+
+
 @router.patch(
     "/customers/owners/{owner_id}",
     response_model=OwnerOut,

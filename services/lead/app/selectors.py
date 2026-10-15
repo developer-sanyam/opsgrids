@@ -18,6 +18,7 @@ from typing import Any
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import domain
 from app.models import AssignmentRule, Lead
 from app.schemas import AssignmentRuleOut, LeadOut
 from platform_core.auth import ScopeContext
@@ -102,6 +103,7 @@ def lead_out(lead: Lead) -> LeadOut:
         phone=lead.phone_masked,
         source=lead.source,
         status=lead.status,
+        next_statuses=list(domain.allowed_next_statuses(lead.status)),
         owner_id=str(lead.owner_id) if lead.owner_id else None,
         notes=lead.notes,
         converted_company_id=str(lead.converted_company_id) if lead.converted_company_id else None,

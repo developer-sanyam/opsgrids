@@ -14,11 +14,13 @@
  * cases is a bug in the engine or in a definition, and fails the row with the engine's generic
  * "could not be prepared" sentence instead of a message that could never be the right one.
  */
-import { collectPages, makeLookup, RowProblem } from "@opsgrids/client";
+import { authApi, collectPages, makeLookup, RowProblem } from "@opsgrids/client";
 import type { ColumnOption, ImportContext, Lookup, LookupSet, ParsedRow } from "@opsgrids/client";
 
-import { getOwners, listCompanies, listContacts } from "@/api/client";
+import { USE_FIXTURES, ensureMyOwner, getOwners, listCompanies, listContacts } from "@/api/client";
 import type { Contact, Owner } from "@/api/types";
+import { findMyRep, repSeed } from "@/lib/myRep";
+import type { RepIdentity } from "@/lib/myRep";
 import { getMySubjectRef } from "@/lib/subject";
 
 /** Active reps by email: what the Owner email column offers and accepts. */
@@ -26,6 +28,10 @@ export const LOOKUP_OWNERS = "owners";
 /** Every rep by email, deactivated ones too. Used only to write an owner into an export, so it is
  *  attached to no column and never reaches the Lists sheet or a dropdown. */
 export const LOOKUP_ALL_OWNERS = "ownersAll";
+/** The signed-in login's own rep, as the single label `self`. Attached to no column: it is what a
+ *  blank Owner cell means. Absent when the login is not (and may not become) a sales rep. */
+export const LOOKUP_SELF_OWNER = "selfOwner";
+const SELF_LABEL = "self";
 export const LOOKUP_COMPANIES = "companies";
 export const LOOKUP_CONTACTS = "contacts";
 /** Contact email to the id of the company that contact belongs to. Attached to no column: it lets
@@ -90,11 +96,51 @@ const entry = (o: Owner) => ({ label: o.email, value: o.id });
  * export can still name who owns a record whose rep has since left.
  */
 export async function loadOwnerLookups(signal: AbortSignal): Promise<LookupSet> {
-  const owners = await getOwners(signal);
+  const loaded = await getOwners(signal);
+  const { owners, mine } = await withMyRep(loaded);
   return {
     [LOOKUP_OWNERS]: makeSpellingLookup(owners.filter((o) => o.is_active).map(entry)),
     [LOOKUP_ALL_OWNERS]: makeSpellingLookup(owners.map(entry)),
+    ...(mine !== undefined && mine.is_active
+      ? { [LOOKUP_SELF_OWNER]: makeLookup([{ label: SELF_LABEL, value: mine.id }]) }
+      : {}),
   };
+}
+
+/** Who the session is, for the three ways a login becomes a rep (`findMyRep`). Never throws. */
+async function sessionIdentity(): Promise<RepIdentity | null> {
+  if (USE_FIXTURES) return null;
+  try {
+    const me = await authApi.me();
+    // Anything but a session with a name and an address is "no usable identity".
+    if (typeof me?.email !== "string" || typeof me.full_name !== "string") return null;
+    return { email: me.email, full_name: me.full_name, membership_id: me.membership_id ?? null };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The roster with the signed-in login's own rep on it. A login with no employee record (the
+ * self-serve organization owner) is not on a new organization's roster, and an import whose Owner
+ * cells are blank means "me" -- so, as the Company form does, this puts them on it first
+ * (`PUT /customers/owners/me`, idempotent). Someone who may not write the roster is refused by the
+ * server; that is not an error here, only "there is no `self`", and the rows then say so.
+ */
+async function withMyRep(owners: Owner[]): Promise<{ owners: Owner[]; mine: Owner | undefined }> {
+  const bySref = findMyRep(owners, null, getMySubjectRef());
+  if (bySref !== undefined) return { owners, mine: bySref };
+  const me = await sessionIdentity();
+  const known = findMyRep(owners, me, getMySubjectRef());
+  if (known !== undefined) return { owners, mine: known };
+  const seed = repSeed(me);
+  if (seed === null) return { owners, mine: undefined };
+  try {
+    const created = await ensureMyOwner(seed);
+    return { owners: owners.some((o) => o.id === created.id) ? owners : [...owners, created], mine: created };
+  } catch {
+    return { owners, mine: undefined };
+  }
 }
 
 /** Companies by name (unique per organisation, ignoring case). */
@@ -129,8 +175,11 @@ async function loadAllContacts(signal: AbortSignal, maxPages?: number): Promise<
 export async function loadContactLookups(signal: AbortSignal): Promise<LookupSet> {
   const rows = await loadAllContacts(signal);
   return {
-    [LOOKUP_CONTACTS]: makeSpellingLookup(rows.map((c) => ({ label: c.email, value: c.id }))),
-    [LOOKUP_CONTACT_COMPANIES]: makeLookup(rows.map((c) => ({ label: c.email, value: c.company_id }))),
+    // A phone-only contact has no email to be named by, so it is not in the email-keyed lookups.
+    [LOOKUP_CONTACTS]: makeSpellingLookup(withEmail(rows).map((c) => ({ label: c.email, value: c.id }))),
+    [LOOKUP_CONTACT_COMPANIES]: makeLookup(
+      withEmail(rows).map((c) => ({ label: c.email, value: c.company_id })),
+    ),
     [LOOKUP_COMPANY_OF_CONTACT]: makeLookup(rows.map((c) => ({ label: c.id, value: c.company_id }))),
   };
 }
@@ -142,7 +191,12 @@ export async function loadContactLookups(signal: AbortSignal): Promise<LookupSet
  */
 export async function loadExistingContactEmails(signal: AbortSignal): Promise<Lookup> {
   const rows = await loadAllContacts(signal, CONTACT_EMAIL_PAGES);
-  return makeLookup(rows.map((c) => ({ label: c.email, value: c.email })));
+  return makeLookup(withEmail(rows).map((c) => ({ label: c.email, value: c.email })));
+}
+
+/** The contacts that have an email (ADR-0038 D-14: a contact may be phone-only), typed so. */
+function withEmail(rows: readonly Contact[]): (Contact & { email: string })[] {
+  return rows.filter((c): c is Contact & { email: string } => c.email !== null && c.email !== "");
 }
 
 /* ---------------------------- reverse lookups (export) ---------------------------- */
@@ -230,10 +284,14 @@ export function namedOwnerId(row: ParsedRow, ctx: ImportContext): string | undef
 export function ownerIdOrSelf(row: ParsedRow, ctx: ImportContext): string {
   const named = namedOwnerId(row, ctx);
   if (named !== undefined) return named;
+  // The login's own rep record: found (or made, for an organization owner with no employee record)
+  // when the lookups loaded.
+  const mine = ctx.lookups[LOOKUP_SELF_OWNER]?.resolve(SELF_LABEL);
+  if (mine !== undefined) return mine;
   const self = getMySubjectRef();
   if (self === null || ctx.lookups[LOOKUP_OWNERS]?.labelOf(self) === undefined) {
     throw new RowProblem(
-      "Your account has no active sales-rep record, so name an owner in the Owner email column.",
+      "Your account is not a sales rep yet, so name an owner in the Owner email column, or ask an administrator to add you as a rep.",
     );
   }
   return self;

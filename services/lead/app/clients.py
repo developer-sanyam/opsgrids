@@ -176,6 +176,8 @@ async def ensure_deal(
     name: str,
     close_date: str,
     source: str,
+    value_minor: int = 0,
+    stage: str | None = None,
     actor_id: uuid.UUID | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> uuid.UUID:
@@ -199,6 +201,8 @@ async def ensure_deal(
         "name": name,
         "close_date": close_date,
         "source": source,
+        "value_minor": value_minor,
+        "stage": stage,
     }
 
     owns_client = client is None

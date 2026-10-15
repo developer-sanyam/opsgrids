@@ -2730,6 +2730,57 @@ field of the `consumer.handler.dead_lettered` line: every `.dlq` is bound `#` to
 dead-letter exchange, so a dead letter from any consumer can appear in every `.dlq`, and depth on
 `deal.events.dlq` alone does not prove deal's handler failed.
 
+### Owner identity and CRM flows (2026-10-15): migration, the `core` reconcile, and the order
+
+Fixes from the first real self-serve customer. Four things ship together; deploy them in this order.
+
+**1. Migration `a7c3e91d5b24` (customer, after `e230c025337e`).** Part of the ordinary `migrate`
+step. It makes `customer.contacts.email` nullable (ADR-0038 D-14, phone-only contacts) and changes no
+row. Take the nightly backup first. Its downgrade is lossy by necessity: every phone-only contact gets a
+synthetic `<id>@no-email.invalid` address first, so only roll the schema back before any phone-only
+contact exists.
+
+**2. Deploy the services, `account` and `customer` first.** `account` now installs the merged `core`
+manifest (account's slice plus approval's) at organization creation, so a **new** organization's owner
+holds `core.approval.*` from the first minute; it reads the manifest from the mounted directory
+(`/opt/opsgrids/permissions`), and logs `core_manifest_missing` and falls back to account's own slice if
+that mount is ever absent. Then `employee` (an employee may now be created without a number: the next
+`EMP####` is generated), `lead` and `deal` (deal names lose the id fragment, a conversion takes an
+optional value and stage), `finance` (a phone-only CRM contact bridges with an empty address).
+`lead`'s response gains `next_statuses` and `customer`'s contact response allows `email: null`; both are
+additive for the old SPA bundles, which keep working until the new ones are published.
+
+**3. Reconcile `core` once, after the API is deployed** (ADR-0007: manifests committed, the enforcing
+service deployed, reconcile, only then the UI that assumes it). Organizations created **before** this
+release never received the approval permissions or the `APPROVAL_ADMIN` role, because organization
+creation installed only account's in-code slice: their owners get 403 on `/approvals/*`. The reconcile
+widens `ORG_OWNER`, `ORG_ADMIN` and `MEMBER` with the four `core.approval.*` codes and installs
+`APPROVAL_ADMIN`; union only, nothing is removed, customer-authored roles are reported not touched.
+
+```bash
+make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=core          # dry run
+make edge-reconcile HOST=deploy@<ip> CONFIRM=edge.opsgrids.com PRODUCTS=core APPLY=1
+```
+
+Each organization's permission version is bumped, so every signed-in user is refreshed once. Fleet write:
+outside peak hours, never as part of `make deploy`. No other product needs a reconcile for this release
+(no catalogue changed; `make openapi-check` shows the permission manifests are byte-identical).
+
+**4. The SPAs last** (`crm`, `hrms`, and `@opsgrids/ui`/`client` consumers). They assume all of the above:
+the CRM picks the signed-in login as owner and puts it on the roster (`PUT /customers/owners/me`), HRMS
+shows **Linked member** on the employee page and **Create my employee record** where "No employee record
+is linked" used to be.
+
+**Verify** on a test organization created after the deploy: the owner opens HRMS `/approvals` (200, not
+"Your role doesn't include approvals"); in CRM, **Log activity** against a company succeeds and the
+activity's owner is the owner's own name; **New company** preselects the owner. On an organization
+created before it, run the `core` reconcile dry run first and check it lists `ORG_OWNER` gaining the
+approval codes. `GET /api/v1/members?employee_id=<id>` returns the one linked login.
+
+**Rollback.** Redeploy the previous images. Roster rows made by `PUT /customers/owners/me` are ordinary
+`customer.owners` rows (their id is the member's membership id) and stay valid; phone-only contacts need
+the migration note above.
+
 ### Deploying from the pipeline
 
 `.github/workflows/deploy.yml` runs the same two scripts a laptop does — `ssh-deploy.sh` for the

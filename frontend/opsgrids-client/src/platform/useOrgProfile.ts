@@ -11,11 +11,15 @@
 import { useEffect, useState } from "react";
 
 import { apiRequest } from "../http";
+import { setDefaultPhoneRegion } from "../phone";
 
 export interface OrgProfile {
   timezone: string;
   currency: string;
   locale: string;
+  /** The organization's country (ISO 3166-1 alpha-2), or `null` when it never set one. A bare
+   *  national phone number is read in this country (`normalisePhone`). */
+  country: string | null;
   /** `loading` until the one read settles; `fallback` when it failed and the defaults stand in. */
   status: "loading" | "success" | "fallback";
 }
@@ -24,25 +28,37 @@ interface OrganizationWire {
   timezone: string;
   currency: string;
   locale: string;
+  country?: string | null;
 }
 
-const DEFAULTS = { timezone: "Asia/Kolkata", currency: "INR", locale: "en-IN" } as const;
+const DEFAULTS = { timezone: "Asia/Kolkata", currency: "INR", locale: "en-IN", country: "IN" } as const;
 
 let settled: OrgProfile | null = null;
 let pending: Promise<OrgProfile> | null = null;
 
-function load(): Promise<OrgProfile> {
+/** Read the profile once per session. Importers call it before they parse, so the organization's
+ *  own country decides how a bare phone number is read (not the platform default). */
+export function loadOrgProfile(): Promise<OrgProfile> {
   pending ??= apiRequest<OrganizationWire>("/organization", { signalUnauthorized: false })
     .then(
-      (org): OrgProfile => ({ timezone: org.timezone, currency: org.currency, locale: org.locale, status: "success" }),
+      (org): OrgProfile => ({
+        timezone: org.timezone,
+        currency: org.currency,
+        locale: org.locale,
+        country: org.country ?? null,
+        status: "success",
+      }),
       (): OrgProfile => ({ ...DEFAULTS, status: "fallback" }),
     )
     .then((profile) => {
       settled = profile;
+      setDefaultPhoneRegion(profile.country);
       return profile;
     });
   return pending;
 }
+
+const load = loadOrgProfile;
 
 export function useOrgProfile(): OrgProfile {
   const [profile, setProfile] = useState<OrgProfile>(() => settled ?? { ...DEFAULTS, status: "loading" });

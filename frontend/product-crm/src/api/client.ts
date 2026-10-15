@@ -30,7 +30,7 @@ import {
   ownerFromWire,
   summaryFromWire,
 } from "./mappers";
-import { ACTIVITIES, COMPANIES, CONTACTS, DEALS, LEADS, OWNERS } from "./fixtures";
+import { ACTIVITIES, COMPANIES, CONTACTS, DEALS, LEADS, OWNERS, nextStatusesFor } from "./fixtures";
 import type {
   ActivityIn,
   ActivityOut,
@@ -45,6 +45,7 @@ import type {
   DealIn,
   DealOut,
   DealPatch,
+  LeadConvertIn,
   LeadConvertOut,
   LeadIn,
   LeadOut,
@@ -68,6 +69,7 @@ import type {
   Deal,
   DealStage,
   Lead,
+  LeadConvertOptions,
   LeadConvertResult,
   LeadRevealField,
   LeadStatus,
@@ -489,7 +491,7 @@ export async function listContacts(params: ListContactsParams = {}): Promise<Pag
         q === "" ||
         c.full_name.toLowerCase().includes(q) ||
         c.title.toLowerCase().includes(q) ||
-        c.email.toLowerCase().includes(q);
+        (c.email ?? "").toLowerCase().includes(q);
       const matchesStatus = !params.status || params.status === "all" || c.status === params.status;
       const matchesCompany = !params.companyId || c.company_id === params.companyId;
       return matchesQuery && matchesStatus && matchesCompany;
@@ -527,8 +529,8 @@ function maskPhone(rawPhone: string): string {
 /** `POST /contacts` — `crm.book.contact.write`. No `phone` field: see `ContactIn`'s doc comment. */
 export async function createContact(input: ContactIn): Promise<Contact> {
   if (USE_FIXTURES) {
-    // The server compares contact emails exactly, capitals included.
-    if (CONTACTS.some((c) => c.email === input.email)) {
+    // The server compares contact emails exactly, capitals included. A phone-only contact has none.
+    if (input.email && CONTACTS.some((c) => c.email === input.email)) {
       throw conflict("A contact with that email already exists");
     }
     if (!COMPANIES.some((c) => c.id === input.company_id)) {
@@ -543,7 +545,7 @@ export async function createContact(input: ContactIn): Promise<Contact> {
       id: fixtureId("con"),
       full_name: input.full_name,
       title: input.title ?? "",
-      email: input.email,
+      email: input.email || null,
       phone: input.raw_phone ? maskPhone(input.raw_phone) : "—",
       company_id: input.company_id,
       status: input.status ?? "lead",
@@ -771,6 +773,20 @@ export async function createOwner(input: OwnerIn): Promise<Owner> {
   return ownerFromWire(row);
 }
 
+/** `PUT /customers/owners/me` — `crm.book.owner.write` (ORG scope). Makes the caller's own login a
+ *  sales rep, idempotently: the roster row's id is the caller's membership id, so a login with no
+ *  employee record (the self-serve owner) can own records and log activities. A rep already on the
+ *  roster under the same email is returned as is. */
+export async function ensureMyOwner(input: OwnerIn): Promise<Owner> {
+  if (USE_FIXTURES) {
+    const existing = OWNERS.find((o) => o.email.toLowerCase() === input.email.toLowerCase());
+    if (existing) return settle(existing);
+    return createOwner(input);
+  }
+  const row = await apiRequest<OwnerOut>("/customers/owners/me", { method: "PUT", body: input });
+  return ownerFromWire(row);
+}
+
 /** `PATCH /customers/owners/{id}` — `crm.book.owner.write` (ORG scope). Edits a rep's plain
  *  fields, and — via `is_active` — deactivates or reactivates them. Deactivating refuses (409)
  *  while the rep still owns a live company or contact; reassign those first. */
@@ -869,6 +885,7 @@ export async function createLead(input: LeadIn): Promise<Lead> {
       phone: input.phone ?? null,
       source: input.source ?? "manual",
       status: "new",
+      next_statuses: nextStatusesFor("new"),
       owner_id: input.owner_id ?? null,
       notes: input.notes ?? "",
       converted_company_id: null,
@@ -895,11 +912,21 @@ export async function updateLead(id: string, patch: LeadPatch): Promise<Lead> {
     if (current.status === "converted" && (patch.status !== undefined || patch.owner_id !== undefined)) {
       throw conflict("A converted lead cannot be reassigned or have its status changed");
     }
+    if (patch.status !== undefined && !current.next_statuses.includes(patch.status)) {
+      // The live service answers a plain sentence here; the SPA never offers such a move.
+      throw conflict(
+        patch.status === current.status
+          ? `This lead is already ${patch.status}.`
+          : `A ${current.status} lead can't be moved to ${patch.status}.`,
+      );
+    }
     const lead: Lead = {
       ...current,
       ...(patch.full_name !== undefined ? { full_name: patch.full_name } : {}),
       ...(patch.company !== undefined ? { company: patch.company } : {}),
-      ...(patch.status !== undefined ? { status: patch.status } : {}),
+      ...(patch.status !== undefined
+        ? { status: patch.status, next_statuses: nextStatusesFor(patch.status) }
+        : {}),
       ...(patch.owner_id !== undefined ? { owner_id: patch.owner_id } : {}),
       ...(patch.notes !== undefined ? { notes: patch.notes } : {}),
     };
@@ -917,7 +944,10 @@ export async function updateLead(id: string, patch: LeadPatch): Promise<Lead> {
  *  already-converted lead returns the same ids rather than erroring. Fixtures mode fabricates
  *  ids on first conversion and returns the same ones on a repeat call, the same guarantee the
  *  live service makes. */
-export async function convertLead(id: string): Promise<LeadConvertResult> {
+export async function convertLead(
+  id: string,
+  options: LeadConvertOptions = {},
+): Promise<LeadConvertResult> {
   if (USE_FIXTURES) {
     const index = LEADS.findIndex((l) => l.id === id);
     if (index === -1) throw new Error("That lead could not be found.");
@@ -935,7 +965,8 @@ export async function convertLead(id: string): Promise<LeadConvertResult> {
       throw new Error(`A lead in "${current.status}" cannot be converted — qualify it first.`);
     }
     const companyId = fixtureId("comp");
-    const contactId = current.email ? fixtureId("con") : null;
+    // A lead with an email, a phone or both becomes a contact (phone-only contacts are allowed).
+    const contactId = current.email || current.phone ? fixtureId("con") : null;
     const dealId = fixtureId("deal");
     const converted: Lead = {
       ...current,
@@ -943,13 +974,19 @@ export async function convertLead(id: string): Promise<LeadConvertResult> {
       converted_company_id: companyId,
       converted_contact_id: contactId,
       converted_deal_id: dealId,
+      next_statuses: [],
       converted_at: new Date().toISOString(),
     };
     LEADS[index] = converted;
     return settle({ lead_id: current.id, company_id: companyId, contact_id: contactId, deal_id: dealId });
   }
+  const body: LeadConvertIn = {
+    ...(options.deal_value_minor !== undefined ? { deal_value_minor: options.deal_value_minor } : {}),
+    ...(options.deal_stage !== undefined && options.deal_stage !== "" ? { deal_stage: options.deal_stage } : {}),
+  };
   const row = await apiRequest<LeadConvertOut>(`/leads/${encodeURIComponent(id)}:convert`, {
     method: "POST",
+    ...(Object.keys(body).length > 0 ? { body } : {}),
   });
   return {
     lead_id: row.lead_id,
