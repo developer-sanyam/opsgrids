@@ -24,6 +24,7 @@ from pydantic import (
 Channel = Literal["email", "whatsapp", "in_app"]
 TemplateCategory = Literal["utility", "marketing", "authentication"]
 ParameterFormat = Literal["positional", "named"]
+CrmStatus = Literal["lead", "qualified", "customer", "dormant"]
 TemplateStatus = Literal["draft", "pending", "approved", "rejected", "paused", "disabled"]
 VariableComponent = Literal["body", "header", "button"]
 VariableKind = Literal["text", "payload"]
@@ -513,6 +514,12 @@ class ContactOut(BaseModel):
     email: str
     name: str
     attributes: dict[str, Any]
+    #: manual | import | signup | crm. A `crm` row is a copy managed in the CRM: PATCH and DELETE
+    #: answer 409 `managed_in_crm`. `email` is `""` for a phone-only contact.
+    origin: str = "manual"
+    crm_contact_id: str | None = None
+    #: Masked, like `email`; null when the contact has no number.
+    phone: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -883,6 +890,8 @@ class SegmentIn(BaseModel):
     created_within_days: int | None = Field(default=None, ge=1, le=3650)
     #: Only contacts a campaign email was sent to in the last N days.
     active_within_days: int | None = Field(default=None, ge=1, le=3650)
+    #: Only contacts copied from the CRM whose CRM status is this.
+    crm_status: CrmStatus | None = None
 
 
 class SegmentOut(BaseModel):
@@ -891,6 +900,7 @@ class SegmentOut(BaseModel):
     list_id: str | None
     created_within_days: int | None
     active_within_days: int | None
+    crm_status: str | None
     created_at: datetime
     updated_at: datetime
 

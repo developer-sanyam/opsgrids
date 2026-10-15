@@ -305,6 +305,28 @@ class ContactResolveOut(BaseModel):
     contact_id: str | None
 
 
+class ContactExportItem(BaseModel):
+    """One CRM contact as Engage's projection needs it (C53). `phone` is the real number, opened
+    for the one caller allowed to ask (notification) and audited; `deleted_at` set means the
+    contact is gone and the copy must go too."""
+
+    contact_id: str
+    company_id: str
+    full_name: str
+    email: str | None
+    phone: str | None
+    status: str
+    updated_at: datetime
+    deleted_at: datetime | None
+
+
+class ContactExportOut(BaseModel):
+    items: list[ContactExportItem]
+    #: Keyset cursor for the next page; None on the last page (and always for an `ids` read).
+    next_after_updated_at: datetime | None = None
+    next_after_id: str | None = None
+
+
 # ------------------------------------------------------------------ lead conversion (internal)
 
 

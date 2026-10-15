@@ -114,7 +114,10 @@ function Contacts() {
       render: (contact) => (
         <div className="flex flex-col">
           <span className="text-sm font-bold text-ink">{contact.name === "" ? "—" : contact.name}</span>
-          <span className="font-mono text-xs text-muted">{contact.email}</span>
+          <span className="font-mono text-xs text-muted">
+            {contact.email !== "" ? contact.email : (contact.phone ?? "")}
+          </span>
+          {contact.origin === "crm" ? <span className="text-xs text-muted">From the CRM</span> : null}
         </div>
       ),
     },
@@ -130,8 +133,8 @@ function Contacts() {
           label={contact.name === "" ? contact.email : contact.name}
           actions={[
             { label: "WhatsApp opt-in", onSelect: () => setConsentFor(contact) },
-            { label: "Edit", onSelect: () => setEditing(contact), hidden: !canWrite },
-            { label: "Delete", tone: "danger", onSelect: () => setDeleting(contact), hidden: !canWrite },
+            { label: "Edit", onSelect: () => setEditing(contact), hidden: !canWrite || contact.origin === "crm" },
+            { label: "Delete", tone: "danger", onSelect: () => setDeleting(contact), hidden: !canWrite || contact.origin === "crm" },
           ]}
         />
       ),

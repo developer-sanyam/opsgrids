@@ -42,6 +42,7 @@ from app import (
     whatsapp_provider,
 )
 from app.config import Settings, settings
+from app.crm_contacts import CrmContact
 from app.e1_models import EmailEvent
 from app.models import (
     SCHEMA,
@@ -3795,6 +3796,15 @@ def verify_unsubscribe_link(token: str) -> domain.UnsubscribeTarget | None:
     return target
 
 
+def _assert_not_crm_managed(contact: Contact) -> None:
+    """A CRM contact's copy is edited and removed in the CRM only (409 `managed_in_crm`)."""
+    if contact.origin == "crm":
+        raise ConflictProblem(
+            "This contact is managed in the CRM",
+            errors=[{"code": "managed_in_crm"}],
+        )
+
+
 async def create_contact(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -3872,6 +3882,7 @@ async def update_contact(
     contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
     if contact is None:
         raise NotFoundProblem("No such contact")
+    _assert_not_crm_managed(contact)
 
     before = {"email": contact.email_masked, "name": contact.name}
     # A new address is a new consent subject: the old address's opt-in does not carry over, so
@@ -3925,6 +3936,7 @@ async def delete_contact(
     contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
     if contact is None:
         raise NotFoundProblem("No such contact")
+    _assert_not_crm_managed(contact)
     record_audit(
         session,
         AuditLog,
@@ -4043,6 +4055,122 @@ async def erase_contact_campaign_copies(
     return erased
 
 
+def _crm_address(channel: str, raw: str | None) -> str | None:
+    """A CRM address in the form the ledger indexes it, or None when absent or unusable (a number
+    without a country code is skipped rather than guessed at)."""
+    if not raw or not raw.strip():
+        return None
+    try:
+        return consent.normalize(channel, raw)
+    except domain.RuleError:
+        return None
+
+
+async def project_crm_contact(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    crm_contact_id: uuid.UUID,
+    state: CrmContact | None,
+) -> str:
+    """Make the Engage copy of one CRM contact match `state` (what C53 answered). Returns
+    `projected`, `removed`, `absent` or `conflict`. Idempotent: the same state twice writes the
+    same row.
+
+    **Writes no consent and never touches `suppressions`**: a copy is marketing-blocked until a
+    real opt-in is recorded, exactly like any other contact (ADR-0038 D-15, ADR-0021).
+
+    No state, a deleted contact, or one with neither a usable e-mail nor a usable number has no
+    copy: an existing one is removed and its campaign-recipient snapshots overwritten
+    (`erase_contact_campaign_copies`, the existing erasure pattern; EV18). A CRM contact has no
+    separate erase today, only a soft delete, and both arrive here as `state` gone. The audit rows
+    this writes hold ids only. Earlier `engage.contact.*` rows of a contact that was a manual one
+    before it was linked still hold its name and masked e-mail: residue.
+    """
+    existing = await selectors.contact_by_crm_id(session, organization_id, crm_contact_id)
+    email = _crm_address("email", state.email) if state and state.deleted_at is None else None
+    phone = _crm_address("whatsapp", state.phone) if state and state.deleted_at is None else None
+    if state is None or state.deleted_at is not None or (email is None and phone is None):
+        if existing is None:
+            return "absent"
+        engage_id = existing.id
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=organization_id,
+            actor_id=None,
+            acting_as="crm-projection",
+            action="engage.contact.deleted",
+            entity="contact",
+            entity_id=engage_id,
+            before={"crm_contact_id": str(crm_contact_id)},
+            reason="crm_contact_removed",
+        )
+        await session.delete(existing)
+        await session.flush()
+        await erase_contact_campaign_copies(
+            session, organization_id=organization_id, contact_id=engage_id
+        )
+        return "removed"
+
+    cfg = settings()
+    email_index = selectors.email_index(email) if email else None
+    contact = existing
+    if email_index is not None and (contact is None or contact.email_index != email_index):
+        # The address already belongs to another row: a manual or imported contact is linked
+        # (not duplicated); a different CRM contact's copy is never merged.
+        holder = await selectors.contact_by_index_including_deleted(
+            session, organization_id, email_index
+        )
+        if holder is not None:
+            # Someone else's copy, a deleted row, or a twin of a copy we already hold: skip and
+            # say so (ids only). Never merge, never overwrite.
+            if (
+                holder.crm_contact_id not in (None, crm_contact_id)
+                or holder.deleted_at
+                or (contact is not None and holder.id != contact.id)
+            ):
+                record_audit(
+                    session,
+                    AuditLog,
+                    organization_id=organization_id,
+                    actor_id=None,
+                    acting_as="crm-projection",
+                    action="engage.contact.projection_conflict",
+                    entity="contact",
+                    entity_id=holder.id,
+                    after={"crm_contact_id": str(crm_contact_id)},
+                )
+                return "conflict"
+            contact = holder
+    if contact is None:
+        contact = Contact(organization_id=organization_id, email_masked="", attributes={})
+        session.add(contact)
+
+    contact.crm_contact_id = crm_contact_id
+    contact.origin = "crm"
+    contact.name = (state.full_name or "")[:200]
+    if email_index != contact.email_index:
+        if email is None:
+            contact.email_enc, contact.email_masked, contact.email_index = None, "", None
+        else:
+            contact.email_enc, contact.email_masked, contact.email_index = _sealed_email(email)
+    phone_index = consent.index_for("whatsapp", phone) if phone else None
+    if phone_index != contact.phone_index:
+        if phone is None:
+            contact.phone_enc, contact.phone_masked, contact.phone_index = None, None, None
+        else:
+            contact.phone_enc, contact.phone_masked = pii.seal(phone, kind="phone", settings=cfg)
+            contact.phone_index = phone_index
+    contact.attributes = {
+        **contact.attributes,
+        "crm_status": state.status,
+        "crm_company_id": str(state.company_id),
+    }
+    await session.flush()
+    return "projected"
+
+
 async def import_contacts(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -4084,6 +4212,9 @@ async def import_contacts(
             continue
         normalized, name, attributes, index = item
         contact = existing.get(index)
+        if contact is not None and contact.origin == "crm":
+            results.append(("invalid", None, "managed_in_crm"))
+            continue
         if contact is None:
             sealed, masked = pii.seal(normalized, kind="email", settings=settings())
             contact = Contact(
@@ -4449,6 +4580,8 @@ async def record_consent_event(
         contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
         if contact is None:
             raise NotFoundProblem("No such contact")
+        if contact.email_index is None or contact.email_enc is None:
+            raise ValidationProblem("This contact has no email address")
         if address is not None and subject.index != contact.email_index:
             raise ValidationProblem("That address is not this contact's address")
         subject = _email_subject(
@@ -4663,6 +4796,7 @@ async def create_segment(
     list_id: uuid.UUID | None = None,
     created_within_days: int | None = None,
     active_within_days: int | None = None,
+    crm_status: str | None = None,
     request: Request | None = None,
 ) -> Segment:
     if await selectors.get_segment_by_name(session, ctx.organization_id, name):
@@ -4679,6 +4813,7 @@ async def create_segment(
         list_id=list_id,
         created_within_days=created_within_days,
         active_within_days=active_within_days,
+        crm_status=crm_status,
     )
     session.add(row)
     await session.flush()
@@ -4695,6 +4830,7 @@ async def create_segment(
             "list_id": str(list_id) if list_id else None,
             "created_within_days": created_within_days,
             "active_within_days": active_within_days,
+            "crm_status": crm_status,
         },
         request=request,
     )
