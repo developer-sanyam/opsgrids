@@ -239,7 +239,7 @@ describe("useAdminLinks", () => {
     expect(screen.queryByText("Audit Logs")).toBeNull();
   });
 
-  it("shows Users and Settings, and never an Audit Logs link, when every permission is held", () => {
+  it("shows all three when every underlying permission is held", () => {
     render(
       <Wrapper
         user={meWith()}
@@ -255,10 +255,19 @@ describe("useAdminLinks", () => {
     );
     expect(screen.getByText("Users")).toBeTruthy();
     expect(screen.getByText("Settings")).toBeTruthy();
+    expect(screen.getByText("Audit Logs")).toBeTruthy();
+  });
+
+  it("hides Audit Logs below ORG scope, because every audit source refuses it", () => {
+    render(
+      <Wrapper user={meWith()} grants={["core.identity.audit.read:OWN"]} entitlements={[]}>
+        <AdminProbe />
+      </Wrapper>,
+    );
     expect(screen.queryByText("Audit Logs")).toBeNull();
   });
 
-  it("shows nothing when the caller holds neither", () => {
+  it("shows nothing when the caller holds none of the three", () => {
     render(
       <Wrapper user={meWith()} grants={[]} entitlements={[]}>
         <AdminProbe />

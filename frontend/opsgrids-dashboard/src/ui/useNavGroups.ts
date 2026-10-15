@@ -1,5 +1,6 @@
 import { useCan } from "@opsgrids/client";
 import {
+  ActivityIcon,
   BoxIcon,
   BuildingIcon,
   GlobeIcon,
@@ -42,6 +43,7 @@ const ORGANIZATION_ITEM: NavEntry = { to: "/admin/organization", label: "Organiz
 const UNITS_ITEM: NavEntry = { to: "/admin/org-units", label: "Org units", icon: NetworkIcon };
 const LOCATIONS_ITEM: NavEntry = { to: "/admin/locations", label: "Locations", icon: MapPinIcon };
 const DOMAINS_ITEM: NavEntry = { to: "/admin/domains", label: "Domains", icon: GlobeIcon };
+const AUDIT_ITEM: NavEntry = { to: "/admin/audit", label: "Audit log", icon: ActivityIcon };
 
 const PINNED: NavEntry[] = [
   { to: "/account/security", label: "Security", icon: KeyIcon },
@@ -57,6 +59,8 @@ export function useNavGroups(): { groups: NavGroup[]; pinned: NavEntry[] } {
   const canReadUnits = useCan("core.org.unit.read");
   const canReadLocations = useCan("core.org.location.read");
   const canReadDomains = useCan("core.identity.domain.read");
+  // ORG, matching the route: the audit read refuses anything narrower.
+  const canReadAudit = useCan("core.identity.audit.read", "ORG");
 
   const adminItems: NavEntry[] = [
     ...(canReadMembers ? [MEMBERS_ITEM] : []),
@@ -65,6 +69,7 @@ export function useNavGroups(): { groups: NavGroup[]; pinned: NavEntry[] } {
     ...(canReadUnits ? [UNITS_ITEM] : []),
     ...(canReadLocations ? [LOCATIONS_ITEM] : []),
     ...(canReadDomains ? [DOMAINS_ITEM] : []),
+    ...(canReadAudit ? [AUDIT_ITEM] : []),
   ];
 
   const groups: NavGroup[] =

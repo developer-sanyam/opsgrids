@@ -43,7 +43,7 @@ SECTION_PERMISSIONS = "permission"
 _EVENT_TYPE = re.compile(r"^crm\.(?:(?:book|pipeline)\.[a-z_]+\.[a-z_]+|lead\.[a-z_]+)$")
 _PERMISSION_CODE = re.compile(r"^crm\.[a-z_]+\.[a-z_]+\.[a-z_]+$")
 _ROLE_CODE = re.compile(r"^CRM_[A-Z_]+$")
-_GATEWAY_PREFIX = re.compile(r"/api/v1/[a-z-]+")
+_GATEWAY_PREFIX = re.compile(r"/api/v1/[a-z-]+(?:/[a-z-]+)*")
 
 
 def _sections() -> dict[str, list[str]]:

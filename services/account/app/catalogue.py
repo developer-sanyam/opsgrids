@@ -163,6 +163,11 @@ CORE_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("identity.membership.read", "ORG"),
             ("identity.membership.write", "ORG"),
             ("identity.role.read", "ORG"),
+            # The organization audit log (`GET /api/v1/audit/<service>`). Read-only, and what it
+            # returns is metadata — who did what to which record, and when — never a value: a PII
+            # reveal row names the fields that were opened, not their contents. An administrator
+            # who manages people needs to see what those people did.
+            ("identity.audit.read", "ORG"),
             # Can see the marketplace and what is active; cannot activate, because that
             # spends money and this role is defined as the one that does not.
             ("product.catalogue.read", "ORG"),

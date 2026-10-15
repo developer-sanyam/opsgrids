@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from app import consumers, dispatcher
 from app.api.a1_automations import router as a1_automations_router
+from app.api.audit import router as audit_router
 from app.api.c1_internal import router as c1_internal_router
 from app.api.e1_analytics import public_router as e1_public_router
 from app.api.e1_analytics import router as e1_router
@@ -134,6 +135,7 @@ app = create_app(
     # gated on different entitlements and built from different catalogues, so they stay two
     # routers rather than one with a prefix.
     routers=[
+        audit_router,
         router,
         engage_router,
         engage_public_router,

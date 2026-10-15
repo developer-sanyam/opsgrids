@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from app import consumers
+from app.api.audit import router as audit_router
 from app.api.routes import router
 from app.channels.sweep import ChannelSyncSweep
 from app.config import settings
@@ -351,6 +352,7 @@ app = create_app(
     # The inventory router first: its static `/operations/inventory/stock` etc. must be matched
     # before the catch-all `/operations/inventory/{item_id}` routes in `router`.
     routers=[
+        audit_router,
         bulk_router,
         inventory_router,
         receiving_router,

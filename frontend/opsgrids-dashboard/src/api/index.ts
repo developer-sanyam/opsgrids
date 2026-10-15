@@ -8,6 +8,8 @@ import { apiRequest } from "@opsgrids/client";
 import type {
   Activation,
   AttendanceRecord,
+  AuditPage,
+  AuditQuery,
   Company,
   CreditBalance,
   DealActivity,
@@ -414,4 +416,17 @@ export function getMyAttendance(employeeId: string, date: string): Promise<Page<
  * half-days. Needs `hrms.time.leave_balance.read`. */
 export function listMyLeaveBalances(employeeId: string): Promise<LeaveBalance[]> {
   return apiRequest<LeaveBalance[]>(`/leave/balances${query({ employee_id: employeeId })}`);
+}
+
+// ------------------------------------------------------------------ the organization audit log
+//
+// One `GET /audit/<service>` per source (`platform_core.audit_read`): each service reads back its
+// own `audit_logs`, and `src/lib/auditFeed.ts` merges the pages. Needs `core.identity.audit.read`
+// at ORG scope; a product the organization has not activated answers 402 at the gateway.
+
+/** `GET /audit/{service}`: one source's page of the audit trail, newest first. */
+export function listAuditLog(service: string, params: AuditQuery): Promise<AuditPage> {
+  return apiRequest<AuditPage>(
+    `/audit/${encodeURIComponent(service)}${query(params as Record<string, string | number | boolean | undefined>)}`,
+  );
 }

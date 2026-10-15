@@ -400,3 +400,37 @@ def test_the_crm_prefixes_are_identical_in_dev_and_prod() -> None:
     dev, prod = crm_prefixes(DEV_ROUTES), crm_prefixes(PROD_ROUTES)
     assert dev == prod, f"in dev only: {sorted(dev - prod)}; in prod only: {sorted(prod - dev)}"
     assert dev, "no CRM prefixes found: this test would pass vacuously"
+
+
+AUDIT_PREFIX = "/api/v1/audit/"
+
+
+def _audit_routes(path: Path) -> dict[str, dict[str, object]]:
+    return {
+        str(route["prefix"]): route
+        for route in _routes(path)
+        if str(route["prefix"]).startswith(AUDIT_PREFIX)
+    }
+
+
+def test_the_audit_log_sources_are_identical_in_dev_and_prod() -> None:
+    """The organization audit log is one `/api/v1/audit/<service>` prefix per source, merged by
+    the dashboard. A source routed in one table and not the other is a page that silently loses
+    a product's entries in production, so the prefixes and their product gates must match."""
+    dev, prod = _audit_routes(DEV_ROUTES), _audit_routes(PROD_ROUTES)
+    assert set(dev) == set(prod), (
+        f"in dev only: {sorted(set(dev) - set(prod))}; in prod only: {sorted(set(prod) - set(dev))}"
+    )
+    assert dev, "no audit prefixes found: this test would pass vacuously"
+    for prefix in dev:
+        assert dev[prefix].get("product") == prod[prefix].get("product"), prefix
+
+
+def test_every_audit_prefix_reaches_the_service_that_serves_it() -> None:
+    """`/api/v1/audit/<service>` must be routed to `<service>` in prod, and that service's
+    committed OpenAPI document must declare the path; otherwise the route is a 404 upstream."""
+    for prefix, route in _audit_routes(PROD_ROUTES).items():
+        service = prefix.removeprefix(AUDIT_PREFIX)
+        assert route["upstream"] == f"http://{service}:8000", prefix
+        spec = json.loads((REPO_ROOT / f"libs/contracts/openapi/{service}.json").read_text())
+        assert prefix in spec["paths"], f"{service} does not serve {prefix}"

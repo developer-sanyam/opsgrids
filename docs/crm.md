@@ -47,9 +47,9 @@ What the CRM is not:
 
 | Service | Schema and role | Dev port | Dev gateway prefixes | Production upstream | Memory kind | Entrypoints in `bin/` | Consumer | Tables | ADRs |
 |---|---|---|---|---|---|---|---|---|---|
-| customer | `customer`, `opsgrids_customer` (`services/customer/app/config.py:9-15`) | 8130 | `/api/v1/customers`, `/api/v1/contacts` | `http://customer:8000` | `api_with_worker`, 99 MB (`infrastructure/edge/memory-budget.json:310`) | `api`, `relay`, `worker` | folded into the API when `RUN_CONSUMERS_IN_API` is on (`services/customer/app/config.py:17-23`); one binding, `crm.pipeline.activity.logged` (`services/customer/app/consumers.py:97`) | `owners`, `companies`, `contacts` | ADR-0017, ADR-0008 Q5 |
-| deal | `deal`, `opsgrids_deal` | 8131 | `/api/v1/deals` | `http://deal:8000` | `api`, 98 MB (`infrastructure/edge/memory-budget.json:320`) | `api`, `relay`, `worker` | none: `services/deal/app/consumers.py` declares the queue `deal.events` and registers no handler, and no container runs it | `deals`, `activities` | ADR-0017 decision 4, ADR-0020 |
-| lead | `lead`, `opsgrids_lead` | 8135 | `/api/v1/leads` | `http://lead:8000` | `api`, 98 MB (`infrastructure/edge/memory-budget.json:321`) | `api`, `relay` (no `worker`) | none: there is no `app/consumers.py` | `leads`, `assignment_rules` | ADR-0017 |
+| customer | `customer`, `opsgrids_customer` (`services/customer/app/config.py:9-15`) | 8130 | `/api/v1/customers`, `/api/v1/contacts`, `/api/v1/audit/customer` | `http://customer:8000` | `api_with_worker`, 99 MB (`infrastructure/edge/memory-budget.json:310`) | `api`, `relay`, `worker` | folded into the API when `RUN_CONSUMERS_IN_API` is on (`services/customer/app/config.py:17-23`); one binding, `crm.pipeline.activity.logged` (`services/customer/app/consumers.py:97`) | `owners`, `companies`, `contacts` | ADR-0017, ADR-0008 Q5 |
+| deal | `deal`, `opsgrids_deal` | 8131 | `/api/v1/deals`, `/api/v1/audit/deal` | `http://deal:8000` | `api`, 98 MB (`infrastructure/edge/memory-budget.json:320`) | `api`, `relay`, `worker` | none: `services/deal/app/consumers.py` declares the queue `deal.events` and registers no handler, and no container runs it | `deals`, `activities` | ADR-0017 decision 4, ADR-0020 |
+| lead | `lead`, `opsgrids_lead` | 8135 | `/api/v1/leads`, `/api/v1/audit/lead` | `http://lead:8000` | `api`, 98 MB (`infrastructure/edge/memory-budget.json:321`) | `api`, `relay` (no `worker`) | none: there is no `app/consumers.py` | `leads`, `assignment_rules` | ADR-0017 |
 
 Each schema also holds the platform's `outbox`, `processed_events` and `audit_logs`.
 
@@ -221,8 +221,9 @@ behind.
 
 - **Prefixes.** Production routes four CRM prefixes: `/api/v1/customers` and `/api/v1/contacts` to
   customer, `/api/v1/deals` to deal and `/api/v1/leads` to lead
-  (`infrastructure/edge/routes.prod.json:106-109`). The development table has the same four
-  (`services/app-gateway/routes.json:76-79`), and `tests/infra/test_route_table_parity.py` fails if
+  (`infrastructure/edge/routes.prod.json:106-109`), plus one organization audit-log source per
+  service, `/api/v1/audit/customer`, `/api/v1/audit/deal` and `/api/v1/audit/lead` (ADR-0044). The
+  development table has the same prefixes (`services/app-gateway/routes.json`), and `tests/infra/test_route_table_parity.py` fails if
   the two tables differ. Every public router is mounted
   under `/api/v1` by `create_app` (`libs/platform-core/src/platform_core/app.py:362-363`), and a new
   public path must start with a routed prefix or rows are added to both tables.

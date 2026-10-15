@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.api.audit import router as audit_router
 from app.api.internal import router as internal_router
 from app.api.routes import router
 from app.config import settings
@@ -12,7 +13,7 @@ app = create_app(
     settings(),
     title="Employee service",
     description="The HRMS Employee Master — part of the OpsGrids platform.",
-    routers=[router],
+    routers=[audit_router, router],
     # Redis on, to match account and the rest of the platform: the app factory opens and
     # readiness-checks exactly the dependencies a service declares. This service does not bump
     # a permission version itself, but keeping the flag consistent means a later write that

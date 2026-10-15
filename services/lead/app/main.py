@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.api.audit import router as audit_router
 from app.api.routes import router
 from app.config import settings
 from platform_core.app import create_app
@@ -10,7 +11,7 @@ app = create_app(
     settings(),
     title="Lead service",
     description="Lead service — part of the OpsGrids platform.",
-    routers=[router],
+    routers=[audit_router, router],
     # Only the reveal budget (`services.enforce_reveal_budget`) uses Redis. Declared here so the
     # lifespan opens the client and `/health/ready` reports it (`create_app` explains why a
     # service that uses Redis without declaring it is a crash waiting for its first request).
