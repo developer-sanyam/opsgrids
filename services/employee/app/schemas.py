@@ -98,7 +98,10 @@ class EmployeeIn(BaseModel):
     the only way it moves from there.
     """
 
-    employee_no: EmployeeNo
+    #: Optional: omitted, the next free `EMP####` is generated (`services.create_employee`), so
+    #: "create my own employee record" never asks anyone to invent a number. A blank string is
+    #: still a 422 -- absent and empty are different statements.
+    employee_no: EmployeeNo | None = None
     full_name: str = Field(min_length=1, max_length=200)
     designation: str | None = Field(default=None, max_length=120)
     job_title: str | None = Field(default=None, max_length=120)

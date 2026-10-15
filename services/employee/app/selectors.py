@@ -20,7 +20,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import Select, func, or_, select, text
+from sqlalchemy import BigInteger, Select, cast, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Employee, EmployeePii
@@ -107,6 +107,26 @@ async def get_by_employee_no(
         Employee.deleted_at.is_(None),
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+GENERATED_NO_PREFIX = "EMP"
+
+
+async def highest_generated_number(session: AsyncSession, org_id: uuid.UUID) -> int:
+    """The largest N among this organization's `EMP<N>` employee numbers (0 when none).
+
+    Soft-deleted rows count: the unique constraint covers them too, so a number a deleted record
+    still holds must not be handed out again."""
+    stmt = select(
+        func.coalesce(
+            func.max(cast(func.substr(Employee.employee_no, len(GENERATED_NO_PREFIX) + 1), BigInteger)),
+            0,
+        )
+    ).where(
+        Employee.organization_id == org_id,
+        Employee.employee_no.op("~")(f"^{GENERATED_NO_PREFIX}[0-9]{{1,12}}$"),
+    )
+    return int((await session.execute(stmt)).scalar_one())
 
 
 async def direct_reports(
