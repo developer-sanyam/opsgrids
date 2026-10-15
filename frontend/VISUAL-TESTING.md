@@ -6,7 +6,7 @@ interface looks today:
 
 - **The workshop**: Storybook for `@opsgrids/ui`. Every exported primitive is rendered in every
   state worth seeing, from props alone, in light and dark.
-- **The harness** (`opsgrids-visual`). Playwright takes a screenshot of every story, plus six real
+- **The harness** (`opsgrids-visual`). Playwright takes a screenshot of every story, plus seven real
   app screens rendered against contract-shaped API mocks. It does this in both themes at 375, 768
   and 1280 px (the brief's QA widths, §7) and runs axe on each rendering.
 
@@ -50,12 +50,16 @@ A filtered update rewrites only what it ran, and that includes the a11y baseline
 
 | Surface | Count | Renderings (× 2 themes × 3 widths) |
 |---|---|---|
-| Workshop stories (37 story files covering all 41 exported components and all ~108 icons) | 159 | 954 |
-| App pages | 6 | 36 |
-| **Total** | | **990 screenshots, 990 axe runs** |
+| Workshop stories (73 story files) | 402 | 2,412 |
+| App pages | 7 | 42 |
+| **Total** | | **2,454 screenshots, 2,454 axe runs** |
 
-The six app pages:
+Counts as of `main` @ `1dbeebd4` (2026-10-14), read from `opsgrids-visual/baselines/darwin/`: one
+directory per story or page, six PNGs each. They change whenever a story is added.
 
+The seven app pages:
+
+- `page/dashboard/home`: the ecosystem home's signed-in landing
 - `page/dashboard/marketplace`: the ecosystem home at `app.`
 - `page/crm/overview`: a product dashboard
 - `page/crm/deals-list`: Deals in list view, a `DataTable` with pagination
@@ -64,7 +68,7 @@ The six app pages:
 - `page/internal/accounts`: the operator console's Accounts
 
 Baselines live in `opsgrids-visual/baselines/<platform>/<surface>/<theme>-<width>.png`. That is
-990 PNGs, 18.7 MiB (stories 13.5 MiB, pages 5.2 MiB). Accessibility baselines live in
+2,454 PNGs, about 60 MB on disk (stories about 51 MB, pages about 8 MB). Accessibility baselines live in
 `opsgrids-visual/a11y-baseline.json`.
 
 **A new story is covered automatically.** The harness reads the story list from the workshop
@@ -105,7 +109,8 @@ default threshold of 0.2 would let a text colour move about 15% in luminance unn
 is exactly the size of change a token re-value makes. Measurements on this machine:
 
 - A bit-exact comparison (threshold 0, 0 px) of a second run showed 1–15 px of colour jitter on
-  19 of 990 renderings, mostly dark-theme anti-aliasing.
+  19 of 990 renderings, mostly dark-theme anti-aliasing. (Measured in September, when the harness
+  had 990 renderings.)
 - At 0.05 the same run had **zero** differing pixels on every rendering, twice.
 - Re-valuing one token (`--color-faint`, `#9a9aa2 → #636b7a`) moved 118 px on a single text-field
   story, and the check failed as it should.
@@ -144,17 +149,18 @@ at zero. Fewer is reported as an improvement (the `a11y-improved` annotation in 
 than CSS selectors on purpose. The redesign rewrites markup wholesale, and a selector-keyed list
 would report every existing problem as new the first time a wrapper moved.
 
-Baseline taken on 2026-09-25: 1,958 nodes on 560 of 990 renderings.
+Current baseline (`a11y-baseline.json`, last regenerated in #170, 2026-10-14): 20 offending nodes
+on 18 of 2,454 renderings. The first baseline, taken on 2026-09-25, held 1,958 nodes on 560 of 990
+renderings; most have since been fixed.
 
-| Rule | Nodes | Renderings | Stories | Pages | Where |
-|---|---|---|---|---|---|
-| `color-contrast` | 1,864 | 546 | 100 | 6 | Mostly `--color-faint` text (2.79:1), the status tints, and white on the dark-theme accent `#8468ff` (primary buttons, active pills). The token re-value in audit §6.1 targets these. |
-| `button-name` | 50 | 22 | 3 | 2 | `Button loading` hides its label with `visibility: hidden`, so the button has no name (Button, ConfirmDialog and FormDialog pending). The Deals Board/List switch has no name below `sm`. |
-| `region` | 32 | 24 | 0 | 6 | Below `lg`, the compact top bar's product name (and the console's "Internal" badge) sits outside any landmark on every app page. |
-| `empty-table-header` | 6 | 6 | 0 | 1 | Deals list: the actions column header is `""`. |
-| `scrollable-region-focusable` | 6 | 6 | 1 | 0 | `Dialog` long content: the scrolling body is not keyboard-focusable. |
+| Rule | Nodes | Where |
+|---|---|---|
+| `color-contrast` | 10 | `layout-card--dark` story (6 renderings); Deals list and New deal dialog in dark theme |
+| `scrollable-region-focusable` | 6 | `overlays-dialog--long-content` story: the scrolling body is not keyboard-focusable |
+| `empty-table-header` | 4 | Deals list: the actions column header is empty, at 768 and 1280, both themes |
 
-None of these were fixed in the slice that installed the harness. Its brief was to record them.
+The check fails when any rule on any rendering exceeds its recorded count. Fewer is an
+improvement, and `visual:update` lowers the number.
 
 ## API mocks for app pages
 
@@ -188,7 +194,7 @@ Screenshots catch a change; they do not catch a layout that was wrong from the s
 floats lower than the select beside it, a card something spills out of, a wrapped label that pushes
 its input down, chart ticks that touch, a page with no room under its last line.
 
-It is a developer's tool, **not part of `visual:check` or CI**: it starts a Vite dev server per app
+It is a developer's tool, **not part of `visual:check`, `make gate` or CI**: it starts a Vite dev server per app
 (ports 5600-5699 by default) and takes several minutes.
 
 ```bash
@@ -260,7 +266,7 @@ at the top of it are the definition of each category.
   Every new export needs a story before `pnpm -r test` passes, and every state gets a story.
   `visual:update` gives it baselines.
 - **Phase 3 shell.** `AppShell` and `Sidebar` are already photographed at all three widths. The
-  six app pages show the shell in place. Add the new shell's states (rail, bottom navigation, open
+  seven app pages show the shell in place. Add the new shell's states (rail, bottom navigation, open
   sheets) as stories.
 - **Phase 7 QA** (brief §22). Add 390, 430, 1024, 1440 and 1920 to `WIDTHS` in `lib/env.ts` when
   that phase starts. Every surface is then photographed at the full QA matrix.

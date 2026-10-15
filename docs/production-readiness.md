@@ -1,122 +1,60 @@
 # Production readiness
 
-**Assessment: the five original blockers are closed. Not yet deployable — see What is left.** This page exists to say exactly why, so the decision to
-deploy is made with the list in front of you rather than around it.
+**Assessment (2026-10-15): deployed and serving, with open risks the owner has accepted or has yet
+to act on.** Production is `main` @ `1dbeebd4` on one Azure VM (ADR-0012, ADR-0013). The five
+blockers this page once listed are closed. This page now says what is still open, so decisions about
+customers, money and growth are made with the list in front of you.
 
-Nothing here is a reason not to keep building. Several items are cheap. But shipping this to a
-paying customer today would expose real data on a system whose tenant isolation has no
-enforcement underneath it.
-
----
-
-## Blockers — do not deploy with these open
-
-### ~~1. Tenant isolation has no enforcement layer~~ — **RESOLVED**
-Row-level security is live on the `account` schema: 11 policied tables, `FORCE` set, and the
-application connecting as a NOBYPASSRLS role whose transactions are bound to one organization by
-the chokepoint. A session bound to one tenant cannot read another's rows even by primary key with
-no filter at all, and cannot write into another tenant — asserted in
-`test_cross_tenant_isolation.py`, which is the acceptance test the rest of ADR-0002 existed to
-make pass.
-
-Isolation is now a property of the database rather than of every query remembering its filter.
-
-### ~~2. The application connects to Postgres as a superuser~~ — **RESOLVED**
-Each service connects as its own NOBYPASSRLS role, granted DML on its own schema only. Migrations
-run as an owner role that serves no traffic, and a third read-only role serves the cross-tenant
-directory lookups. account-service can no longer read `auth.credentials`, TRUNCATE is withheld,
-and audit tables are INSERT/SELECT only.
-
-### 3. ~~The internal service token is a shared static secret~~ — **RESOLVED** (with a caveat)
-Both internal channels now carry short-TTL signed tokens: `/internal/v1` calls mint per-callee
-tokens, and the gateway's identity-forwarding hop mints a per-request token bound to the
-forwarded user and organization. The raw signing key never travels, and production refuses the
-`dev-only-`/`ci-only-` placeholders. The caveat: the signing key is still one shared HMAC
-secret (per-service keypairs or mTLS is the end state), and no network policy yet makes
-`/internal/v1` unreachable from ingress — see `docs/api-improvements.md` §1.
-
-### 4. The cross-tenant suite covers the storage layer, not every route
-`test_cross_tenant_isolation.py` proves the *database* refuses: reads, primary-key lookups and
-writes across tenants all fail. What does not exist yet is the generated per-route sweep —
-enumerate every route, seed in org A, call with an org-B token, assert never `200`. Hand-written
-cross-org tests are always incomplete; a generated one stays complete as routes are added.
-
-Materially smaller than it was: a route that forgets its filter now returns nothing rather than
-somebody else's rows.
-
-### ~~5. No end-to-end test~~ — **RESOLVED**
-`make e2e` starts account, auth and the product gateway as real processes and drives the whole
-journey over HTTP: sign in through the gateway (which makes auth call account's internal API for
-real), then read the organization with the issued token (gateway verifies, resolves permissions
-from account, forwards identity; account binds the tenant and reads under row-level security).
-
-It found a configuration bug on its first run — see [discoveries.md](discoveries.md).
-
-## What is left
-
-The blockers are gone; these are not blockers but they are not nothing:
-
-- **No deployment of any kind.** No Kubernetes manifests, no CI/CD beyond test-running CI, no
-  environment to deploy to.
-- **No products.** The platform authorizes access to services that do not exist yet.
-- **Observability is thin** — structured logs and an outbox probe, no metrics or tracing.
-- **Backups are unconfigured**, which becomes mandatory before the PulseBoard migration.
-- **The service signing key is shared** between services rather than per-service keypairs.
+How to operate it: [operations.md](operations.md) and
+[`infrastructure/edge/RUNBOOK.md`](../infrastructure/edge/RUNBOOK.md).
 
 ---
 
-## Serious gaps
+## Closed since the first assessment
 
-| Gap | Consequence |
+| Former blocker | State |
 |---|---|
-| **Readiness does not check Redis** | A service reports ready, then fails every permission-changing write and refuses all gateway traffic |
-| **Outbox-lag monitoring is a probe, not an alert** | `GET /health/outbox` counts every tenant's unpublished rows through `opsgrids_outbox`, so a stalled relay is visible — but nothing scrapes it yet, and a probe nobody alerts on is a stall nobody notices |
-| **No DLQ alerting** | Consumers ship in product, subscription, payment and console; failures retry once then park in `{queue}.dlq`. `tools/dlq.py` inspects and replays, but nothing alerts on depth yet |
-| **No metrics, tracing or error tracking** | Correlation ids are propagated and nothing collects them |
-| **Cross-tenant reads are not audited** | Closed: employee PII unmasks write `entity.sensitive_read` rows, and the account directory reads log `directory.cross_tenant_read` |
-| **No backup or restore** | Mandatory before the PulseBoard migration, and it needs to be *rehearsed* |
-| **No rate limiting beyond per-caller counters** | No global or per-IP ceiling on the unauthenticated surface |
-| **Secrets come from `.env`** | No secret manager, no rotation story |
+| Tenant isolation had no enforcement layer | Closed. Forced RLS on a transaction-local GUC, NOBYPASSRLS application roles (ADR-0002). `test_cross_tenant_isolation.py` exists in 17 services |
+| The application connected as a superuser | Closed. Each service has its own role with DML on its own schema; migrations run as an owner role that serves no traffic |
+| The internal service token was a static secret | Closed, with a caveat. Both internal channels carry short-TTL signed tokens. The signing key is still one shared HMAC secret |
+| No end-to-end test | Closed. `make e2e` drives real services over HTTP (76 journeys collected) |
+| No deployment of any kind | Closed. `make deploy` is preflight, build, `caddy validate`, migrate, recreate, health |
 
----
+## Open risks
 
-## What is genuinely solid
+| Risk | State | What closing it needs |
+|---|---|---|
+| **No off-box backup** | `BACKUP_S3_*` is empty. The nightly script keeps the dump on the box's own disk and exits non-zero. Pre-deploy backups of 2026-10-14 are on-box only | An owner-provided S3-compatible bucket, then `make edge-backup` and `make edge-restore-drill` |
+| **Memory** | Planned 3945 MB against MemTotal 3862 MB, under the owner-accepted ceiling `EDGE_BUDGET_ACCEPTED_MB` | An owner decision to resize the box or accept a higher ceiling. Insights (+99 MB) is blocked on it |
+| **CI is not running** | GitHub Actions billing is blocked. Checks are run locally with `make gate` | The owner fixes billing |
+| **Payments are in test mode** | Live provider keys are not on the box | Owner supplies keys and follows the RUNBOOK's payments section |
+| **GST portal not connected** | Tax invoices print without IRN and QR | Owner connects the portal and supplies supplier GST facts |
+| **No error tracking, metrics or tracing** | No SDK ships. Errors surface as log lines and 5xx in the access log | A dependency (memory the box lacks), a setting, a test |
+| **No zero-downtime deploy, no staging** | A deploy restarts changed containers. `caddy validate` and `make gate` are the only checks before production | A second box (ADR-0012's stated trigger) |
+| **No log shipping** | Logs are in Docker's json-file driver | A log sink |
+| **Cross-tenant tests are per service** | 17 of 34 services have the suite. No generated per-route sweep exists | Enumerate routes, seed in org A, call with an org-B token, assert never `200` |
+| **Shared HMAC key for internal tokens** | One secret for all services | Per-service keypairs or mTLS |
+| **`/internal/v1` reachability** | No network policy makes it unreachable from ingress | See [api-improvements.md](api-improvements.md) section 1 |
+| **Secrets come from `.env`** | No secret manager. Rotation is by hand (RUNBOOK, "Rotating the JWT signing key") | A secret manager |
+| **Rate limits are per caller** | No global or per-IP ceiling on the unauthenticated surface | A Caddy or gateway limit |
+| **`make secrets` is red on `main`** | Unbaselined hits in test files | Baseline or allowlist them |
 
-Worth stating, because the list above is not the whole picture:
+## What is solid
 
 - **Failure directions are right.** Rate limiting, permission-version checks and permission
-  resolution all fail **closed**. Losing Redis refuses traffic rather than admitting it
-  unchecked. A permission bump that cannot be recorded fails the write rather than reporting a
-  revocation that did not happen.
-- **The token design holds up.** Per-audience tokens, no permission list, a `pv` claim checked
-  per request, one private key in one service, verification through JWKS everywhere else.
-- **Header spoofing is handled.** Inbound identity headers are stripped before the gateway writes
-  its own — the defect that would otherwise let a caller simply claim to be someone else.
-- **The operator surface is genuinely separated.** A different audience, a different gateway, and
-  staff-only routes that answer `404` rather than `403` so a prober learns nothing.
-- **Writes are transactional end to end.** State change, audit row and outbox event commit
-  together or not at all.
-- **Money is represented correctly** before any billing code exists.
-- **Tests run against real PostgreSQL.**
+  resolution fail closed. Losing Redis refuses traffic.
+- **Tokens.** Per-audience, no permission list, a `pv` claim checked per request, one private key in
+  one service, JWKS everywhere else.
+- **Header spoofing is handled.** Inbound identity headers are stripped before the gateway writes its own.
+- **The operator surface is separate.** Different audience, different gateway, staff-only routes answer `404`.
+- **Writes are transactional.** State, audit row and outbox row commit together or not at all.
+- **Money is integer minor units**, displayed by the currency's own exponent.
+- **Tests run on real PostgreSQL**, with a deploy gate that refuses a missing `.env` key, a placeholder secret, a dirty checkout or an over-budget memory total.
+- **Monitoring exists.** `ops-monitor` emails on outbox lag, DLQ depth, API readiness, disk, backup freshness and certificate expiry.
 
----
+## Before you tell a customer "yes"
 
-## The shortest path to "could deploy for a pilot"
-
-Roughly in order. This is not the full backlog — it is the subset that changes the answer:
-
-1. Move off the superuser: create the roles properly, grant least privilege, split the migration
-   role from the application role. **No RLS in this step** — it is a prerequisite, and doing it
-   first means the RLS change can actually be tested.
-2. Wire the tenant chokepoint so the GUC is set on every transaction.
-3. Land RLS policies, `account` schema first.
-4. Write the generated cross-tenant isolation suite. This is what turns "we believe it is
-   isolated" into evidence.
-5. Replace the internal static token with signed service tokens — done, on both the
-   `/internal/v1` and gateway-forwarding channels; making `/internal/v1` unreachable from
-   ingress (network policy) is still open.
-6. Add the outbox-lag probe and Redis readiness check. Done; the probe and the relay run as `opsgrids_outbox`, which is what makes the count cross-tenant under row-level security.
-7. Write the end-to-end journey suite.
-
-Items 1–4 are one coherent piece of work and should be sequenced together. Items 5 and 6 are
-small and independent — they can go at any point.
+1. Is there an off-box backup that has been restored once? Today: no.
+2. Is the memory ceiling still the one the owner accepted? `make edge-preflight` prints the memory row.
+3. Is the product you are selling live? Check [features.md](features.md) and [SPEC.md](../SPEC.md), not a plan.
+4. Are payments and GST claims limited to what the box can do? Test-mode payments and no portal connection mean neither is live.

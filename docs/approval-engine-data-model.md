@@ -2,8 +2,8 @@
 
 Companion to [ADR-0006](adr/0006-approval-engine.md). This document is the schema contract for
 three services: the new `approval` schema, one additive change to `employee`, and one new table in
-`attendance`. It specifies tables, constraints, indexes, roles and migration order. **No migration
-or model code is written yet** — this is the design the migrations must implement.
+`attendance`. It specifies tables, constraints, indexes, roles and migration order. **Update 2026-10-15: the `approval` service, its models and its migrations now exist (`services/approval/`); the code wins where it differs from this design. Originally: no migration
+or model code was written** — this was the design the migrations had to implement.
 
 **Aligned 2026-09-16 with the amended ADR-0006** (its §14 lists the consequential edits it expects
 here) and with the new [ADR-0007](adr/0007-permission-rollout-to-live-tenants.md). Everything the
