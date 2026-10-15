@@ -78,7 +78,7 @@ export function CampaignPreview({
         </InlineAlert>
       ) : null}
 
-      {subject.trim() !== "" ? (
+      {sampleFill(subject) !== subject ? (
         <p className="break-words text-xs text-muted">
           Sample recipient (Priya Sharma, Acme Traders): <strong>{sampleFill(subject)}</strong>
         </p>

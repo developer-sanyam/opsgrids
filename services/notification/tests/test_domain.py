@@ -290,3 +290,18 @@ def test_retry_is_bounded() -> None:
 
 def test_attempts_are_numbered_from_one() -> None:
     assert domain.next_attempt_no(0) == 1
+
+
+def test_merge_fields_tidies_only_where_a_field_filled_to_nothing() -> None:
+    assert domain.merge_fields("Hi {{first_name}}, welcome!", {}) == "Hi, welcome!"
+    assert domain.merge_fields("Dear {{first_name}} {{last_name}} team", {"first_name": "Ada"}) == (
+        "Dear Ada team"
+    )
+    # Text away from an empty fill is untouched: URLs, decimals, spaced punctuation, indentation.
+    text = "See https://a.example/x?y=1 . Price 3.50 , ok ?\n    indented  twice {{plan}}."
+    assert domain.merge_fields(text, {}) == (
+        "See https://a.example/x?y=1 . Price 3.50 , ok ?\n    indented  twice."
+    )
+    assert domain.merge_fields("Pay 2 .5 on {{plan|Pro}} now", {}) == "Pay 2 .5 on Pro now"
+    # A NUL already in the text can never pass for an empty-fill marker.
+    assert domain.merge_fields("a\x00 ,b", {}) == "a ,b"

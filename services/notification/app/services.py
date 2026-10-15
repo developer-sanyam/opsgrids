@@ -6098,7 +6098,13 @@ async def send_campaign_test(
         # issue yet — real-looking, and no more forgeable than the environment already is.
         unsubscribe = f"{cfg.engage_public_api_base.rstrip('/')}/engage/unsubscribe/preview"
 
-    outgoing = campaign_message(campaign, to_address=recipient, unsubscribe=unsubscribe)
+    # The editor preview's sample recipient, so a test shows filled fields, never raw tags.
+    outgoing = campaign_message(
+        campaign,
+        to_address=recipient,
+        unsubscribe=unsubscribe,
+        merge={**_rules.MERGE_SAMPLE, "email": recipient},
+    )
     outgoing = replace(outgoing, subject=f"[Test] {outgoing.subject}")
 
     wire = transport
