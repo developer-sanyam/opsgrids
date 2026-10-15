@@ -413,11 +413,23 @@ def _creator_owner_candidate(
 
     The same rule as deal-service's `default_owner`: a narrower scope never falls back to the
     membership id, because OWN reads compare the employee link and the lead would vanish from
-    the person who just captured it. A named fallback is scope-checked like an explicit owner,
-    so an OWN-scoped rep cannot hand a lead to a colleague this way either."""
+    the person who just captured it.
+
+    A named fallback is scope-checked like an explicit owner, so an OWN-scoped rep cannot hand a
+    lead to a colleague this way either -- but one the caller may not use is *ignored*, never a
+    403. It is a hint the SPA picks with `findMyRep`, which also matches a roster row by
+    membership id or email; an OWN rep whose row was matched that way (an admin added them by
+    email, a CRM-only tenant with no employee link) must still be able to capture a lead, as
+    they could before the fallback existed. It is never used, so no colleague is assigned."""
     if fallback_owner_id is not None:
-        ctx.assert_can_touch(owner_id=fallback_owner_id)
-        return fallback_owner_id
+        try:
+            ctx.assert_can_touch(owner_id=fallback_owner_id)
+        except ForbiddenProblem:
+            log.info(
+                "lead.assignment.fallback_out_of_scope", organization_id=str(ctx.organization_id)
+            )
+        else:
+            return fallback_owner_id
     if ctx.subject_ref is not None:
         return ctx.subject_ref
     if ctx.scope is Scope.ORG:

@@ -16,7 +16,6 @@ import pytest
 from app import clients, services
 from app.main import app
 from platform_core.auth import Scope, get_principal
-from platform_core.errors import ForbiddenProblem
 from tests.helpers import ctx_for, principal_for
 
 pytestmark = pytest.mark.integration
@@ -187,13 +186,51 @@ class TestCreatorFallback:
     async def test_an_own_scoped_rep_cannot_name_a_colleague_as_the_fallback(
         self, session, org_id, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # Out of scope, the named fallback is ignored: the colleague never gets the lead, and
+        # the rep's own employee link is used instead.
         rep, colleague = uuid.uuid4(), uuid.uuid4()
         ctx = ctx_for(org_id, "crm.lead.lead.write", Scope.OWN, subject_ref=rep)
-        _directory(monkeypatch, {rep, colleague})
+        calls = _directory(monkeypatch, {rep, colleague})
 
-        with pytest.raises(ForbiddenProblem):
-            async with session.begin():
-                await _create(session, ctx, "Not yours", fallback_owner_id=colleague)
+        async with session.begin():
+            lead = await _create(session, ctx, "Not yours", fallback_owner_id=colleague)
+
+        assert lead.owner_id == rep
+        assert all(colleague not in c for c in calls)
+
+    async def test_an_own_rep_matched_by_email_can_still_capture_a_lead(
+        self, session, org_id, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The default rep role is OWN. In a CRM-only tenant an admin adds the rep to the roster
+        # by email (a random id) and the login has no employee link; the SPA's `findMyRep`
+        # matches that row by email and sends its id. That must not turn every Auto-assign
+        # capture into a 403 -- it did not before the fallback existed.
+        roster_row = uuid.uuid4()
+        ctx = ctx_for(org_id, "crm.lead.lead.write", Scope.OWN)
+        _directory(monkeypatch, {roster_row})
+
+        async with session.begin():
+            lead = await _create(session, ctx, "Still captured", fallback_owner_id=roster_row)
+
+        assert lead.owner_id is None
+
+    async def test_an_out_of_scope_fallback_does_not_block_a_configured_rotation(
+        self, session, org_id, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        admin = ctx_for(org_id, "crm.lead.lead.write", Scope.ORG)
+        rotation = [uuid.uuid4()]
+        roster_row = uuid.uuid4()
+        _directory(monkeypatch, {*rotation, roster_row})
+        async with session.begin():
+            await services.set_assignment_rule(
+                session, admin, mode="round_robin", owner_ids=rotation
+            )
+        rep = ctx_for(org_id, "crm.lead.lead.write", Scope.OWN)
+
+        async with session.begin():
+            lead = await _create(session, rep, "Rotated", fallback_owner_id=roster_row)
+
+        assert lead.owner_id == rotation[0]
 
 
 class TestCreatorFallbackOverHttp:
