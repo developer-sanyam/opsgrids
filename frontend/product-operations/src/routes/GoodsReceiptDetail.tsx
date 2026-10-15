@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 
 import { getGoodsReceipt } from "@/api/client";
 import type { GoodsReceiptLineOut } from "@/api/types";
-import { useAsync } from "@opsgrids/client";
+import { useAsync, useMemberNames } from "@opsgrids/client";
 import { formatDate, formatDateTime } from "@/lib/format";
 import { formatQty } from "@/lib/quantity";
 import { Card, InlineAlert, LoadError, ReceiptOutcomePill, SectionHeader, Skeleton, StockStatusPill } from "@/ui";
@@ -61,6 +61,7 @@ function RollsTable({ line }: { line: GoodsReceiptLineOut }) {
 
 export function GoodsReceiptDetailPage() {
   const { id = "" } = useParams();
+  const memberName = useMemberNames();
   const state = useAsync(() => getGoodsReceipt(id), [id]);
 
   if (state.status === "loading") {
@@ -125,7 +126,7 @@ export function GoodsReceiptDetailPage() {
             <dt className="text-muted">Posted</dt>
             <dd className="font-semibold text-ink tnum">
               {formatDateTime(grn.created_at)}
-              {grn.created_by ? ` by ${grn.created_by}` : ""}
+              {grn.created_by ? ` by ${memberName(grn.created_by)}` : ""}
             </dd>
           </div>
         </dl>

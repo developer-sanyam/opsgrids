@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
@@ -292,15 +292,27 @@ function PurchaseOrderFormBody({
   const [step, setStep] = useState(0);
   const mode = po ? ("edit" as const) : ("create" as const);
 
+  // Set on a successful save and handed to `onSaved` from an effect, after the unsaved-changes
+  // guard has been told the form is clean. Navigating from `onSuccess` itself would be blocked by
+  // that guard (the filled form is still "dirty"), leaving the person on the form to submit again.
+  const [saved, setSaved] = useState<PurchaseOrderOut | null>(null);
+  const onSavedRef = useRef(onSaved);
+  useEffect(() => {
+    onSavedRef.current = onSaved;
+  });
+  useEffect(() => {
+    if (saved) onSavedRef.current(saved);
+  }, [saved]);
+
   const save = useMutation(
     (payload: PurchaseOrderIn | PurchaseOrderPatch) =>
       po ? updatePurchaseOrder(po.id, payload) : createPurchaseOrder(payload as PurchaseOrderIn),
-    { onSuccess: (saved) => onSaved(saved) },
+    { onSuccess: (result) => setSaved(result) },
   );
 
   const total = orderTotalMinor(values.lines);
   const currency = po ? po.currency : values.currency || "INR";
-  const dirty = JSON.stringify(values) !== JSON.stringify(initialValues);
+  const dirty = saved === null && JSON.stringify(values) !== JSON.stringify(initialValues);
 
   function updateLine(index: number, next: LineDraft) {
     setValues((v) => ({ ...v, lines: v.lines.map((line, i) => (i === index ? next : line)) }));
@@ -337,8 +349,15 @@ function PurchaseOrderFormBody({
 
   function continueToLines() {
     const found = validatePurchaseOrder(values, { mode, today: today() });
-    setErrors(found);
-    if (found.supplier ?? found.warehouse ?? found.expectedDate) return;
+    // Only this step's problems are shown now: the lines step has not been visited yet, so
+    // flagging it "Has errors" would blame the person for something they have not reached.
+    const detailErrors: PurchaseOrderErrors = {
+      ...(found.supplier ? { supplier: found.supplier } : {}),
+      ...(found.warehouse ? { warehouse: found.warehouse } : {}),
+      ...(found.expectedDate ? { expectedDate: found.expectedDate } : {}),
+    };
+    setErrors(detailErrors);
+    if (Object.keys(detailErrors).length > 0) return;
     setStep(1);
   }
 

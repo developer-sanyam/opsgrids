@@ -19,7 +19,7 @@ import {
   TextField,
 } from "@/ui";
 import type { SelectOption } from "@/ui";
-import { problemMessage, useAsync, useCan, useMutation } from "@opsgrids/client";
+import { problemMessage, useAsync, useCan, useMemberNames, useMutation } from "@opsgrids/client";
 import { useToast } from "@opsgrids/ui";
 
 const SETTINGS_WRITE = "operations.fulfilment.settings.write";
@@ -322,8 +322,8 @@ function SettingsForm({ settings, warehouseId, canWrite, onSaved }: SettingsForm
   );
 }
 
-function sourceLine(s: FulfilmentSettingsOut, forWarehouse: boolean): string {
-  const changed = s.updated_at !== null ? ` Last changed ${formatDateTime(s.updated_at)}${s.updated_by !== null ? ` by ${s.updated_by}` : ""}.` : "";
+function sourceLine(s: FulfilmentSettingsOut, forWarehouse: boolean, memberName: (id: string) => string): string {
+  const changed = s.updated_at !== null ? ` Last changed ${formatDateTime(s.updated_at)}${s.updated_by !== null ? ` by ${memberName(s.updated_by)}` : ""}.` : "";
   if (s.source === "default") return "Never set — these are the built-in defaults.";
   if (forWarehouse && s.source === "organization") {
     return `This warehouse follows the organization's settings. Saving here creates an override for this warehouse only.${changed}`;
@@ -339,6 +339,7 @@ function sourceLine(s: FulfilmentSettingsOut, forWarehouse: boolean): string {
  */
 export function FulfilmentSettingsPage() {
   const canWrite = useCan(SETTINGS_WRITE, "ORG");
+  const memberName = useMemberNames();
   const warehouses = useWarehouseIdOptions();
   const [warehouseId, setWarehouseId] = useState<string>("");
   const scope = warehouseId === "" ? undefined : warehouseId;
@@ -379,7 +380,7 @@ export function FulfilmentSettingsPage() {
         {settings !== null ? (
           <>
             <p className="text-sm text-muted" aria-live="polite">
-              {sourceLine(settings, scope !== undefined)}
+              {sourceLine(settings, scope !== undefined, memberName)}
             </p>
             <SettingsForm
               key={`${scope ?? "org"}:${settings.updated_at ?? "unset"}:${settings.source}`}

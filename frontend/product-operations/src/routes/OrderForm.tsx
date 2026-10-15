@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 
@@ -144,14 +144,20 @@ export function OrderFormPage() {
   const [errors, setErrors] = useState<OrderFormErrors>({});
   const [step, setStep] = useState(0);
 
+  const [savedId, setSavedId] = useState<string | null>(null);
   const create = useMutation((payload: ReturnType<typeof buildOrderPayload>) => createOrder(payload), {
     onSuccess: (saved) => {
       toast.success(`${saved.number} created as a draft.`);
-      navigate(`/orders/${saved.id}`);
+      setSavedId(saved.id);
     },
   });
 
-  const dirty = JSON.stringify(values) !== JSON.stringify(initialValues);
+  const dirty = savedId === null && JSON.stringify(values) !== JSON.stringify(initialValues);
+
+  // Leave only once the guard has seen the form stop being dirty, or it asks about saved changes.
+  useEffect(() => {
+    if (savedId !== null) navigate(`/orders/${savedId}`);
+  }, [savedId, navigate]);
 
   function updateLine(index: number, next: OrderLineDraft) {
     setValues((v) => ({ ...v, lines: v.lines.map((line, i) => (i === index ? next : line)) }));

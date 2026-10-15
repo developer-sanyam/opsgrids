@@ -11,6 +11,7 @@ import { minorToInput, parseInt0, parseMinor } from "@/lib/money";
 import { useMutation } from "@opsgrids/client";
 import { formDialogError } from "@/lib/formError";
 import {
+  Button,
   CheckboxGroup,
   FormDialog,
   FormSection,
@@ -95,6 +96,9 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
   );
   const [isActive, setIsActive] = useState(item?.is_active ?? true);
   const [textile, setTextile] = useState<Record<string, string>>({});
+  // Fabric and garment facts mean nothing to most items, so they stay behind a button until
+  // someone asks for them (they open by themselves if a field already holds something).
+  const [showTextile, setShowTextile] = useState(false);
   const [textileErrors, setTextileErrors] = useState<Record<string, string>>({});
   const [tolerance, setTolerance] = useState(item?.receipt_tolerance_pct ?? "0");
   const [toleranceError, setToleranceError] = useState<string | undefined>(undefined);
@@ -485,7 +489,16 @@ export function InventoryItemFormDialog({ item, onClose, onSaved }: InventoryIte
         </FormSection>
       )}
 
-      {step === 1 && !item ? (
+      {step === 1 && !item && !showTextile && Object.keys(textileErrors).length === 0 ? (
+        <div className="flex flex-col items-start gap-2">
+          <Button type="button" variant="secondary" aria-expanded={false} onClick={() => setShowTextile(true)}>
+            Add textile attributes
+          </Button>
+          <p className="text-xs text-muted">For fabric, yarn and garment items. Skip it for anything else.</p>
+        </div>
+      ) : null}
+
+      {step === 1 && !item && (showTextile || Object.keys(textileErrors).length > 0) ? (
         <FormSection
           title="Textile attributes"
           description="Optional. Each field you fill in is saved as a typed attribute on the item — you can add or change them later."

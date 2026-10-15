@@ -176,5 +176,23 @@ describe("PurchaseOrderFormPage", () => {
     expect(body.lines).toEqual([
       { sku: "RM-100", description: "", quantity: 10, unit_price_minor: 25000, uom: "" },
     ]);
+    // The filled form must not hold the person: they land on the created order, not the form.
+    expect(await screen.findByRole("heading", { name: "Purchase order detail" })).toBeDefined();
+    expect(screen.queryByRole("dialog", { name: "Leave without saving?" })).toBeNull();
+  });
+
+  it("does not flag the untouched line items step as having errors", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await waitFor(() => expect(listWarehouses).toHaveBeenCalled());
+    await chooseSupplier(user);
+    await user.selectOptions(await screen.findByLabelText("Warehouse"), "Bengaluru DC");
+    await user.type(screen.getByLabelText("Expected date"), "2099-01-01");
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+
+    await screen.findByRole("heading", { name: "Line items" });
+    expect(screen.queryByText("Has errors")).toBeNull();
+    expect(screen.queryByText(/Has errors/)).toBeNull();
   });
 });
