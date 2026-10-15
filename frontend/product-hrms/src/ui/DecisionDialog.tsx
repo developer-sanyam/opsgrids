@@ -9,6 +9,7 @@ import type { RequestDetailOut } from "@/api/types";
 import { isLeaveSummary } from "@/lib/approvalCopy";
 import { attendanceStatusLabel } from "@/lib/format";
 import { formatLeaveRange, formatHalfDays } from "@/lib/leaveCopy";
+import { getMyEmployeeId } from "@/lib/subject";
 
 // §4.B: "Comment (optional) — multiline, 500 characters" — the server's own limit is 2000
 // (`comment` on `POST .../decision`), but the screen spec fixes this field's limit at 500; the
@@ -70,6 +71,8 @@ export function DecisionDialog({
       outcome === "reject" ? (fieldContainerRef.current?.querySelector("textarea") ?? null) : null;
   }, [open, outcome]);
 
+  // Only the owner of an unassigned request is offered this; the server enforces who may.
+  const ownRequest = request.requester_employee_id === getMyEmployeeId();
   const zone = resolveZone(
     request.requester_location_code,
     zoneLookup ?? { locations: {}, organizationZone: "UTC" },
@@ -92,6 +95,7 @@ export function DecisionDialog({
       const detail = await decideRequest(request.id, {
         outcome,
         comment: comment.trim() ? comment.trim() : null,
+        ...(ownRequest && outcome === "approve" ? { self_approve: true } : {}),
       });
       onDecided(detail);
     } catch (err) {
@@ -114,7 +118,12 @@ export function DecisionDialog({
   }
 
   const noun = isLeaveSummary(summary) ? "leave request" : "correction";
-  const title = outcome === "approve" ? `Approve this ${noun}?` : `Reject this ${noun}?`;
+  const title =
+    outcome === "approve"
+      ? ownRequest
+        ? `Approve your own ${noun}?`
+        : `Approve this ${noun}?`
+      : `Reject this ${noun}?`;
   const body = `${changeDescription}. This can't be undone.`;
   const helper =
     outcome === "approve"
@@ -143,7 +152,9 @@ export function DecisionDialog({
                 ? "Approving…"
                 : "Rejecting…"
               : outcome === "approve"
-                ? "Approve"
+                ? ownRequest
+                  ? "Approve your own request"
+                  : "Approve"
                 : "Reject"}
           </Button>
         </>

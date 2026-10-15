@@ -211,6 +211,9 @@ class DecisionIn(BaseModel):
 
     outcome: Literal["approve", "reject"]
     comment: str | None = Field(default=None, max_length=2000)
+    #: The owner's explicit "Approve your own request" confirmation; honoured only for the org
+    #: owner on their own unassigned request.
+    self_approve: bool = False
 
 
 # --------------------------------------------------------------------- delegation (slice 3)

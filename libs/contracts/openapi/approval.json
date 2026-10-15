@@ -275,6 +275,11 @@
             ],
             "title": "Outcome",
             "type": "string"
+          },
+          "self_approve": {
+            "default": false,
+            "title": "Self Approve",
+            "type": "boolean"
           }
         },
         "required": [

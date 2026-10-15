@@ -28,12 +28,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import selectors
+from app.config import settings
 from app.domain import (
     AttendanceStatus,
     CheckOutBeforeCheckIn,
     IllegalTransition,
     assert_can_transition,
     assert_checkout_after_checkin,
+    work_date_in,
 )
 from app.models import (
     AttendanceRecord,
@@ -140,7 +142,7 @@ async def check_in(
     location that has a geo-fence is checked against it before the row is written.
     """
     employee_id = _subject_employee(ctx)
-    work_date = datetime.now(UTC).date()
+    work_date = work_date_in(datetime.now(UTC), settings().org_timezone)
 
     if await selectors.get_day_record(session, ctx.organization_id, employee_id, work_date):
         raise ConflictProblem(f"Attendance for {work_date.isoformat()} is already open")
@@ -233,7 +235,7 @@ async def check_out(
     before it began.
     """
     employee_id = _subject_employee(ctx)
-    work_date = datetime.now(UTC).date()
+    work_date = work_date_in(datetime.now(UTC), settings().org_timezone)
 
     record = await selectors.get_day_record(session, ctx.organization_id, employee_id, work_date)
     if record is None:

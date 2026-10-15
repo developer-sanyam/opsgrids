@@ -326,7 +326,7 @@ function RequestDetailScreen() {
           ) : null}
 
           {ineligible !== null ? (
-            <InlineAlert tone="warning" title="You can no longer decide this request.">
+            <InlineAlert tone="warning" title="This request can't be decided by you">
               {ineligible}
             </InlineAlert>
           ) : null}

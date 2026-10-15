@@ -41,7 +41,9 @@ import { RequestCorrectionDialog } from "@/ui/RequestCorrectionDialog";
 
 /** The real clock, not a frozen fixture date — injectable so a test can pin it. */
 function todayISO(): string {
-  return new Date().toISOString().slice(0, 10);
+  // The user's local calendar day (en-CA prints YYYY-MM-DD), not the UTC day: after local
+  // midnight, and before UTC midnight, the UTC date is still yesterday.
+  return new Date().toLocaleDateString("en-CA");
 }
 
 function toISO(d: Date): string {
