@@ -73,8 +73,12 @@ export function previewSentence(preview: ImportExportPreview): string {
   if (preview.mode === "addAndUpdate" && (preview.valid > 0 || preview.unchanged > 0)) {
     return updatePreviewSentence(preview);
   }
-  const problems = preview.invalid === 0 ? "" : `, ${needsFixing(preview.invalid)}`;
-  return `${rowsLabel(preview.valid)} ready to import${problems}.`;
+  const exists = preview.exists ?? 0;
+  const rest = [
+    preview.invalid > 0 ? needsFixing(preview.invalid) : null,
+    exists > 0 ? `${formatCount(exists)} already ${exists === 1 ? "exists" : "exist"}` : null,
+  ].filter((part) => part !== null);
+  return `${rowsLabel(preview.valid)} ready to import${rest.length === 0 ? "" : `, ${rest.join(", ")}`}.`;
 }
 
 /** The same breath for update mode, where a row may change a record, add one, or change nothing. */

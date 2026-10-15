@@ -80,6 +80,12 @@ describe("previewSentence", () => {
     expect(previewSentence(PREVIEW_WITH_ERRORS)).toBe("5 rows ready to import, 3 need fixing.");
     expect(previewSentence({ ...PREVIEW_WITH_ERRORS, invalid: 1 })).toBe("5 rows ready to import, 1 needs fixing.");
     expect(previewSentence({ ...PREVIEW_WITH_ERRORS, invalid: 0, valid: 1 })).toBe("1 row ready to import.");
+    expect(previewSentence({ ...PREVIEW_WITH_ERRORS, invalid: 1, exists: 2 })).toBe(
+      "5 rows ready to import, 1 needs fixing, 2 already exist.",
+    );
+    expect(previewSentence({ ...PREVIEW_WITH_ERRORS, invalid: 0, valid: 0, exists: 1 })).toBe(
+      "0 rows ready to import, 1 already exists.",
+    );
   });
 
   it("puts a missing column and an empty file ahead of the counts", () => {
