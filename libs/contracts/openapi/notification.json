@@ -2276,6 +2276,17 @@
             "title": "Created At",
             "type": "string"
           },
+          "crm_contact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Crm Contact Id"
+          },
           "email": {
             "title": "Email",
             "type": "string"
@@ -2287,6 +2298,22 @@
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "origin": {
+            "default": "manual",
+            "title": "Origin",
+            "type": "string"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
           },
           "updated_at": {
             "format": "date-time",
@@ -5945,6 +5972,23 @@
             ],
             "title": "Created Within Days"
           },
+          "crm_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "lead",
+                  "qualified",
+                  "customer",
+                  "dormant"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Crm Status"
+          },
           "list_id": {
             "anyOf": [
               {
@@ -5999,6 +6043,17 @@
             ],
             "title": "Created Within Days"
           },
+          "crm_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Crm Status"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -6030,6 +6085,7 @@
           "list_id",
           "created_within_days",
           "active_within_days",
+          "crm_status",
           "created_at",
           "updated_at"
         ],

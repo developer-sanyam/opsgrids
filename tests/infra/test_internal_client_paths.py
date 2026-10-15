@@ -378,6 +378,23 @@ asyncio.run(main())
 emit(ORG, cfg, "deal")
 """
 
+# A13: notification -> customer `contacts:export`, the Engage projection's read (C53).
+_A13 = """
+from app import crm_contacts
+from app.config import Settings
+
+cfg = Settings()
+
+
+async def main():
+    async with make_client() as client:
+        await attempt(crm_contacts.fetch_crm_contact(cfg, ORG, CONTACT, client=client))
+
+
+asyncio.run(main())
+emit(ORG, cfg, "customer")
+"""
+
 # --------------------------------------------------------------------------------- the registry
 
 
@@ -491,6 +508,15 @@ CALLS: tuple[Call, ...] = (
         "/internal/v1/organizations/{org}/references",
         "customer/app/clients.py",
         _A12,
+    ),
+    Call(
+        "A13",
+        "notification",
+        "customer",
+        "GET",
+        "/internal/v1/organizations/{org}/contacts:export",
+        "notification/app/crm_contacts.py",
+        _A13,
     ),
 )
 

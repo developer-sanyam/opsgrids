@@ -736,7 +736,17 @@ async def contacts_by_index(
         Contact.email_index.in_(indexes),
         Contact.deleted_at.is_(None),
     )
-    return {c.email_index: c for c in (await session.execute(stmt)).scalars()}
+    return {c.email_index: c for c in (await session.execute(stmt)).scalars() if c.email_index}
+
+
+async def contact_by_crm_id(
+    session: AsyncSession, org_id: uuid.UUID, crm_contact_id: uuid.UUID
+) -> Contact | None:
+    """The Engage copy of one CRM contact, if there is one."""
+    stmt = select(Contact).where(
+        Contact.organization_id == org_id, Contact.crm_contact_id == crm_contact_id
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
 
 
 def suppressions_stmt(ctx: ScopeContext, *, reason: str | None = None) -> Select[Any]:
@@ -825,6 +835,8 @@ def _email_audience_stmt(
     stmt = stmt.where(
         Contact.organization_id == ctx.organization_id,
         Contact.deleted_at.is_(None),
+        # A phone-only CRM projection has no address to mail.
+        Contact.email_index.is_not(None),
         ~suppressed,
         latest_consent_is(
             "opted_in",
@@ -861,6 +873,8 @@ def _narrow_audience(
         stmt = stmt.where(_in_list(segment.list_id))
     if segment.created_within_days is not None:
         stmt = stmt.where(Contact.created_at >= now - timedelta(days=segment.created_within_days))
+    if segment.crm_status is not None:
+        stmt = stmt.where(Contact.attributes["crm_status"].astext == segment.crm_status)
     if segment.active_within_days is not None:
         since = now - timedelta(days=segment.active_within_days)
         stmt = stmt.where(
@@ -898,7 +912,8 @@ def _whatsapp_audience_stmt(
         .join(
             event,
             (event.organization_id == Contact.organization_id)
-            & (event.contact_id == Contact.id)
+            # Named by the event, or (a CRM projection) holding the very number it is about.
+            & ((event.contact_id == Contact.id) | (event.subject_index == Contact.phone_index))
             & (event.channel == "whatsapp")
             & (event.purpose == "marketing")
             & (event.status == "opted_in"),

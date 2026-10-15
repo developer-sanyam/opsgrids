@@ -1,9 +1,16 @@
 import { useState } from "react";
 
 import { createSegment } from "@/api/client";
-import type { ContactListOut, SegmentOut } from "@/api/types";
+import type { ContactListOut, CrmStatus, SegmentOut } from "@/api/types";
 import { failureMessage } from "@/lib/errors";
 import { Button, Dialog, InlineAlert, Select, TextField } from "@/ui";
+
+const CRM_STATUSES = [
+  { value: "lead", label: "Lead" },
+  { value: "qualified", label: "Qualified" },
+  { value: "customer", label: "Customer" },
+  { value: "dormant", label: "Dormant" },
+];
 
 /**
  * Save a segment: a filter over the contact book that a campaign evaluates when it sends, so a
@@ -26,6 +33,7 @@ export function SegmentFormDialog({
   const [listId, setListId] = useState("");
   const [createdDays, setCreatedDays] = useState("");
   const [activeDays, setActiveDays] = useState("");
+  const [crmStatus, setCrmStatus] = useState("");
   const [nameError, setNameError] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -49,11 +57,13 @@ export function SegmentFormDialog({
         list_id: listId === "" ? null : listId,
         created_within_days: days(createdDays),
         active_within_days: days(activeDays),
+        crm_status: crmStatus === "" ? null : (crmStatus as CrmStatus),
       });
       setName("");
       setListId("");
       setCreatedDays("");
       setActiveDays("");
+      setCrmStatus("");
       onSaved(saved);
     } catch (caught) {
       setFailure(failureMessage(caught));
@@ -130,6 +140,13 @@ export function SegmentFormDialog({
           value={activeDays}
           onChange={(event) => setActiveDays(event.target.value)}
           optional
+        />
+        <Select
+          label="Only contacts with this CRM status"
+          value={crmStatus}
+          onChange={(event) => setCrmStatus(event.target.value)}
+          options={CRM_STATUSES}
+          placeholder="Any status"
         />
       </form>
     </Dialog>

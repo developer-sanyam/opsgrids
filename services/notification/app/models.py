@@ -835,15 +835,45 @@ class Contact(Base, TenantBase):
 
     __tablename__ = "contacts"
 
-    email_enc: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    #: NULL for a phone-only contact projected from the CRM (ADR-0038 D-15, amended 2026-10-16);
+    #: `email_masked` is then `''`. Every email audience adds `email_index IS NOT NULL`.
+    email_enc: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     email_masked: Mapped[str] = mapped_column(String(254), nullable=False)
-    email_index: Mapped[str] = mapped_column(String(64), nullable=False)
+    email_index: Mapped[str | None] = mapped_column(String(64), nullable=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     attributes: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    #: The CRM contact this row is a copy of: a plain UUID, never a foreign key (ADR-0000 §10).
+    crm_contact_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    #: manual | import | signup | crm. A `crm` row is managed in the CRM (PATCH/DELETE are 409).
+    origin: Mapped[str] = mapped_column(
+        String(12), nullable=False, default="manual", server_default=text("'manual'")
+    )
+    #: The number, sealed like the address. `phone_index` is the keyed blind index the consent
+    #: ledger uses for WhatsApp (`consent.index_for`), so the audience joins on equality.
+    phone_enc: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    phone_masked: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    phone_index: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     __table_args__ = (
         UniqueConstraint("organization_id", "email_index", name="uq_contact_org_email"),
         Index("ix_contacts_org_name", "organization_id", "name"),
+        CheckConstraint("origin IN ('manual', 'import', 'signup', 'crm')", name="origin"),
+        CheckConstraint(
+            "email_index IS NOT NULL OR phone_index IS NOT NULL", name="has_an_address"
+        ),
+        Index(
+            "uq_contact_org_crm_contact",
+            "organization_id",
+            "crm_contact_id",
+            unique=True,
+            postgresql_where=text("crm_contact_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_contacts_org_phone_index",
+            "organization_id",
+            "phone_index",
+            postgresql_where=text("phone_index IS NOT NULL"),
+        ),
     )
 
 
@@ -1037,8 +1067,16 @@ class Segment(Base, TenantBase):
     )
     created_within_days: Mapped[int | None] = mapped_column(Integer)
     active_within_days: Mapped[int | None] = mapped_column(Integer)
+    #: Only contacts projected from the CRM whose CRM status is this (`attributes.crm_status`).
+    crm_status: Mapped[str | None] = mapped_column(String(20))
 
-    __table_args__ = (UniqueConstraint("organization_id", "name", name="uq_segment_org_name"),)
+    __table_args__ = (
+        UniqueConstraint("organization_id", "name", name="uq_segment_org_name"),
+        CheckConstraint(
+            "crm_status IS NULL OR crm_status IN ('lead', 'qualified', 'customer', 'dormant')",
+            name="crm_status",
+        ),
+    )
 
 
 class Campaign(Base, TenantBase):
