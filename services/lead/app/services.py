@@ -430,8 +430,10 @@ def _creator_owner_candidate(
             )
         else:
             return fallback_owner_id
-    if ctx.subject_ref is not None:
-        return ctx.subject_ref
+    # `own_ref`, never the raw employee link (tests/infra/test_no_raw_subject_ref.py): the same id
+    # today, and the membership id once lead declares the membership subject (R2.7).
+    if ctx.own_ref is not None:
+        return ctx.own_ref
     if ctx.scope is Scope.ORG:
         return ctx.principal.membership_id
     return None

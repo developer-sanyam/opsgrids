@@ -182,15 +182,21 @@ build() {
 	# The pathspec and the reasoning live beside `needs_full_rebuild` in
 	# lib/rebuild-decision.sh, which tests/infra/test_remote_rebuild_decision.py pins down —
 	# a wrong rule here means production silently runs stale images.
+	#
+	# Either way, images are built one service at a time (`build_each`, same file): a single
+	# bake of every image downloaded the venv ~30 times at once and timed out on this box.
+	local full=0
 	if [ "${FORCE_PULL:-0}" = "1" ] || needs_full_rebuild ../.. "$prev" HEAD; then
-		"${COMPOSE[@]}" build ${pull[@]+"${pull[@]}"}
-		return
+		full=1
 	fi
-	# Otherwise only the services whose own directory changed, or whose image is not here yet
-	# (a profile that was just switched on).
+	# Only a service with its own Dockerfile has an image of its own (edge-relay and
+	# ops-monitor run `product`'s; the rest are pinned upstream images). A full rebuild takes
+	# every one of those in the active profiles; otherwise only the services whose own
+	# directory changed, or whose image is not here yet (a profile that was just switched on).
 	for svc in $(configured_services); do
 		[ -f "../../services/$svc/Dockerfile" ] || continue
-		if ! git -C ../.. diff --quiet "$prev" HEAD -- "services/$svc" ||
+		if [ "$full" = "1" ] ||
+			! git -C ../.. diff --quiet "$prev" HEAD -- "services/$svc" ||
 			! docker image inspect "opsgrids-edge/$svc" >/dev/null 2>&1; then
 			to_build+=("$svc")
 		fi
@@ -199,8 +205,12 @@ build() {
 		echo "no service changed since $prev: nothing to build"
 		return
 	fi
-	echo "changed since $prev: ${to_build[*]}"
-	COMPOSE_PARALLEL_LIMIT=2 "${COMPOSE[@]}" build "${to_build[@]}"
+	if [ "$full" = "1" ]; then
+		echo "full rebuild, ${#to_build[@]} images one at a time: ${to_build[*]}"
+	else
+		echo "changed since $prev: ${to_build[*]}"
+	fi
+	build_each "${COMPOSE[@]}" build ${pull[@]+"${pull[@]}"} -- "${to_build[@]}"
 }
 
 validate() {

@@ -7,7 +7,10 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
 # built under /build and copied to /app cannot exec alembic or uvicorn. --no-editable
 # installs platform-core into site-packages instead of a .pth pointing back at libs/.
 WORKDIR /app
-ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
+# Patient with the index: a full rebuild resolves this venv once, and one stalled wheel
+# used to fail the whole deploy after uv's default 30 s x 3 (2026-10-15, batch 7).
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy \
+    UV_HTTP_TIMEOUT=120 UV_HTTP_RETRIES=5 UV_CONCURRENT_DOWNLOADS=4
 COPY pyproject.toml uv.lock ./
 COPY libs/ libs/
 RUN uv sync --frozen --no-dev --no-editable

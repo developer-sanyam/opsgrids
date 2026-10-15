@@ -7,6 +7,7 @@ comment beside the function itself — and until this file existed nothing teste
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 from _helpers import baseline_for
 from conftest import REBUILD_LIB, GitRepo
@@ -97,3 +98,59 @@ def test_the_r2_4_diff_forces_a_full_rebuild(git_repo: GitRepo) -> None:
     base = git_repo.initial_commit({**BASELINE_FILES, path: "v1\n"}, "baseline")
     nxt = git_repo.commit_from(base, {path: "v2\n"}, "watch deal.events")
     assert needs_full_rebuild(str(git_repo.path), base, nxt) is True
+
+
+# ------------------------------------------------------------------ build_each
+
+
+def build_each(tmp_path: Path, *args: str, fail_on: str = "") -> tuple[int, list[str], str]:
+    """Runs the real `build_each` with a stand-in build command that logs each call and fails
+    for the service named `fail_on`. "FAKE" in `args` stands for that command. Returns
+    (exit code, calls, stderr)."""
+    log = tmp_path / "calls.log"
+    fake = tmp_path / "fake-compose"
+    fake.write_text('#!/usr/bin/env bash\necho "$*" >> "$CALLS"\n[ "${!#}" != "$FAIL_ON" ]\n')
+    fake.chmod(0o755)
+    script = f'source "{REBUILD_LIB}"; build_each "$@"'
+    argv = [str(fake) if a == "FAKE" else a for a in args]
+    result = subprocess.run(
+        ["bash", "-c", script, "_", *argv],
+        capture_output=True,
+        text=True,
+        env={"CALLS": str(log), "FAIL_ON": fail_on, "PATH": "/usr/bin:/bin"},
+    )
+    calls = log.read_text().splitlines() if log.exists() else []
+    return result.returncode, calls, result.stderr
+
+
+def test_build_each_builds_one_service_per_call_in_order(tmp_path: Path) -> None:
+    code, calls, _ = build_each(tmp_path, "FAKE", "build", "--pull", "--", "auth", "lead", "deal")
+    assert code == 0
+    assert calls == ["build --pull auth", "build --pull lead", "build --pull deal"]
+
+
+def test_build_each_stops_at_the_first_failure_and_names_it(tmp_path: Path) -> None:
+    code, calls, err = build_each(
+        tmp_path, "FAKE", "build", "--", "auth", "lead", "deal", fail_on="lead"
+    )
+    assert code == 1
+    assert calls == ["build auth", "build lead"]
+    assert "lead failed to build" in err
+
+
+def test_build_each_without_a_separator_is_a_usage_error(tmp_path: Path) -> None:
+    code, calls, _ = build_each(tmp_path, "FAKE", "build", "auth")
+    assert code == 2
+    assert calls == []
+
+
+def test_build_each_without_a_command_is_a_usage_error(tmp_path: Path) -> None:
+    code, calls, _ = build_each(tmp_path, "--", "auth")
+    assert code == 2
+    assert calls == []
+
+
+def test_build_each_with_no_services_builds_nothing(tmp_path: Path) -> None:
+    code, calls, _ = build_each(tmp_path, "FAKE", "build", "--")
+    assert code == 0
+    assert calls == []
