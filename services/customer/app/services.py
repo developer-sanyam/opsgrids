@@ -28,6 +28,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -271,9 +272,22 @@ async def ensure_own_owner(
     by_email = await selectors.get_owner_by_email(session, ctx.organization_id, email)
     if by_email is not None:
         return by_email, False
-    owner = await create_owner(
-        session, ctx, full_name=full_name, email=email, role=role, owner_id=membership_id
-    )
+    # Two first calls for the same login can both reach here (two tabs, or two forms on a first
+    # load). The loser's insert hits the primary key or `uq_owners_org_email`; inside a SAVEPOINT
+    # that is recoverable, and the row the winner just committed is the answer -- the call is
+    # idempotent, so a race must not surface as an error.
+    try:
+        async with session.begin_nested():
+            owner = await create_owner(
+                session, ctx, full_name=full_name, email=email, role=role, owner_id=membership_id
+            )
+    except (IntegrityError, ConflictProblem):
+        winner = await selectors.get_owner(
+            session, ctx.organization_id, membership_id
+        ) or await selectors.get_owner_by_email(session, ctx.organization_id, email)
+        if winner is None:
+            raise
+        return winner, False
     return owner, True
 
 

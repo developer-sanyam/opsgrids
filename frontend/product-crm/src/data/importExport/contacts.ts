@@ -74,9 +74,8 @@ const COLUMNS: readonly ImportColumn[] = [
     key: "email",
     header: "Email",
     kind: "email",
-    required: true,
     maxLength: 254,
-    help: "Their email address. When adding, a contact whose exact address is already on file is skipped and one that differs only in capitals is refused. When updating, a row with no Contact ID finds its contact by this address.",
+    help: "Their email address. Optional: a contact needs an Email or a Phone. When adding, a contact whose exact address is already on file is skipped and one that differs only in capitals is refused. When updating, a row with no Contact ID finds its contact by this address.",
   },
   {
     key: "company",
@@ -115,7 +114,7 @@ const COLUMNS: readonly ImportColumn[] = [
     key: "phone",
     header: "Phone",
     kind: "phone",
-    help: "With the country code, like +91 98765 43210. A number without one is refused. Left blank on export: the number is never shown. When updating, a number here replaces the one on file, and a blank leaves it as it is.",
+    help: "With the country code, like +91 98765 43210. For an Indian organization a 10-digit mobile is also accepted and read as +91. A contact needs a Phone or an Email. Left blank on export: the number is never shown. When updating, a number here replaces the one on file, and a blank leaves it as it is.",
   },
   {
     key: "phoneMasked",
@@ -224,13 +223,19 @@ export const contactImport = defineImportEntity<ContactIn, Contact, ContactFilte
     return { ...owners, [LOOKUP_COMPANIES]: companies, [LOOKUP_CONTACT_EMAILS]: emails };
   },
   toPayload: (row, ctx) => {
-    const email = requiredTextOf(row, "email");
-    const problem = capitalsProblem(email, ctx.lookups[LOOKUP_CONTACT_EMAILS]);
-    if (problem !== null) throw new RowProblem(problem);
+    // Optional (ADR-0038 D-14): a person reachable by phone alone is a contact, as on the form.
+    const email = textOf(row, "email");
     const phone = textOf(row, "phone");
+    if (email === undefined && phone === undefined) {
+      throw new RowProblem("Add an Email or a Phone so you can reach this contact");
+    }
+    if (email !== undefined) {
+      const problem = capitalsProblem(email, ctx.lookups[LOOKUP_CONTACT_EMAILS]);
+      if (problem !== null) throw new RowProblem(problem);
+    }
     return {
       full_name: requiredTextOf(row, "fullName"),
-      email,
+      ...(email !== undefined ? { email } : {}),
       company_id: companyIdByName(requiredTextOf(row, "company"), ctx),
       owner_id: ownerIdOrSelf(row, ctx),
       title: textOf(row, "title") ?? "",
