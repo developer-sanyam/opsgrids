@@ -42,7 +42,9 @@ storefront, not by account.
   `core`'s own administrator role.
 - It never returns `before`/`after`, `ip`, `user_agent`, `session_id` or the operator's identity string. Each entry
   carries the **names** of the fields it touched: keys whose value changed, filtered to identifier-shaped names
-  because a key can be data. A reveal names the fields that were opened. `by_operator` says OpsGrids staff acted.
+  because a key can be data. A reveal names the fields that were opened. `by_operator` says OpsGrids staff acted: only an
+  `acting_as` with the `operator:` prefix counts. `acting_as` also names system and service actors (`lead`,
+  `payment`, sweeps), and those read as system entries, not staff.
 - Sources in this change: `account` (ungated) and `customer`, `deal`, `lead` (crm), `employee` (hrms),
   `operations`, `notification` (engage), `storefront` and `finance`. Each gateway prefix carries its product's
   gate, so an inactive product answers 402 and the dashboard skips it. `tests/infra/test_route_table_parity.py`

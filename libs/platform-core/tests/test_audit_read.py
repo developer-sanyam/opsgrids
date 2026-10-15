@@ -62,7 +62,7 @@ class TestToEntry:
             id=uuid.uuid4(),
             at=datetime(2026, 10, 1, tzinfo=UTC),
             actor_id=None,
-            acting_as="support@opsgrids.example",
+            acting_as="operator:support@opsgrids.example",
             action="contact.updated",
             entity="contact",
             entity_id=uuid.uuid4(),
@@ -79,6 +79,26 @@ class TestToEntry:
         assert entry.fields == ["phone"]
         assert entry.by_operator is True
         assert entry.sensitive is False
+
+    def test_a_system_or_service_actor_is_not_opsgrids_staff(self) -> None:
+        # `acting_as` also names system and service-to-service actors; only the `operator:`
+        # prefix means staff acted. Anything else is a system action (no actor, not by staff).
+        for acting_as in ("lead", "payment", "crm-conversion-cleanup", "system:notification", None):
+            row = SimpleNamespace(
+                id=uuid.uuid4(),
+                at=datetime(2026, 10, 1, tzinfo=UTC),
+                actor_id=None,
+                acting_as=acting_as,
+                action="deal.deleted",
+                entity="deal",
+                entity_id=uuid.uuid4(),
+                before=None,
+                after=None,
+                reason=None,
+            )
+            entry = to_entry(row, service="deal", product="crm")
+            assert entry.by_operator is False, acting_as
+            assert entry.actor_id is None
 
 
 class TestStatement:

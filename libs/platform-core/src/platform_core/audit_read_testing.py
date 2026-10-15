@@ -20,7 +20,7 @@ from typing import Any
 
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, Response
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from platform_core.audit_read import (
@@ -160,7 +160,7 @@ class AuditReadContract:
             model(
                 organization_id=org,
                 actor_id=None,
-                acting_as="support@opsgrids.example",
+                acting_as="operator:support@opsgrids.example",
                 action="subscription.suspended",
                 entity="subscription",
                 entity_id=uuid.uuid4(),
@@ -241,6 +241,19 @@ class AuditReadContract:
             )
             async with self._admin() as admin, admin.begin():
                 rows = (await admin.execute(stmt)).scalars().all()
+                # Proof the role really sees past RLS: unfiltered, both organizations show up.
+                # Without this, an admin DSN that silently fell back to the app role would make
+                # the assertion below pass on RLS alone.
+                visible = set(
+                    (
+                        await admin.execute(
+                            select(self.audit_model.organization_id).where(
+                                self.audit_model.organization_id.in_([s.org, s.other_org])
+                            )
+                        )
+                    ).scalars()
+                )
+            assert visible == {s.org, s.other_org}
             assert rows and {r.organization_id for r in rows} == {s.org}
 
     async def check_a_reveal_shows_who_what_and_when_but_never_a_value(self) -> None:

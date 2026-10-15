@@ -47,6 +47,13 @@ AUDIT_READ_PERMISSION = "core.identity.audit.read"
 #: The action a PII reveal is recorded under (`record_sensitive_read`).
 SENSITIVE_READ_ACTION = "entity.sensitive_read"
 
+#: How an audit row names OpsGrids staff acting on an organization's behalf
+#: (`acting_as=f"operator:{actor_id}"` in account and billing, `replay_dead_letters` in
+#: notification). `acting_as` also carries system and service-to-service actors ("lead",
+#: "payment", "crm-conversion-cleanup", "storefront-domain-sweep", ...): those are not staff, and
+#: an entry they wrote must not read as "OpsGrids support acted".
+OPERATOR_ACTING_AS_PREFIX = "operator:"
+
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 100
 
@@ -152,6 +159,11 @@ def touched_fields(action: str, before: Any, after: Any) -> list[str]:
     )
 
 
+def is_operator(acting_as: Any) -> bool:
+    """True only for staff acting on the organization's behalf, never for a system actor."""
+    return isinstance(acting_as, str) and acting_as.startswith(OPERATOR_ACTING_AS_PREFIX)
+
+
 def to_entry(row: Any, *, service: str, product: str) -> AuditEntryOut:
     return AuditEntryOut(
         id=row.id,
@@ -159,7 +171,7 @@ def to_entry(row: Any, *, service: str, product: str) -> AuditEntryOut:
         service=service,
         product=product,
         actor_id=row.actor_id,
-        by_operator=bool(row.acting_as),
+        by_operator=is_operator(row.acting_as),
         action=row.action,
         entity=row.entity,
         entity_id=row.entity_id,
