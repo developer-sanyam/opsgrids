@@ -117,6 +117,7 @@ async def test_recording_a_send_writes_the_attempt_and_the_event(session, org_id
         .all()
     )
     assert len(events) == 1
+    assert "to_address" not in events[0].payload
 
 
 async def test_a_transient_failure_returns_the_message_to_pending(session, org_id) -> None:

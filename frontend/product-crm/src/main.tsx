@@ -15,6 +15,7 @@ import { DealDetailPage } from "./routes/DealDetail";
 import { CompaniesPage } from "./routes/Companies";
 import { CompanyDetailPage } from "./routes/CompanyDetail";
 import { ContactsPage } from "./routes/Contacts";
+import { ContactDetailPage } from "./routes/ContactDetail";
 import { ActivitiesPage } from "./routes/Activities";
 import { TeamPage } from "./routes/Team";
 import { LoginPage } from "./routes/Login";
@@ -63,6 +64,7 @@ const router = createBrowserRouter([
           { path: "companies", element: <CompaniesPage /> },
           { path: "companies/:id", element: <CompanyDetailPage /> },
           { path: "contacts", element: <ContactsPage /> },
+          { path: "contacts/:id", element: <ContactDetailPage /> },
           { path: "activities", element: <ActivitiesPage /> },
           { path: "team", element: <TeamPage /> },
           { path: "*", element: <NotFoundScreen /> },

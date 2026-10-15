@@ -89,6 +89,7 @@ export interface ScreenOptions {
   /** The route pattern the screen is mounted at, e.g. "/leads/:id". */
   path: string;
   grants: string[];
+  entitlements?: string[];
   directory?: Partial<Directory>;
   /** Paths the test may navigate to without unmounting the screen. */
   links?: string[];
@@ -97,7 +98,7 @@ export interface ScreenOptions {
 export function renderScreen(element: ReactElement, options: ScreenOptions) {
   return render(
     <MemoryRouter initialEntries={[options.at]}>
-      <PermissionProvider grants={options.grants}>
+      <PermissionProvider grants={options.grants} {...(options.entitlements ? { entitlements: options.entitlements } : {})}>
         <DirectoryContext.Provider value={{ ...EMPTY_DIRECTORY, status: "success", ...options.directory }}>
           <LocationProbe />
           {(options.links ?? []).map((link) => (

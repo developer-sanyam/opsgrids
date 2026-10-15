@@ -1031,7 +1031,7 @@ async def record_sent(
             "organization_id": str(organization_id),
             "message_id": str(message.id),
             "channel": message.channel,
-            "to_address": message.to_address,
+            # Never `to_address`: an address is not a reason to put PII on the bus.
             "rule_code": message.rule_code,
         },
         actor={"type": "system", "id": SYSTEM_ACTOR},

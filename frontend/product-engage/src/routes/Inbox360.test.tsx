@@ -125,3 +125,17 @@ describe("Customer 360 in the inbox", () => {
     expect(screen.queryByText("Vaayu Foods · Bengaluru")).toBeNull();
   });
 });
+
+describe("Matched-contact link", () => {
+  it("opens that contact's own CRM page, not the contact list", async () => {
+    vi.spyOn(client, "listConversations").mockResolvedValue(page([MATCHED]));
+    vi.spyOn(client, "listConversationMessages").mockResolvedValue(page(THREAD));
+    vi.spyOn(customer360, "getCustomer360").mockResolvedValue(CUSTOMER_360);
+    renderInbox();
+
+    await userEvent.click(await screen.findByRole("button", { name: /4210/ }));
+
+    const link = await screen.findByRole("link", { name: /Matched to a CRM contact/ });
+    expect(link.getAttribute("href")).toMatch(new RegExp(`/contacts/${CUSTOMER_ID}$`));
+  });
+});
