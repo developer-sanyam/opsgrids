@@ -81,54 +81,24 @@ class TestConversionIds:
 
 
 class TestDealName:
-    def test_a_short_name_is_returned_with_its_lead_id_suffix_untouched(self) -> None:
-        lead_id = uuid.uuid4()
-        name = domain.deal_name("Stellar Robotics", "Priya Sharma", lead_id)
-        assert name == f"Stellar Robotics — Priya Sharma · {str(lead_id)[:8]}"
-        assert len(name) <= domain.DEAL_NAME_MAX_LENGTH
+    def test_a_short_name_is_company_and_person_with_no_id_fragment(self) -> None:
+        name = domain.deal_name("Stellar Robotics", "Priya Sharma")
+        assert name == "Stellar Robotics \u2014 Priya Sharma"
 
     def test_a_long_company_and_person_name_is_truncated_to_fit(self) -> None:
-        lead_id = uuid.uuid4()
-        company = "A" * 150
-        full_name = "B" * 150
-        name = domain.deal_name(company, full_name, lead_id)
+        name = domain.deal_name("A" * 150, "B" * 150)
         assert len(name) <= domain.DEAL_NAME_MAX_LENGTH
-        assert name.endswith(f" · {str(lead_id)[:8]}")
-        assert "…" in name
-
-    def test_two_leads_naming_the_same_company_and_person_get_distinct_deal_names(self) -> None:
-        first = domain.deal_name("Stellar Robotics", "Priya Sharma", uuid.uuid4())
-        second = domain.deal_name("Stellar Robotics", "Priya Sharma", uuid.uuid4())
-        assert first != second
-
-    def test_generation_zero_names_are_exactly_what_they_always_were(self) -> None:
-        lead_id = uuid.uuid4()
-        legacy = f"Stellar Robotics — Priya Sharma · {str(lead_id)[:8]}"
-        assert domain.deal_name("Stellar Robotics", "Priya Sharma", lead_id) == legacy
-        assert domain.deal_name("Stellar Robotics", "Priya Sharma", lead_id, 0) == legacy
-
-    def test_each_later_generation_gets_its_own_name(self) -> None:
-        """Deal-service refuses a second live deal with the same name, so a bumped generation
-        that reused the old name would fail on the deal instead of on the ids."""
-        lead_id = uuid.uuid4()
-        names = [domain.deal_name("Stellar Robotics", "Priya Sharma", lead_id, g) for g in range(4)]
-        assert len(set(names)) == 4
-        assert names[1].endswith(f" · {str(lead_id)[:8]}/1")
-        assert names[3].endswith("/3")
-
-    def test_a_long_name_stays_bounded_with_a_generation_suffix(self) -> None:
-        lead_id = uuid.uuid4()
-        for generation in (0, 1, 12, 345):
-            name = domain.deal_name("C" * 300, "P" * 300, lead_id, generation)
-            assert len(name) <= domain.DEAL_NAME_MAX_LENGTH
-            assert name.endswith(f"/{generation}" if generation else str(lead_id)[:8])
+        assert name.endswith("\u2026")
 
     def test_the_result_never_exceeds_the_column_width_even_at_the_boundary(self) -> None:
-        lead_id = uuid.uuid4()
-        # Exactly at, and one past, the budget before truncation kicks in.
-        for length in (185, 186, 187, 200, 500):
-            name = domain.deal_name("C" * length, "P" * length, lead_id)
+        for length in (95, 96, 97, 100, 200, 500):
+            name = domain.deal_name("C" * length, "P" * length)
             assert len(name) <= domain.DEAL_NAME_MAX_LENGTH
+
+    def test_the_name_is_deterministic_so_a_replay_never_renames_anything(self) -> None:
+        assert domain.deal_name("Stellar Robotics", "Priya Sharma") == domain.deal_name(
+            "Stellar Robotics", "Priya Sharma"
+        )
 
 
 class TestRoundRobin:

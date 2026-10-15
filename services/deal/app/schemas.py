@@ -345,6 +345,10 @@ class LeadConversionDealIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     close_date: date
     source: str = Field(default="lead", max_length=60)
+    #: The rep's say over the deal (integer minor units of INR; never a float) and its opening
+    #: stage -- both optional: zero and the pipeline's entry stage, as before.
+    value_minor: int = Field(default=0, ge=0, le=10**13, strict=True)
+    stage: str | None = Field(default=None, min_length=1, max_length=40)
 
 
 class LeadConversionDealOut(BaseModel):

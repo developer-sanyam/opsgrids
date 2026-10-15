@@ -125,14 +125,16 @@ async def convert_lead(
         deal = await selectors.get_deal_by_id_any_state(session, organization_id, payload.deal_id)
         if deal is None:
             ctx = services.lead_conversion_ctx(organization_id, _claimed_actor(request))
+            name = await services.unique_deal_name(session, organization_id, payload.name)
             deal = await services.create_deal(
                 session,
                 ctx,
-                name=payload.name,
+                name=name,
                 company_id=payload.company_id,
                 primary_contact_id=payload.contact_id,
                 owner_id=payload.owner_id,
-                value_minor=0,
+                value_minor=payload.value_minor,
+                stage=payload.stage,
                 close_date=payload.close_date,
                 source=payload.source,
                 deal_id=payload.deal_id,

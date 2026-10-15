@@ -322,6 +322,35 @@ def _target_stage(spec: PipelineSpec, key: str) -> StageSpec:
 
 # ------------------------------------------------------------------ deals
 
+#: `Deal.name` is `String(200)`.
+DEAL_NAME_MAX = 200
+
+
+async def unique_deal_name(session: AsyncSession, organization_id: uuid.UUID, base: str) -> str:
+    """The first free name among `base`, `base (2)`, `base (3)`, ... for this organization.
+
+    Deal names are unique among live deals, and a lead's conversion names its deal
+    "<Company> -- <Lead name>" -- which two leads of one person at one company can share. Rather
+    than push an id fragment into every name (it used to read "... . 68d1da6a"), the clash is
+    resolved here, where the names live, with one query for the whole family. The numbered
+    candidate is cut from the base so it still fits the column. A concurrent writer picking the
+    same free number loses on the unique index and gets the ordinary 409, which lead-service
+    reports as "a deal with this name already exists".
+    """
+    if len(base) > DEAL_NAME_MAX:
+        base = base[:DEAL_NAME_MAX]
+    stem = base[: DEAL_NAME_MAX - 12]
+    taken = await selectors.deal_names_starting_with(session, organization_id, stem)
+    if base not in taken:
+        return base
+    number = 2
+    while True:
+        suffix = f" ({number})"
+        candidate = base[: DEAL_NAME_MAX - len(suffix)].rstrip() + suffix
+        if candidate not in taken:
+            return candidate
+        number += 1
+
 
 async def create_deal(
     session: AsyncSession,

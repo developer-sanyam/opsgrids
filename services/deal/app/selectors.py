@@ -253,6 +253,21 @@ async def get_deal_by_name(session: AsyncSession, org_id: uuid.UUID, name: str) 
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def deal_names_starting_with(
+    session: AsyncSession, org_id: uuid.UUID, stem: str
+) -> set[str]:
+    """The live deal names in this organization that begin with `stem` -- one query, however many
+    numbered siblings there are. `%`, `_` and the escape character are escaped, so a company
+    named "100%_Pure" matches only itself."""
+    escaped = stem.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    stmt = select(Deal.name).where(
+        Deal.organization_id == org_id,
+        Deal.deleted_at.is_(None),
+        Deal.name.like(f"{escaped}%", escape="\\"),
+    )
+    return set((await session.execute(stmt)).scalars().all())
+
+
 async def all_deals(
     session: AsyncSession, ctx: ScopeContext, *, owner_id: uuid.UUID | None = None
 ) -> list[Deal]:

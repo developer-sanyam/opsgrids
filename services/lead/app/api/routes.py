@@ -20,7 +20,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi import APIRouter, Body, Depends, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import scope, selectors, services
@@ -29,6 +29,7 @@ from app.models import SCHEMA
 from app.schemas import (
     AssignmentRuleIn,
     AssignmentRuleOut,
+    LeadConvertIn,
     LeadConvertOut,
     LeadIn,
     LeadOut,
@@ -242,6 +243,7 @@ async def convert_lead(
     session: RawSessionDep,
     ctx: LeadConvert,
     request: Request,
+    payload: Annotated[LeadConvertIn | None, Body()] = None,
 ) -> LeadConvertOut:
     """Idempotent: converting an already-converted lead returns the same ids rather than
     erroring or duplicating anything (`services.convert_lead`, `domain.conversion_ids`).
@@ -253,8 +255,14 @@ async def convert_lead(
     lead and the OWN-scope object-level check both happen inside `services.claim_conversion`
     now, the same checks the old single-transaction version made here before calling in.
     """
+    options = payload or LeadConvertIn()
     company_id, contact_id, deal_id = await services.convert_lead(
-        session, ctx, lead_id, request=request
+        session,
+        ctx,
+        lead_id,
+        deal_value_minor=options.deal_value_minor,
+        deal_stage=options.deal_stage,
+        request=request,
     )
     return LeadConvertOut(
         lead_id=str(lead_id),
