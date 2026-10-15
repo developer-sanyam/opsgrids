@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import sys
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -26,6 +27,40 @@ LIB_DIR = EDGE_DIR / "lib"
 
 sys.path.insert(0, str(LIB_DIR))
 from memory_budget_totals import load_budget  # noqa: E402
+
+# --------------------------------------------------------------------------- real-database opt-in
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", ""})
+
+
+def real_database_dsn(env_var: str) -> str | None:
+    """The DSN named by `env_var`, or `None` (the test then skips) when it is unset.
+
+    These tests insert and delete rows, and the purge tools they drive issue `DELETE` against
+    organisations and GPS captures. So a DSN is refused, loudly, at collection time (an error, not
+    a skip) unless it names a throwaway database on this machine: not the developer stack's shared
+    `opsgrids` (`platform_core.testing.is_shared_dev_database`; the CI job's own container is the
+    one exemption, and it uses `opsgrids_tooling` anyway) and not a host that is not loopback,
+    which is what a production or staging URL would be. `make test-infra-db` builds the DSN.
+    """
+    from sqlalchemy.engine import make_url
+
+    from platform_core.testing import is_shared_dev_database
+
+    dsn = os.environ.get(env_var)
+    if not dsn:
+        return None
+    url = make_url(dsn)
+    if is_shared_dev_database(dsn):
+        raise RuntimeError(
+            f"{env_var} names the shared dev database {url.database!r}; refusing to run "
+            "destructive tests against it. Use `make test-infra-db`, which creates a throwaway."
+        )
+    if (url.host or "") not in _LOCAL_HOSTS:
+        raise RuntimeError(
+            f"{env_var} points at host {url.host!r}; refusing to run destructive tests against "
+            "a database that is not on this machine."
+        )
+    return dsn
 
 
 # --------------------------------------------------------------------------- the compose file

@@ -179,6 +179,9 @@ test-infra: ## Repository-tooling tests: deploy scripts' path logic, the gate's 
 	# No database, no broker, no `make infra` — each test builds its own throwaway git repo
 	# or temp dir and drives the real scripts and functions against it. Safe and fast enough
 	# to run in the static job alongside lint and typecheck.
+	@if [ -z "$$OPSGRIDS_PURGE_ORGS_TEST_DATABASE_URL" ]; then \
+	  echo "note: the real-database tests in tests/infra (purge tools, put-away runbook) are skipped here;"; \
+	  echo "      run them with 'make test-infra-db' (needs make infra). CI runs them: see docs/testing.md."; fi
 	uv run pytest tests/infra -q
 
 .PHONY: test-billing-properties
@@ -298,6 +301,40 @@ ops-monitor-db: ## Create/grant the opsgrids_mon database ops-monitor's integrat
 backfill-db: ## Create/grant the opsgrids_backfill database (idempotent, needs make infra)
 	$(COMPOSE) exec -T postgres psql -v ON_ERROR_STOP=1 -U opsgrids -d opsgrids -f - \
 	  < tools/dev-bootstrap/backfill-db.sql
+
+# The four tests/infra modules that need a real, migrated Postgres: they run the purge tools
+# (tools/purge_test_orgs.py, tools/purge_putaway_captures.py, which DELETE) and the put-away
+# runbook queries against it. The purge-orgs tests connect as the owner role `opsgrids_admin`; the
+# other two seed with `SET session_replication_role`, which only a superuser may do, so they get
+# the superuser DSN. Each skips unless its OPSGRIDS_*_TEST_DATABASE_URL is set, and
+# refuses (tests/infra/_helpers.py real_database_dsn) the shared `opsgrids` database or a
+# non-local host. `tooling-db` creates the throwaway `opsgrids_tooling` (idempotent);
+# `test-infra-db` also migrates it and runs the four modules. Defaults target the compose
+# postgres; to use any other local cluster, say a throwaway on 5446:
+#   make test-infra-db TOOLING_DB_PORT=5446 \
+#     TOOLING_DB_PSQL="psql -h 127.0.0.1 -p 5446 -U opsgrids -d postgres" \
+#     TOOLING_DB_INIT=tools/dev-bootstrap/init-db.sql
+TOOLING_DB_HOST ?= localhost
+TOOLING_DB_PORT ?= 5434
+TOOLING_DB_PSQL ?= $(COMPOSE) exec -T postgres psql -U opsgrids -d opsgrids
+TOOLING_DB_INIT ?=
+TOOLING_DB_SUPER_URL = postgresql+asyncpg://opsgrids:opsgrids@$(TOOLING_DB_HOST):$(TOOLING_DB_PORT)/opsgrids_tooling
+TOOLING_DB_ADMIN_URL = postgresql+asyncpg://opsgrids_admin:opsgrids@$(TOOLING_DB_HOST):$(TOOLING_DB_PORT)/opsgrids_tooling
+TOOLING_DB_TESTS = tests/infra/test_purge_test_orgs_db.py tests/infra/test_purge_putaway_captures.py \
+  tests/infra/test_putaway_docs.py tests/infra/test_runbook_putaway_coordinate_check.py
+
+.PHONY: tooling-db
+tooling-db: ## Create/grant the opsgrids_tooling database the tests/infra real-database tests target (idempotent, needs make infra)
+	$(TOOLING_DB_PSQL) -v ON_ERROR_STOP=1 $(if $(TOOLING_DB_INIT),-v init_sql=$(TOOLING_DB_INIT)) -f - \
+	  < tools/dev-bootstrap/tooling-db.sql
+
+.PHONY: test-infra-db
+test-infra-db: tooling-db ## Run the tests/infra purge + runbook tests against a migrated opsgrids_tooling (needs make infra)
+	$(MAKE) migrate DATABASE_URL=$(TOOLING_DB_SUPER_URL)
+	OPSGRIDS_PURGE_ORGS_TEST_DATABASE_URL=$(TOOLING_DB_ADMIN_URL) \
+	OPSGRIDS_PURGE_TEST_DATABASE_URL=$(TOOLING_DB_SUPER_URL) \
+	OPSGRIDS_RUNBOOK_TEST_DATABASE_URL=$(TOOLING_DB_SUPER_URL) \
+	  uv run pytest -q -rs $(TOOLING_DB_TESTS)
 
 # The one suite where nothing is stubbed: six services, an outbox relay and an event
 # consumer, all started by the harness on ports the OS hands out, driven over real HTTP
