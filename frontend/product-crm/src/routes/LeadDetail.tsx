@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { getLead, revealLeadField, updateLead } from "@/api/client";
-import type { Lead, LeadStatus, Owner } from "@/api/types";
+import type { Lead, LeadConvertResult, LeadStatus, Owner } from "@/api/types";
 import { useDirectory } from "@/data/directoryContext";
 import { useMyRep } from "@/data/useMyRep";
 import { ownerById } from "@/data/lookups";
@@ -20,6 +20,7 @@ import {
   ArrowLeftIcon,
   ArrowRightIcon,
   BuildingIcon,
+  cn,
   InlineAlert,
   useToast,
 } from "@opsgrids/ui";
@@ -35,7 +36,7 @@ import {
 
 function Fact({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-3 py-2.5">
+    <div className="flex items-center justify-between gap-3 py-3">
       <span className="text-sm text-muted">{label}</span>
       <span className="text-sm font-semibold text-ink text-right">{children}</span>
     </div>
@@ -111,7 +112,7 @@ function OwnerControl({ lead, owners, onChanged }: { lead: Lead; owners: Owner[]
         label="Owner"
         value={current ? current.id : ""}
         disabled={assign.pending}
-        placeholder="Unassigned: choose who works this lead"
+        placeholder="Choose who works this lead"
         options={options}
         onChange={(e) => {
           const next = e.target.value;
@@ -164,9 +165,13 @@ export function LeadDetailPage() {
     },
   });
 
-  function handleConverted() {
+  function handleConverted(result: LeadConvertResult) {
     setConfirmingConvert(false);
-    toast.success("Lead converted — a company and deal now exist for it.");
+    toast.success(
+      result.contact_id
+        ? "Lead converted — a company, contact and deal now exist for it."
+        : "Lead converted — a company and deal now exist for it.",
+    );
     lead.reload();
   }
 
@@ -174,7 +179,7 @@ export function LeadDetailPage() {
     <div className="rise flex flex-col gap-6">
       <Link
         to="/leads"
-        className="relative hit-44 inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted hover:text-ink transition-colors"
+        className="relative hit-44 inline-flex w-fit items-center gap-2 text-sm font-semibold text-muted hover:text-ink transition-colors"
       >
         <ArrowLeftIcon className="size-4" />
         Back to leads
@@ -196,12 +201,11 @@ export function LeadDetailPage() {
             const owner = ownerById(owners, l.owner_id);
             const converted = l.status === "converted";
             const hasOwner = l.owner_id !== null;
-            const convertBlocker =
-              l.status !== "qualified"
-                ? "Qualify first: only a qualified lead can be converted."
-                : !hasOwner
-                  ? "Assign an owner first: the company, contact and deal it creates need one."
-                  : null;
+            const convertBlockers = [
+              ...(l.status !== "qualified" ? ["Qualify first: only a qualified lead can be converted."] : []),
+              ...(!hasOwner ? ["Assign an owner first: the company, contact and deal it creates need one."] : []),
+            ];
+            const convertBlocked = convertBlockers.length > 0;
 
             return (
               <>
@@ -211,7 +215,7 @@ export function LeadDetailPage() {
                       <LeadStatusPill status={l.status} />
                       <h1 className="display text-3xl font-extrabold leading-tight">{l.full_name}</h1>
                       {l.company ? (
-                        <span className="inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted">
+                        <span className="inline-flex w-fit items-center gap-2 text-sm font-semibold text-muted">
                           <BuildingIcon className="size-4" />
                           {l.company}
                         </span>
@@ -222,18 +226,24 @@ export function LeadDetailPage() {
                         <div className="flex w-full flex-col gap-1 sm:w-auto sm:items-end">
                           <Button
                             size="md"
-                            className="w-full sm:w-auto"
                             leadingIcon={<ArrowRightIcon className="size-4" />}
-                            disabled={convertBlocker !== null}
-                            aria-describedby={convertBlocker !== null ? "convert-reason" : undefined}
-                            onClick={() => setConfirmingConvert(true)}
+                            // aria-disabled, not disabled: a disabled button leaves the tab order
+                            // and takes its reason with it.
+                            aria-disabled={convertBlocked || undefined}
+                            aria-describedby={convertBlocked ? "convert-reason" : undefined}
+                            className={cn("w-full sm:w-auto", convertBlocked && "cursor-not-allowed opacity-50")}
+                            onClick={() => {
+                              if (!convertBlocked) setConfirmingConvert(true);
+                            }}
                           >
                             Convert
                           </Button>
-                          {convertBlocker !== null ? (
-                            <p id="convert-reason" className="text-xs text-muted">
-                              {convertBlocker}
-                            </p>
+                          {convertBlocked ? (
+                            <div id="convert-reason" className="flex flex-col gap-1 text-caption text-muted sm:text-right">
+                              {convertBlockers.map((reason) => (
+                                <p key={reason}>{reason}</p>
+                              ))}
+                            </div>
                           ) : null}
                         </div>
                       ) : null}
@@ -251,24 +261,15 @@ export function LeadDetailPage() {
                         {l.converted_company_id ? (
                           <Link
                             to={`/companies/${l.converted_company_id}`}
-                            className="relative hit-44 inline-flex items-center gap-1 font-semibold underline-offset-2 hover:underline"
+                            className="relative hit-44 inline-flex items-center gap-1 font-semibold underline underline-offset-2 hover:no-underline"
                           >
                             Open the company
-                          </Link>
-                        ) : null}
-                        {l.converted_company_id && l.converted_contact_id ? (
-                          // A contact has no page of its own; it is listed on its company's.
-                          <Link
-                            to={`/companies/${l.converted_company_id}`}
-                            className="relative hit-44 inline-flex items-center gap-1 font-semibold underline-offset-2 hover:underline"
-                          >
-                            See the contact
                           </Link>
                         ) : null}
                         {l.converted_deal_id ? (
                           <Link
                             to={`/deals/${l.converted_deal_id}`}
-                            className="relative hit-44 inline-flex items-center gap-1 font-semibold underline-offset-2 hover:underline"
+                            className="relative hit-44 inline-flex items-center gap-1 font-semibold underline underline-offset-2 hover:no-underline"
                           >
                             Open the deal
                           </Link>
@@ -350,7 +351,7 @@ export function LeadDetailPage() {
 
                   <Card className="flex flex-col gap-3 p-6">
                     <SectionHeader title="Contact" />
-                    <div className="flex flex-col gap-1.5 text-sm">
+                    <div className="flex flex-col gap-2 text-sm">
                       <RevealField
                         kind="email"
                         masked={l.email}

@@ -409,7 +409,7 @@ describe("importing projects from Excel", () => {
       expect(figure("Skipped, already exist")).toBe("1");
       expect(figure("Failed")).toBe("1");
       expect(figure("Invalid")).toBe("4");
-      expect(screen.getByText("5 rows were not imported. 2 projects were created.")).toBeTruthy();
+      expect(screen.getByText("5 rows failed; 1 row already existed and was skipped. 2 projects were created.")).toBeTruthy();
       const table = within(screen.getByRole("region", { name: "Rows that were not created" }));
       const duplicate = "A project coded 'PRJ-105' already exists";
       const refused = "You can only make yourself the owner of a project.";

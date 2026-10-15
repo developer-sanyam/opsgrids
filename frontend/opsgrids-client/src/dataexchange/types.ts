@@ -143,6 +143,18 @@ export class RowProblem extends Error {
   }
 }
 
+/**
+ * Thrown from `toPayload` for a row whose record is already there (the list's own key matched):
+ * the row is not wrong and is not sent. It is previewed as "Already exists" and reported as
+ * skipped, the same as a row the server answers 409 "already exists".
+ */
+export class RowSkipped extends RowProblem {
+  constructor(message: string) {
+    super(message);
+    this.name = "RowSkipped";
+  }
+}
+
 // ------------------------------------------------------------------ update mode (ADR-0022 addendum)
 
 /** `add`: rows create records (today's behaviour). `addAndUpdate`: a row that names an existing
@@ -331,7 +343,7 @@ export type ImportPhase = "menu" | "reading" | "preview" | "importing" | "done" 
 
 /** What the import will do with one row. `unchanged` is an update row that already matches its
  *  record: no request. `sample` is an unchanged example row: skipped without a message. */
-export type PreviewAction = "create" | "update" | "unchanged" | "invalid" | "sample";
+export type PreviewAction = "create" | "update" | "unchanged" | "invalid" | "sample" | "exists";
 
 export interface PreviewRow {
   row: number;
@@ -370,6 +382,8 @@ export interface ImportPreview {
   valid: number;
   invalid: number;
   sample: number;
+  /** Rows whose record is already there (`RowSkipped`): not sent, reported as skipped. */
+  exists: number;
   /** Rows that will add a record. In `add` mode this is `valid`. */
   create: number;
   /** Rows that will change a record (update mode only). */

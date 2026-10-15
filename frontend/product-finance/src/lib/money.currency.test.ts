@@ -5,7 +5,7 @@ import { formatAmount, formatMoney, formatMoneyCompact, formatMoneySigned, forma
 describe("finance money formatting is exponent-aware", () => {
   it("keeps INR output unchanged", () => {
     expect(formatMoney(123456700)).toBe("₹12,34,567.00");
-    expect(formatMoney(-100)).toBe("₹-1.00");
+    expect(formatMoney(-100)).toBe("−₹1.00");
     expect(formatAmount(123456750)).toBe("12,34,567.50");
     expect(formatMoneyWhole(123456750)).toBe("₹12,34,568");
     expect(formatMoneyCompact(123456700)).toBe("₹12.35L");

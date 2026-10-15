@@ -16,6 +16,7 @@ import type { RowIntent } from "./coerce";
 import { UNCHANGED_MESSAGE, prepareMessage } from "./errors";
 import { sampleMatcher } from "./sample";
 import type { RunnerRow } from "./runner";
+import { RowSkipped } from "./types";
 import type {
   BaselineUse,
   ImportContext,
@@ -77,6 +78,8 @@ export interface PreparedImport {
   invalid: RowOutcome[];
   /** Update rows that already match their record: nothing is sent, and the report says so. */
   unchanged: RowOutcome[];
+  /** Rows whose record already exists: not sent, reported as skipped. */
+  skipped: RowOutcome[];
   lookups: LookupSet;
   /**
    * What the preview promised, row by row: which action, and which columns it changes. Compared with
@@ -191,6 +194,7 @@ export function prepareImport(
   const valid: RunnerRow[] = [];
   const invalid: RowOutcome[] = [];
   const unchanged: RowOutcome[] = [];
+  const skipped: RowOutcome[] = [];
   const shown: PreviewRow[] = [];
   const tally = { create: 0, update: 0, sample: 0, matched: 0 };
   /** The first row that updates each record: a second row for the same record is refused. */
@@ -307,6 +311,7 @@ export function prepareImport(
     const parsed =
       updating !== null && stored?.by === "key" ? withStoredKey(coerced.row, updating, stored.item) : coerced.row;
     let plan: UpdatePlan | null = null;
+    let existsMessage: string | null = null;
     if (errors.length === 0) {
       try {
         if (updating !== null && stored !== null) {
@@ -315,8 +320,14 @@ export function prepareImport(
           entity.toPayload(parsed, ctx);
         }
       } catch (error) {
-        errors.push(prepareMessage(error));
+        if (error instanceof RowSkipped) existsMessage = error.message;
+        else errors.push(prepareMessage(error));
       }
+    }
+    if (existsMessage !== null) {
+      skipped.push({ row, status: "skipped", message: existsMessage, label });
+      show("exists", null, { note: existsMessage });
+      continue;
     }
     if (errors.length > 0) {
       refuse(joinProblems(errors));
@@ -359,6 +370,7 @@ export function prepareImport(
       total: sheet.rows.length,
       valid: valid.length,
       invalid: invalid.length,
+      exists: skipped.length,
       sample: tally.sample,
       create: tally.create,
       update: tally.update,
@@ -373,7 +385,7 @@ export function prepareImport(
       matchWarning: updating === null ? null : matchWarningFor(entity, updating, sheet, tally.create),
       baseline: updating === null ? null : baselineUse(sheet, tally.matched, baselineUsed),
     },
-    prepared: { valid, invalid, unchanged, lookups: ctx.lookups, review: reviewed.join("\n") },
+    prepared: { valid, invalid, unchanged, skipped, lookups: ctx.lookups, review: reviewed.join("\n") },
   };
 }
 

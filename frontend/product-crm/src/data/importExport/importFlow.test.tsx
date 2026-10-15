@@ -437,7 +437,7 @@ describe("companies: import from Excel", () => {
     // The result: the sentence, the four counts, and each row that was not created with its
     // reason. A 409 that says the company exists is skipped; one that says anything else, like the
     // plan limit on row 10, is a failure with the server's sentence.
-    expect(screen.getByText("4 rows were not imported. 3 companies were created.")).toBeTruthy();
+    expect(screen.getByText("4 rows failed; 1 row already existed and was skipped. 3 companies were created.")).toBeTruthy();
     expect(figure("Created")).toBe("3");
     expect(figure("Skipped, already exist")).toBe("1");
     expect(figure("Failed")).toBe("2");
@@ -791,7 +791,7 @@ describe("deals: import from Excel", () => {
       },
     ]);
 
-    expect(screen.getByText("5 rows were not imported. 2 deals were created.")).toBeTruthy();
+    expect(screen.getByText("5 rows failed; 1 row already existed and was skipped. 2 deals were created.")).toBeTruthy();
     expect(figure("Created")).toBe("2");
     expect(figure("Skipped, already exist")).toBe("1");
     expect(figure("Failed")).toBe("1");
@@ -1030,7 +1030,7 @@ describe("contacts: import and export", () => {
         status: "lead",
       },
     ]);
-    expect(screen.getByText("2 rows were not imported. 2 contacts were created.")).toBeTruthy();
+    expect(screen.getByText("2 rows failed; 2 rows already existed and were skipped. 2 contacts were created.")).toBeTruthy();
     expect(rowsOf(screen.getByRole("region", { name: "Rows that were not created" }))).toEqual([
       ["3", "Daniel Okafor", "Skipped", "A contact with that email already exists"],
       [

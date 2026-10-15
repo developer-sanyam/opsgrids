@@ -28,7 +28,7 @@ export interface ImportExportRowOutcome {
 
 export type ImportExportPhase = "menu" | "reading" | "preview" | "importing" | "done" | "error";
 
-export type ImportExportPreviewAction = "create" | "update" | "unchanged" | "invalid" | "sample";
+export type ImportExportPreviewAction = "create" | "update" | "unchanged" | "invalid" | "sample" | "exists";
 
 export interface ImportExportPreviewRow {
   row: number;
@@ -53,6 +53,8 @@ export interface ImportExportPreview {
   total: number;
   valid: number;
   invalid: number;
+  /** Rows whose record is already there: not sent, reported as skipped. Absent means none. */
+  exists?: number | undefined;
   sample: number;
   create: number;
   update: number;

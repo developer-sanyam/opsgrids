@@ -132,11 +132,11 @@ function summarise(prepared: PreparedImport, result: RunResult): ImportSummary {
     created: result.created,
     updated: result.updated,
     unchanged: prepared.unchanged.length + result.unchanged,
-    skipped: result.skipped,
+    skipped: prepared.skipped.length + result.skipped,
     failed: result.failed,
     invalid: prepared.invalid.length + result.invalid,
     cancelled: result.cancelled,
-    outcomes: [...prepared.invalid, ...prepared.unchanged, ...result.outcomes].sort((a, b) => a.row - b.row),
+    outcomes: [...prepared.invalid, ...prepared.unchanged, ...prepared.skipped, ...result.outcomes].sort((a, b) => a.row - b.row),
   };
 }
 

@@ -91,7 +91,16 @@ export function GstRegistrationFormDialog({
 
   function submit() {
     if (!validate()) return;
-    setConfirming(true);
+    // Only a change of identity re-points future invoices; an address edit is not worth a warning.
+    const identityChanged =
+      registration === null ||
+      gstin.trim().toUpperCase() !== registration.gstin ||
+      legalName.trim() !== registration.legal_name ||
+      tradeName.trim() !== registration.trade_name ||
+      registrationType !== registration.registration_type ||
+      isPrimary !== registration.is_primary;
+    if (identityChanged) setConfirming(true);
+    else confirmSave();
   }
 
   function confirmSave() {

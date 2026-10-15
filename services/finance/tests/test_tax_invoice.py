@@ -584,6 +584,41 @@ class TestSupplierSettings:
             ).all()
         assert rows == []
 
+    async def test_an_invoice_with_no_supplier_snapshot_prints_only_what_it_carried(
+        self, client, session, org_id
+    ) -> None:
+        """A document issued before supplier snapshots existed must not reprint with details added
+        afterwards: no address, no PAN, no bank block, and the sealed number is neither opened nor
+        audited for it."""
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            customer = await _customer(session, ctx)
+            legacy = await services.create_invoice(session, ctx, _invoice(customer.id, "INV-P-L1"))
+            await _register(session, ctx)
+            await services.set_supplier_profile(
+                session,
+                ctx,
+                SupplierProfileUpsert(
+                    bank_account_number="50100123456789", bank_ifsc="HDFC0001234"
+                ),
+            )
+        assert legacy.seller_address is None and legacy.seller_legal_name is None
+
+        res = await client.get(f"/api/v1/finance/invoices/{legacy.id}/print-details")
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["gstin"] == SELLER
+        assert body["address_line1"] == "" and body["city"] == "" and body["pincode"] == ""
+        assert body["pan"] is None and body["bank"] is None
+        assert "50100123456789" not in res.text
+        async with session.begin():
+            rows = (
+                await session.execute(
+                    select(AuditLog).where(AuditLog.action == "supplier_profile.bank_disclosed")
+                )
+            ).all()
+        assert rows == []
+
     async def test_print_details_without_an_account_audit_nothing(
         self, client, session, org_id
     ) -> None:

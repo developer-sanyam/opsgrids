@@ -353,19 +353,33 @@ describe("buildTaxInvoice — Rule 46 supplier, buyer and line facts", () => {
     expect(isPrintable(gaps)).toBe(false);
   });
 
-  it("still prints a document issued before snapshots existed, with an advisory, when no address is on file", () => {
-    // Every invoice already in production has no seller snapshot, and every registration starts
-    // with an empty address after the migration: those documents must keep reprinting.
+  it("reprints a document issued before snapshots existed exactly as it was, without today's address, PAN or bank", () => {
+    // Every invoice already in production has no seller snapshot. Its reprint must not pick up
+    // supplier details that were added to the settings after it was issued.
     const legacy = invoice();
     const { model, gaps } = buildTaxInvoice(
       inputs({
         invoice: legacy,
-        registration: { ...GST_REGISTRATION, address_line1: "", address_line2: "", city: "", pincode: "" },
+        registration: GST_REGISTRATION,
+        printDetails: {
+          gstin: GST_REGISTRATION.gstin,
+          legal_name: GST_REGISTRATION.legal_name,
+          trade_name: null,
+          state_code: GST_REGISTRATION.state_code,
+          address_line1: "",
+          address_line2: "",
+          city: "",
+          pincode: "",
+          pan: null,
+          bank: null,
+        },
       }),
     );
-    expect(gaps.find((g) => g.key === "supplier_address")?.severity).toBe("advisory");
+    expect(gaps.map((g) => g.key)).not.toContain("supplier_address");
     expect(isPrintable(gaps)).toBe(true);
     expect(model.supplier.addressLines).toEqual([]);
+    expect(model.supplier.pan).toBeNull();
+    expect(model.supplier.bank).toBeNull();
     expect(model.buyer.name).toBe(customer("cust-03").name);
     expect(model.totals.roundOff).toBe(0);
   });

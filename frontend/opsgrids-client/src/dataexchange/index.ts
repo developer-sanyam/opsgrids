@@ -18,7 +18,7 @@ export {
   textOf,
   upperCased,
 } from "./rowValues";
-export { CLEAR_TOKEN, RowProblem, defineImportEntity } from "./types";
+export { CLEAR_TOKEN, RowProblem, RowSkipped, defineImportEntity } from "./types";
 export { buildUpdate, indexExisting, isClearToken, matchRow, normaliseKey, planUpdate } from "./update";
 export type {
   BaselineUse,

@@ -73,8 +73,12 @@ export function previewSentence(preview: ImportExportPreview): string {
   if (preview.mode === "addAndUpdate" && (preview.valid > 0 || preview.unchanged > 0)) {
     return updatePreviewSentence(preview);
   }
-  const problems = preview.invalid === 0 ? "" : `, ${needsFixing(preview.invalid)}`;
-  return `${rowsLabel(preview.valid)} ready to import${problems}.`;
+  const exists = preview.exists ?? 0;
+  const rest = [
+    preview.invalid > 0 ? needsFixing(preview.invalid) : null,
+    exists > 0 ? `${formatCount(exists)} already ${exists === 1 ? "exists" : "exist"}` : null,
+  ].filter((part) => part !== null);
+  return `${rowsLabel(preview.valid)} ready to import${rest.length === 0 ? "" : `, ${rest.join(", ")}`}.`;
 }
 
 /** The same breath for update mode, where a row may change a record, add one, or change nothing. */
@@ -175,6 +179,15 @@ export function summarySentence(summary: ImportExportSummary, meta: ImportExport
   if (summary.cancelled) {
     const made = summary.created === 0 ? "Nothing was created." : `${createdPhrase(summary.created, meta)} before it stopped.`;
     return `${made} The remaining rows were not sent.`;
+  }
+  if (notImported > 0 && summary.skipped > 0) {
+    // A row that already existed is not a failure: said apart, so the counts add up to the list.
+    const failed = notImported === 1 ? "1 row failed" : `${formatCount(notImported)} rows failed`;
+    const skipped =
+      summary.skipped === 1
+        ? "1 row already existed and was skipped"
+        : `${formatCount(summary.skipped)} rows already existed and were skipped`;
+    return `${failed}; ${skipped}. ${createdPhrase(summary.created, meta)}.`;
   }
   if (notImported > 0) {
     const rows = notImported === 1 ? "1 row was" : `${formatCount(notImported)} rows were`;

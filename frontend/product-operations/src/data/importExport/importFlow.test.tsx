@@ -366,7 +366,7 @@ describe("importing inventory items through the real dialog", () => {
       expect(stat(finished, "Skipped, already exist")).toBe("1");
       expect(stat(finished, "Failed")).toBe("1");
       expect(stat(finished, "Invalid")).toBe("3");
-      expect(within(finished).getByText("4 rows were not imported. 4 inventory items were created.")).toBeTruthy();
+      expect(within(finished).getByText("4 rows failed; 1 row already existed and was skipped. 4 inventory items were created.")).toBeTruthy();
 
       const problems = within(finished).getByRole("table", { name: "Rows that were not created" });
       expect(within(problems).getAllByRole("row")).toHaveLength(1 + 5);
@@ -768,7 +768,7 @@ describe("importing item categories through the real dialog", () => {
       expect(stat(finished, "Skipped, already exist")).toBe("1");
       expect(stat(finished, "Failed")).toBe("0");
       expect(stat(finished, "Invalid")).toBe("2");
-      expect(within(finished).getByText("2 rows were not imported. 2 item categories were created.")).toBeTruthy();
+      expect(within(finished).getByText("2 rows failed; 1 row already existed and was skipped. 2 item categories were created.")).toBeTruthy();
       const problems = within(finished).getByRole("table", { name: "Rows that were not created" });
       expect(rowContaining(problems, "STEEL").textContent).toContain("A category coded 'STEEL' already exists");
 

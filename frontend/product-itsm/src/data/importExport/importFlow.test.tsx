@@ -355,7 +355,7 @@ describe("importing assets from Excel", () => {
       expect(figure("Skipped, already exist")).toBe("1");
       expect(figure("Failed")).toBe("1");
       expect(figure("Invalid")).toBe("3");
-      expect(screen.getByText("4 rows were not imported. 2 assets were created.")).toBeTruthy();
+      expect(screen.getByText("4 rows failed; 1 row already existed and was skipped. 2 assets were created.")).toBeTruthy();
       const table = within(screen.getByRole("region", { name: "Rows that were not created" }));
       expect(table.getByText("An asset tagged 'MN-0002' already exists")).toBeTruthy();
       expect(table.getByText(REFUSED)).toBeTruthy();

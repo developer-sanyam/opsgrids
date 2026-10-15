@@ -1853,6 +1853,12 @@ async def supplier_print_details(
     exists without a record of who revealed it, for which document, and when.
     """
     registration = await selectors.get_gst_registration(session, ctx.organization_id)
+    # A document issued before supplier snapshots existed (nothing frozen about the supplier)
+    # reprints with exactly what it carried then. The address, PAN and bank block were added to
+    # the settings afterwards, so filling them in from today's settings would change an issued
+    # document; the sealed number is not opened or audited for it either.
+    if invoice.seller_legal_name is None and invoice.seller_address is None:
+        return selectors.to_supplier_print(registration, None, None, with_address=False)
     profile = await selectors.get_supplier_profile(session, ctx.organization_id)
     bank = None
     # A credit note asks the customer to pay nothing, and its printed copy carries no bank block,

@@ -36,8 +36,11 @@ interface LineEditorProps {
   /** Offer the inventory picker: the caller holds the Operations product and item read. */
   canPickItems: boolean;
   canRemove: boolean;
+  /** A credit note's quantities are negative; iOS's decimal pad has no minus key. */
+  negativeQuantity?: boolean;
   onChange: (patch: Partial<LineDraft>) => void;
   onRemove: () => void;
+  /** The problem on one of this line's fields, by the server's field name. */
   errorFor: (field: string) => string | undefined;
 }
 
@@ -46,7 +49,7 @@ interface LineEditorProps {
  * description, HSN/SAC, quantity and unit, rate, discount, and the GST rate. Typing a description
  * without picking is the free-text path and is always available.
  */
-export function LineEditor({ index, line, figures, canPickItems, canRemove, onChange, onRemove, errorFor }: LineEditorProps) {
+export function LineEditor({ index, line, figures, canPickItems, canRemove, negativeQuantity = false, onChange, onRemove, errorFor }: LineEditorProps) {
   const [picked, setPicked] = useState<ComboboxOption | null>(
     line.itemId ? { id: line.itemId, label: line.description, sublabel: line.itemSku ?? undefined } : null,
   );
@@ -62,8 +65,8 @@ export function LineEditor({ index, line, figures, canPickItems, canRemove, onCh
   return (
     <div className="flex flex-col gap-3 rounded-tile border border-line p-4">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-semibold uppercase tracking-wide text-faint">Line {n}</span>
-        <Button type="button" variant="ghost" size="sm" onClick={onRemove} disabled={!canRemove} aria-label={`Remove line ${n}`}>
+        <span className="text-caption font-semibold uppercase tracking-wide text-faint">Line {n}</span>
+        <Button type="button" variant="ghost" size="sm" className="relative hit-44" onClick={onRemove} disabled={!canRemove} aria-label={`Remove line ${n}`}>
           Remove
         </Button>
       </div>
@@ -92,17 +95,17 @@ export function LineEditor({ index, line, figures, canPickItems, canRemove, onCh
           }}
         />
       ) : null}
-      <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-6">
-        <div className="sm:col-span-4">
+      <div className="grid grid-cols-2 items-start gap-3 sm:grid-cols-6">
+        <div className="col-span-2 sm:col-span-4">
           <TextField
             label="Description"
             value={line.description}
             onChange={(e) => onChange({ description: e.target.value })}
             required
-            error={errorFor(`lines.${index}.description`)}
+            error={errorFor("description")}
           />
         </div>
-        <div className="sm:col-span-2">
+        <div className="col-span-2 sm:col-span-2">
           <TextField
             label="HSN/SAC"
             value={line.hsnSac}
@@ -111,15 +114,16 @@ export function LineEditor({ index, line, figures, canPickItems, canRemove, onCh
             onChange={(e) => onChange({ hsnSac: e.target.value.replace(/\D/g, "") })}
             optional
             helper="4, 6 or 8 numerals"
-            error={errorFor(`lines.${index}.hsn_sac`)}
+            error={errorFor("hsn_sac")}
           />
         </div>
         <TextField
           label="Quantity"
-          inputMode="decimal"
+          inputMode={negativeQuantity ? "text" : "decimal"}
           value={line.quantity}
           onChange={(e) => onChange({ quantity: e.target.value })}
           required
+          error={errorFor("quantity")}
         />
         <Select
           label="Unit"
@@ -127,6 +131,7 @@ export function LineEditor({ index, line, figures, canPickItems, canRemove, onCh
           onChange={(e) => onChange({ unit: e.target.value })}
           placeholder="No unit (service)"
           options={UQC_OPTIONS}
+          error={errorFor("unit")}
         />
         <TextField
           label="Rate (₹)"
@@ -134,6 +139,7 @@ export function LineEditor({ index, line, figures, canPickItems, canRemove, onCh
           value={line.unitPrice}
           onChange={(e) => onChange({ unitPrice: e.target.value })}
           required
+          error={errorFor("unit_price_minor")}
         />
         <TextField
           label="Discount (₹)"
@@ -141,19 +147,20 @@ export function LineEditor({ index, line, figures, canPickItems, canRemove, onCh
           value={line.discount}
           onChange={(e) => onChange({ discount: e.target.value })}
           optional
+          error={errorFor("discount_minor")}
         />
-        <div className="sm:col-span-2">
+        <div className="col-span-2">
           <Select
             label="GST rate"
             value={line.ratePct}
             onChange={(e) => onChange({ ratePct: e.target.value })}
             options={GST_RATE_OPTIONS}
-            error={errorFor(`lines.${index}.tax_rate_pct`)}
+            error={errorFor("tax_rate_pct")}
           />
         </div>
       </div>
       {figures ? (
-        <p className="text-xs text-muted tnum" aria-live="polite">
+        <p className="text-caption text-muted tnum">
           Taxable value {formatMoney(figures.taxable)} · GST {formatMoney(figures.tax)}
           {line.itemSku ? ` · ${line.itemSku}` : ""}
         </p>

@@ -8,13 +8,14 @@
  * exists" and reported as skipped, so uploading the same sheet twice adds nothing twice. A row with
  * no GSTIN (an unregistered buyer) has no key the server can hold to: one whose name matches an
  * unregistered customer already on file is refused before anything is sent, with the reason, rather
- * than silently adding a second.
+ * than silently adding a second. Both are `RowSkipped`: previewed as "Already exists" and reported
+ * as skipped, never as a row that needs fixing.
  *
  * Opening balances are not imported: Finance keeps an accounts-receivable book of invoices and
  * payments, not a general ledger, so there is nothing to post one to. An opening balance owed by a
  * customer is entered as what it is, an invoice or a payment.
  */
-import { RowProblem, collectPages, defineImportEntity, makeLookup } from "@opsgrids/client";
+import { RowProblem, RowSkipped, collectPages, defineImportEntity, makeLookup } from "@opsgrids/client";
 import type { ColumnOption, ImportColumn, Lookup, ParsedRow } from "@opsgrids/client";
 
 import { createCustomer, listCustomers } from "@/api/client";
@@ -34,6 +35,7 @@ const STATE_OPTIONS: readonly ColumnOption[] = Object.entries(GST_STATE_NAME)
   .map(([code, name]) => ({ value: code, label: name }));
 
 const UNREGISTERED_NAMES = "finance.customers.unregisteredNames";
+const GSTINS_ON_FILE = "finance.customers.gstins";
 
 const COLUMNS: readonly ImportColumn[] = [
   {
@@ -189,7 +191,10 @@ export const customerImport = defineImportEntity<CustomerCreate, CustomerSummary
     const unregistered = all
       .filter((row) => row.customer.gstin === null)
       .map((row) => ({ label: row.customer.name, value: row.customer.id }));
-    return { [UNREGISTERED_NAMES]: makeLookup(unregistered) };
+    const gstins = all.flatMap((row) =>
+      row.customer.gstin === null ? [] : [{ label: row.customer.gstin, value: row.customer.id }],
+    );
+    return { [UNREGISTERED_NAMES]: makeLookup(unregistered), [GSTINS_ON_FILE]: makeLookup(gstins) };
   },
   validateRow: (row) => {
     const gstin = text(row, "gstin")?.toUpperCase();
@@ -205,7 +210,9 @@ export const customerImport = defineImportEntity<CustomerCreate, CustomerSummary
     const gstin = text(row, "gstin")?.toUpperCase();
     if (gstin === undefined) {
       const problem = unregisteredDuplicate(name, ctx.lookups[UNREGISTERED_NAMES]);
-      if (problem !== null) throw new RowProblem(problem);
+      if (problem !== null) throw new RowSkipped(problem);
+    } else if (ctx.lookups[GSTINS_ON_FILE]?.resolve(gstin) !== undefined) {
+      throw new RowSkipped(`A customer with GSTIN ${gstin} is already on file, so this row is skipped and nothing is overwritten.`);
     }
     const stateCode = text(row, "state") ?? gstin?.slice(0, 2);
     const phone = text(row, "phone");

@@ -26,6 +26,8 @@ vi.mock("@/api/client", async (importOriginal) => {
   };
 });
 
+import * as customersData from "@/data/customers";
+
 import { InvoiceNewPage } from "./InvoiceNew";
 
 function stubPhone(): void {
@@ -50,11 +52,15 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
+function customersFirstId(): string {
+  return customersData.CUSTOMERS[0]?.id ?? "";
+}
+
 describe("InvoiceNewPage", () => {
   it("keeps the total and the review button in a bar that is only for phones", async () => {
     stubPhone();
     renderPage();
-    const total = await screen.findByText("Total", { selector: "span.text-xs" });
+    const total = await screen.findByText("Total", { selector: "span.text-caption" });
     const bar = total.closest("[data-action-bar]");
     expect(bar).not.toBeNull();
     if (!(bar instanceof HTMLElement)) throw new Error("bar missing");
@@ -78,7 +84,7 @@ describe("InvoiceNewPage", () => {
   it("previews discount, GST and round-off the way the server computes them", async () => {
     stubPhone();
     renderPage();
-    await screen.findByText("Total", { selector: "span.text-xs" });
+    await screen.findByText("Total", { selector: "span.text-caption" });
     fireEvent.change(screen.getByLabelText("Description"), { target: { value: "Steel brackets" } });
     fireEvent.change(screen.getByLabelText("Quantity"), { target: { value: "10" } });
     fireEvent.change(screen.getByLabelText("Rate (₹)"), { target: { value: "123.45" } });
@@ -88,5 +94,31 @@ describe("InvoiceNewPage", () => {
     expect(screen.getAllByText("₹1,398.00").length).toBeGreaterThan(0);
     expect(screen.getByText("₹0.29")).toBeTruthy();
     expect(screen.getByText(/One Thousand Three Hundred Ninety-Eight Only/)).toBeTruthy();
+  });
+
+  it("keeps each line's own editor when an earlier line is removed", async () => {
+    stubPhone();
+    renderPage();
+    await screen.findByText("Total", { selector: "span.text-caption" });
+    fireEvent.click(screen.getByRole("button", { name: "Add line" }));
+    const [, second] = screen.getAllByLabelText("Description");
+    fireEvent.click(screen.getByRole("button", { name: "Remove line 1" }));
+    // Index keys would hand line 2's state to line 1's editor and unmount this node.
+    expect(second?.isConnected).toBe(true);
+    expect(screen.getAllByLabelText("Description")).toHaveLength(1);
+  });
+
+  it("puts each line problem on its own field and moves focus to the first", async () => {
+    stubPhone();
+    renderPage();
+    await screen.findByText("Total", { selector: "span.text-caption" });
+    fireEvent.change(screen.getByLabelText(/Customer/), { target: { value: customersFirstId() } });
+    fireEvent.change(screen.getByLabelText("Quantity"), { target: { value: "abc" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "Review invoice" })[0] as HTMLElement);
+    const description = screen.getByLabelText("Description");
+    expect(description.getAttribute("aria-invalid")).toBe("true");
+    expect(screen.getByLabelText("Quantity").getAttribute("aria-invalid")).toBe("true");
+    expect(screen.getByLabelText(/Rate/).getAttribute("aria-invalid")).toBe("true");
+    expect(document.activeElement).toBe(description);
   });
 });

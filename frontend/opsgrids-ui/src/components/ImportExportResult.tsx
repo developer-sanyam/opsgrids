@@ -114,6 +114,12 @@ export function ImportExportResult({ summary, meta, mode, notice }: ResultProps)
   const problems = summary.outcomes.filter(needsLook);
   const { stats, columns } = statsFor(summary, mode);
   const saved = mode === "add" ? "created" : "imported";
+  // Told apart only when both kinds are present, so a skipped row is not counted as a failure.
+  const skippedCount = problems.filter((outcome) => outcome.status === "skipped").length;
+  const breakdown =
+    skippedCount > 0 && skippedCount < problems.length
+      ? `: ${formatCount(problems.length - skippedCount)} failed, ${formatCount(skippedCount)} skipped as already existing`
+      : "";
   return (
     <div className="flex flex-col gap-4">
       {notice !== null ? <InlineAlert tone="danger" title={notice} /> : null}
@@ -124,7 +130,7 @@ export function ImportExportResult({ summary, meta, mode, notice }: ResultProps)
       {problems.length > 0 ? (
         <div className="flex flex-col gap-2">
           <p className="text-body-sm text-muted">
-            {`${formatCount(problems.length)} ${problems.length === 1 ? "row was" : "rows were"} not ${saved}. The result report lists every row.`}
+            {`${formatCount(problems.length)} ${problems.length === 1 ? "row was" : "rows were"} not ${saved}${breakdown}. The result report lists every row.`}
           </p>
           <ImportExportTable
             label={`Rows that were not ${saved}`}

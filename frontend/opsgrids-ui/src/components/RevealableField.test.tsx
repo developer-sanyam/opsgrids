@@ -109,4 +109,17 @@ describe("RevealableField", () => {
     rerender(<RevealableField kind="phone" masked="•••••• 4821" canReveal field={field({ value: "+91 98765 04821" })} />);
     expect(document.activeElement).toBe(screen.getByRole("link", { name: "+91 98765 04821" }));
   });
+
+  it("builds no WhatsApp link from a number without a country code", () => {
+    render(<RevealableField kind="phone" masked="•••••• 4821" canReveal field={field({ value: "98765 04821" })} />);
+    expect(screen.queryByRole("link", { name: /WhatsApp/ })).toBeNull();
+  });
+
+  it("underlines the tel and WhatsApp links and gives Reveal a 44px hit area", () => {
+    const { rerender } = render(<RevealableField kind="phone" masked="•••••• 4821" canReveal field={field()} />);
+    expect(screen.getByRole("button", { name: "Reveal phone number" }).className).toContain("hit-44");
+    rerender(<RevealableField kind="phone" masked="•••••• 4821" canReveal field={field({ value: "+91 98765 04821" })} />);
+    expect(screen.getByRole("link", { name: "+91 98765 04821" }).className).toContain("underline");
+    expect(screen.getByRole("link", { name: /WhatsApp/ }).className).toContain("underline");
+  });
 });
