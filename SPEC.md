@@ -193,7 +193,7 @@ container. Runbook: [`infrastructure/edge/RUNBOOK.md`](infrastructure/edge/RUNBO
 |---|---|---|
 | CRM overhaul (4 sub-projects, 26 releases) | `docs/superpowers/specs/2026-10-07-crm-overhaul-programme-design.md`, ADR-0038 (D-1…D-41 accepted at defaults) | R1.1, R1.2a/b, R2.1–R2.4, R3.3 merged and live; next R2.5 (stage editing, `crm.pipeline.stage.write`) |
 | Order invoicing via CRM identity bridge | ADR-0024/0025, PR #146 | Live in `log_only`; per-org opt-in |
-| GST tax invoices | PR #145 | Groundwork, inert until supplier settings exist; GST portal not connected |
+| GST tax invoices | PR #145 (platform billing groundwork); `feat/gst-tax-invoice` (Finance customer invoice) | Finance invoice is a full Rule 46 tax invoice: supplier address/PAN/bank in Finance settings (`/finance/settings/supplier`), units, discounts, inventory item picker, per-line GST rates incl. the 2025 40 % slab, round-off, frozen party snapshots, `INV-2627-00001` numbers. Issuing waits until supplier settings are complete. GST portal not connected |
 | Inventory & manufacturing | ADR-0014, [`docs/inventory/plan.md`](docs/inventory/plan.md) | Phases 0–9 live |
 | Insights projection | ADR-0020 | Built on `sprint/insights*` branches (+99 MB), not deployable until the owner raises the memory ceiling |
 

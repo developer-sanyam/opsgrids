@@ -51,14 +51,17 @@ export const GST_STATE_OPTIONS: readonly { value: string; label: string }[] = Ob
   GST_STATE_NAME,
 ).map(([code, name]) => ({ value: code, label: `${code} — ${name}` }));
 
-/** The plain state names, for a free-text `state` field's own picker (customer directory). */
-export const INDIAN_STATE_OPTIONS: readonly { value: string; label: string }[] = [
-  ...new Set(Object.values(GST_STATE_NAME)),
-]
-  .filter((name) => !name.endsWith("(old)"))
-  .sort((a, b) => a.localeCompare(b))
-  .map((name) => ({ value: name, label: name }));
-
 export function gstStateName(code: string): string {
   return GST_STATE_NAME[code] ?? code;
+}
+
+/** A state name (as the customer record's free-text `state` holds it) back to its GST code, or
+ *  null when it names no state — an unknown name must stay unknown, never become a guess. */
+export function stateCodeForName(name: string): string | null {
+  const key = name.trim().toLowerCase();
+  if (key === "") return null;
+  for (const [code, stateName] of Object.entries(GST_STATE_NAME)) {
+    if (stateName.toLowerCase() === key && !stateName.endsWith("(old)")) return code;
+  }
+  return null;
 }

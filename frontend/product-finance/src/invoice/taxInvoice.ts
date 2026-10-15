@@ -12,11 +12,13 @@
  */
 
 import type {
+  BankDetails,
   EInvoiceFiling,
   Customer,
   GstRegistration,
   Invoice,
   InvoiceLine,
+  SupplierPrintDetails,
   SupplyType,
 } from "@/api/types";
 import { GST_STATE_NAME } from "@/data/gstStates";
@@ -28,8 +30,10 @@ export type GapKey =
   | "supplier_registration"
   | "supplier_gstin"
   | "supplier_mismatch"
+  | "supplier_address"
   | "place_of_supply"
   | "buyer_gstin"
+  | "buyer_address"
   | "hsn_sac"
   | "irn_missing"
   | "portal_simulated"
@@ -53,7 +57,10 @@ export interface TaxInvoiceLine {
   description: string;
   hsnSac: string | null;
   quantity: number;
+  /** GST unit quantity code; null on lines raised before units were recorded. */
+  unit: string | null;
   ratePerUnit: Minor;
+  discount: Minor;
   taxable: Minor;
   taxRatePct: number;
   cgst: Minor;
@@ -76,8 +83,8 @@ export interface TaxSummaryRow {
 
 export interface TaxInvoiceParty {
   name: string;
-  /** City and state as the customer record holds them; there is no street address on file. */
-  location: string | null;
+  /** The billing address, one printed line each; empty when none is on file. */
+  addressLines: string[];
   gstin: string | null;
   stateName: string | null;
   stateCode: string | null;
@@ -91,6 +98,11 @@ export interface TaxInvoiceSupplier {
   gstin: string | null;
   stateName: string | null;
   stateCode: string | null;
+  /** The principal place of business, one printed line each. */
+  addressLines: string[];
+  pan: string | null;
+  /** Where to pay; null when no account is on file or it could not be loaded. */
+  bank: BankDetails | null;
 }
 
 export interface TaxInvoiceEInvoice {
@@ -113,6 +125,8 @@ export interface TaxInvoiceModel {
   placeOfSupply: { name: string | null; code: string } | null;
   supplier: TaxInvoiceSupplier;
   buyer: TaxInvoiceParty;
+  /** The delivery address, when it differs from the billing address (Rule 46(n)). */
+  shipToLines: string[];
   /** The invoice a credit note corrects. */
   corrects: { number: string; issuedDate: string } | null;
   currency: string;
@@ -120,6 +134,8 @@ export interface TaxInvoiceModel {
   lines: TaxInvoiceLine[];
   /** True when at least one line carries an HSN/SAC; otherwise the column is not printed. */
   showHsn: boolean;
+  /** True when any line carries a discount; otherwise the column is not printed. */
+  showDiscount: boolean;
   summary: TaxSummaryRow[];
   totals: {
     taxable: Minor;
@@ -127,6 +143,7 @@ export interface TaxInvoiceModel {
     sgst: Minor;
     igst: Minor;
     totalTax: Minor;
+    roundOff: Minor;
     total: Minor;
   };
   /** Null unless the invoice is in INR: the words are Indian-rupee words. */
@@ -144,6 +161,11 @@ export interface TaxInvoiceInputs {
   original: Invoice | null;
   /** The invoice's filing history, newest first as the API serves it; null when not loaded. */
   filings: readonly EInvoiceFiling[] | null;
+  /**
+   * The live supplier block (address, PAN, bank account whole); null when it could not be read.
+   * Used only when it is the registration the invoice was issued under.
+   */
+  printDetails?: SupplierPrintDetails | null;
   /**
    * Whether e-invoicing reaches the real GST portal. While it does not, an IRN or QR on file came
    * from a simulator, and printing one on a document sent to a customer would present an
@@ -187,7 +209,9 @@ function toLine(line: InvoiceLine, index: number, invoiceRate: number): TaxInvoi
     description: line.description,
     hsnSac: line.hsn_sac ?? null,
     quantity: Math.abs(line.quantity),
+    unit: line.unit ?? null,
     ratePerUnit: mag(line.unit_price_minor),
+    discount: mag(line.discount_minor),
     taxable,
     taxRatePct: line.tax_rate_pct ?? invoiceRate,
     cgst,
@@ -232,13 +256,36 @@ export function registeredFiling(filings: readonly EInvoiceFiling[] | null): EIn
   return filings?.find((f) => f.status === "filed" && f.qr_payload !== null) ?? null;
 }
 
+/** Rule 46(e): an unregistered recipient's address is mandatory from ₹50,000 of taxable value. */
+const B2C_ADDRESS_THRESHOLD_MINOR = 50_000_00;
+
+function lines(text: string | null | undefined): string[] {
+  return (text ?? "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+}
+
+function addressLinesOf(parts: {
+  address_line1?: string | undefined;
+  address_line2?: string | undefined;
+  city?: string | undefined;
+  pincode?: string | undefined;
+}): string[] {
+  const cityLine = [parts.city, parts.pincode].map((s) => (s ?? "").trim()).filter(Boolean).join(" ");
+  return [parts.address_line1, parts.address_line2, cityLine].map((s) => (s ?? "").trim()).filter(Boolean);
+}
+
 export function buildTaxInvoice(input: TaxInvoiceInputs): {
   model: TaxInvoiceModel;
   gaps: DocumentGap[];
 } {
   const { invoice, customer, registration, original, filings, portalConnected } = input;
+  const printDetails = input.printDetails ?? null;
   const gaps: DocumentGap[] = [];
   const isCreditNote = invoice.document_type === "credit_note";
+  // What the document froze about its supplier at issue wins over anything live.
+  const frozenLegalName = invoice.seller_legal_name?.trim() ? invoice.seller_legal_name.trim() : null;
 
   // --- Supplier. The GSTIN the invoice was raised under is the legal fact; the registration only
   // supplies the names, and only when it is the same registration.
@@ -247,7 +294,9 @@ export function buildTaxInvoice(input: TaxInvoiceInputs): {
     registration !== null && (invoice.seller_gstin == null || invoice.seller_gstin === registration.gstin);
   const sellerStateCode = sellerGstin ? sellerGstin.slice(0, 2) : (registration?.state_code ?? null);
 
-  if (registration === null) {
+  if (frozenLegalName !== null) {
+    // The legal name was frozen onto the document at issue; nothing live can contradict it.
+  } else if (registration === null) {
     gaps.push({
       key: "supplier_registration",
       severity: "blocking",
@@ -281,8 +330,28 @@ export function buildTaxInvoice(input: TaxInvoiceInputs): {
   }
 
   const usable = registrationMatches ? registration : null;
-  const legalName = usable && usable.legal_name.trim() !== "" ? usable.legal_name.trim() : null;
+  const legalName = frozenLegalName ?? (usable && usable.legal_name.trim() !== "" ? usable.legal_name.trim() : null);
   const tradeName = usable && usable.trade_name.trim() !== "" ? usable.trade_name.trim() : null;
+  // The live supplier block is used only when it is the registration the invoice names.
+  const livePrint = printDetails !== null && printDetails.gstin !== null && printDetails.gstin === sellerGstin ? printDetails : null;
+  const supplierAddress = invoice.seller_address
+    ? lines(invoice.seller_address)
+    : livePrint
+      ? addressLinesOf(livePrint)
+      : usable
+        ? addressLinesOf(usable)
+        : [];
+  // With no registration at all, the registration gap above already sends the person to the
+  // one form that holds the address too; a second alert would only repeat it.
+  if (supplierAddress.length === 0 && sellerGstin !== null && (registration !== null || frozenLegalName !== null)) {
+    gaps.push({
+      key: "supplier_address",
+      severity: "blocking",
+      message:
+        "Your registered address is not on file, and a tax invoice must state it. Add it to your GST registration in Settings, then come back.",
+      fix: SETTINGS_FIX,
+    });
+  }
 
   // --- Place of supply and tax heads.
   const pos = invoice.place_of_supply ?? null;
@@ -306,22 +375,42 @@ export function buildTaxInvoice(input: TaxInvoiceInputs): {
       fix: { label: "Open customers", to: "/customers" },
     });
   }
-  const buyerStateCode = buyerGstin ? buyerGstin.slice(0, 2) : null;
-  const location = [customer.city, customer.state].map((s) => s.trim()).filter(Boolean).join(", ");
+  const buyerStateCode =
+    invoice.buyer_state_code ?? (buyerGstin ? buyerGstin.slice(0, 2) : (customer.state_code ?? null));
+  const buyerAddress = invoice.buyer_address
+    ? lines(invoice.buyer_address)
+    : addressLinesOf({
+        address_line1: customer.address_line1,
+        address_line2: customer.address_line2,
+        city: customer.city,
+        pincode: customer.pincode,
+      });
+  if (
+    buyerGstin === null &&
+    buyerAddress.length === 0 &&
+    mag(invoice.subtotal_minor) >= B2C_ADDRESS_THRESHOLD_MINOR
+  ) {
+    gaps.push({
+      key: "buyer_address",
+      severity: "advisory",
+      message: `${customer.name} is unregistered and billed ₹50,000 or more, so their address and state must be on the invoice. Add a billing address to the customer; documents issued after that will carry it.`,
+      fix: { label: "Open customers", to: "/customers" },
+    });
+  }
 
   // --- Lines.
   const invoiceRate = invoice.tax_rate_pct;
-  const lines = invoice.lines.map((l, i) => toLine(l, i, invoiceRate));
-  const showHsn = lines.some((l) => l.hsnSac !== null);
-  const missingHsn = lines.filter((l) => l.hsnSac === null).length;
+  const docLines = invoice.lines.map((l, i) => toLine(l, i, invoiceRate));
+  const showHsn = docLines.some((l) => l.hsnSac !== null);
+  const missingHsn = docLines.filter((l) => l.hsnSac === null).length;
   if (missingHsn > 0) {
     gaps.push({
       key: "hsn_sac",
       severity: "advisory",
       message:
-        missingHsn === lines.length
+        missingHsn === docLines.length
           ? "No line on this invoice has an HSN or SAC code, so the column is left off."
-          : `${missingHsn} of ${lines.length} lines have no HSN or SAC code and are left blank.`,
+          : `${missingHsn} of ${docLines.length} lines have no HSN or SAC code and are left blank.`,
     });
   }
 
@@ -405,10 +494,14 @@ export function buildTaxInvoice(input: TaxInvoiceInputs): {
       gstin: sellerGstin,
       stateName: stateOf(sellerStateCode),
       stateCode: sellerStateCode,
+      addressLines: supplierAddress,
+      pan: livePrint?.pan ?? null,
+      bank: livePrint?.bank ?? null,
     },
+    shipToLines: lines(invoice.ship_to_address),
     buyer: {
-      name: customer.name,
-      location: location === "" ? null : location,
+      name: invoice.buyer_name ?? customer.name,
+      addressLines: buyerAddress,
       gstin: buyerGstin,
       stateName: stateOf(buyerStateCode),
       stateCode: buyerStateCode,
@@ -417,15 +510,17 @@ export function buildTaxInvoice(input: TaxInvoiceInputs): {
     corrects: original === null ? null : { number: original.number, issuedDate: original.issued_date },
     currency: invoice.currency,
     taxMode: taxModeFor(invoice, sellerStateCode),
-    lines,
+    lines: docLines,
     showHsn,
-    summary: summariseTax(lines),
+    showDiscount: docLines.some((l) => l.discount > 0),
+    summary: summariseTax(docLines),
     totals: {
       taxable: totalsTaxable,
       cgst,
       sgst,
       igst,
       totalTax: mag(invoice.tax_minor),
+      roundOff: isCreditNote ? -(invoice.round_off_minor ?? 0) : (invoice.round_off_minor ?? 0),
       total: mag(invoice.total_minor),
     },
     amountInWordsMinor: invoice.currency === "INR" ? mag(invoice.total_minor) : null,

@@ -20,6 +20,12 @@ export interface Customer {
   gstin: string | null;
   city: string;
   state: string;
+  /** The billing address a tax invoice prints. Empty when not recorded. */
+  address_line1?: string;
+  address_line2?: string;
+  pincode?: string;
+  /** GST state code of the billing address; null when not recorded. */
+  state_code?: string | null;
   /**
    * Withholding facts about this buyer, decided by the customer record and applied to **future**
    * invoices only — a document already finalized keeps what it assessed at the time.
@@ -38,6 +44,10 @@ export interface CustomerCreate {
   gstin?: string | null;
   city?: string;
   state?: string;
+  address_line1?: string;
+  address_line2?: string;
+  pincode?: string;
+  state_code?: string | null;
   is_tds_deductor?: boolean;
   deducts_tds_194q?: boolean;
   tcs_applicable?: boolean;
@@ -51,6 +61,10 @@ export interface CustomerUpdate {
   gstin?: string | null;
   city?: string;
   state?: string;
+  address_line1?: string;
+  address_line2?: string;
+  pincode?: string;
+  state_code?: string | null;
   is_tds_deductor?: boolean;
   deducts_tds_194q?: boolean;
   tcs_applicable?: boolean;
@@ -66,8 +80,8 @@ export type InvoiceStatus = "draft" | "sent" | "paid" | "overdue" | "void";
 export type DocumentType = "invoice" | "credit_note";
 
 /**
- * One line on an invoice. `amount_minor` foots to `quantity × unit_price_minor`, and is the
- * **taxable value** the line's GST is computed on.
+ * One line on an invoice. `amount_minor` foots to `quantity × unit_price_minor` less
+ * `discount_minor`, and is the **taxable value** the line's GST is computed on.
  *
  * The GST fields are optional here because documents raised before the compliance slice carry
  * none — a null HSN is "not recorded", which is a real state and one the filing screen surfaces
@@ -78,7 +92,11 @@ export interface InvoiceLine {
   id: string;
   description: string;
   quantity: number;
+  /** GST unit quantity code (NOS, KGS, …); null on lines raised before units were recorded. */
+  unit?: string | null;
   unit_price_minor: Minor;
+  /** Discount taken off the line before tax, a non-negative magnitude. */
+  discount_minor?: Minor;
   amount_minor: Minor;
   /** HSN (goods) or SAC (services) code — 4, 6 or 8 digits. */
   hsn_sac?: string | null;
@@ -86,6 +104,9 @@ export interface InvoiceLine {
   cgst_minor?: Minor;
   sgst_minor?: Minor;
   igst_minor?: Minor;
+  /** The inventory item the line was picked from, and its SKU then. */
+  item_id?: string | null;
+  item_sku?: string | null;
 }
 
 /** How a supply is classified for GST. B2C is the one that needs no IRN. */
@@ -162,6 +183,11 @@ export interface GstRegistration {
   trade_name: string;
   registration_type: string;
   is_primary: boolean;
+  /** The principal place of business printed as the supplier's address. */
+  address_line1?: string;
+  address_line2?: string;
+  city?: string;
+  pincode?: string;
 }
 
 /** `regular | composition | casual`. */
@@ -174,12 +200,64 @@ export interface GstRegistrationUpsert {
   trade_name?: string;
   registration_type?: GstRegistrationType;
   is_primary?: boolean;
+  /** Absent means unchanged on an existing registration. */
+  address_line1?: string;
+  address_line2?: string;
+  city?: string;
+  pincode?: string;
+}
+
+/** The account a customer pays into. The number is masked everywhere but the printable copy. */
+export interface BankDetails {
+  account_name: string;
+  account_number: string;
+  ifsc: string;
+  bank_name: string;
+  branch: string;
+  upi_id: string;
+}
+
+/** A `domain.SUPPLIER_REQUIRED_FIELDS` key: a supplier fact a tax invoice cannot omit. */
+export type SupplierField = "gst_registration" | "legal_name" | "address_line1" | "city" | "pincode";
+
+/** `GET /finance/settings/supplier`. */
+export interface SupplierSettings {
+  registration: GstRegistration | null;
+  profile: { pan: string | null; bank: BankDetails };
+  /** True when nothing in `missing` remains: a Rule 46 invoice can be issued. */
+  ready: boolean;
+  missing: SupplierField[];
+}
+
+/** `PUT /finance/settings/supplier-profile`. Absent means unchanged; `""` clears. */
+export interface SupplierProfileUpsert {
+  pan?: string;
+  bank_account_name?: string;
+  bank_account_number?: string;
+  bank_ifsc?: string;
+  bank_name?: string;
+  bank_branch?: string;
+  upi_id?: string;
+}
+
+/** `GET /finance/invoices/{id}/print-details`: the supplier block, bank account whole. */
+export interface SupplierPrintDetails {
+  gstin: string | null;
+  legal_name: string | null;
+  trade_name: string | null;
+  state_code: string | null;
+  address_line1: string;
+  address_line2: string;
+  city: string;
+  pincode: string;
+  pan: string | null;
+  bank: BankDetails | null;
 }
 
 /**
  * An invoice or credit note. Totals foot exactly:
- * `subtotal_minor = Σ line.amount_minor`, `total_minor = subtotal_minor + tax_minor`. A credit
- * note carries negative amounts and a `corrects_invoice_id`.
+ * `subtotal_minor = Σ line.amount_minor`, `total_minor = subtotal_minor + tax_minor +
+ * round_off_minor`. A credit note carries negative amounts and a `corrects_invoice_id`.
  */
 export interface Invoice {
   id: string;
@@ -213,6 +291,15 @@ export interface Invoice {
   cgst_minor?: Minor;
   sgst_minor?: Minor;
   igst_minor?: Minor;
+  /** The rounding to whole rupees inside `total_minor`; zero unless asked for at issue. */
+  round_off_minor?: Minor;
+  /** What the document printed about each party when issued; null on older documents. */
+  seller_legal_name?: string | null;
+  seller_address?: string | null;
+  buyer_name?: string | null;
+  buyer_address?: string | null;
+  buyer_state_code?: string | null;
+  ship_to_address?: string | null;
   /** Where this document stands with the portal. Never null from the live API. */
   einvoice?: EInvoiceState;
 }
@@ -227,6 +314,12 @@ export interface InvoiceLineCreate {
   hsn_sac?: string | null;
   /** Overrides the document's rate for this line. */
   tax_rate_pct?: number | null;
+  /** GST unit quantity code. */
+  unit?: string | null;
+  /** Discount in minor units, a non-negative magnitude no larger than the line. */
+  discount_minor?: Minor;
+  item_id?: string | null;
+  item_sku?: string | null;
 }
 
 /**
@@ -247,6 +340,10 @@ export interface InvoiceIssueIn {
   supply_type?: SupplyType | null;
   place_of_supply?: string | null;
   reverse_charge?: boolean;
+  /** Round the grand total to whole rupees. */
+  round_off?: boolean;
+  /** Delivery address, when it differs from the billing address. */
+  ship_to_address?: string | null;
 }
 
 /* --------------------------------------------------------------------- IMS reconciliation

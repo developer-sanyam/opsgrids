@@ -46,6 +46,12 @@ ENDPOINTS = [
     # three different people.
     (f"/api/v1/finance/invoices/{uuid.uuid4()}/filings", "finance.compliance.einvoice.read"),
     ("/api/v1/finance/gst/registration", "finance.compliance.registration.read"),
+    # Supplier settings: the registration plus PAN and bank details (account masked). Same read
+    # grant as the registration, because it is the same question: who this seller is.
+    ("/api/v1/finance/settings/supplier", "finance.compliance.registration.read"),
+    # The printable copy's supplier block opens the sealed bank account, so it sits behind the
+    # invoice read: anybody who may read an invoice may print it, nobody else.
+    (f"/api/v1/finance/invoices/{uuid.uuid4()}/print-details", "finance.billing.invoice.read"),
     ("/api/v1/finance/ims/documents", "finance.compliance.ims.read"),
     (f"/api/v1/finance/ims/documents/{uuid.uuid4()}", "finance.compliance.ims.read"),
     # Returns, e-Way and withholding are three more compliance questions with three more answers:
@@ -178,6 +184,55 @@ class TestTheComplianceWrite:
         )
         with as_principal(principal):
             res = await client.put("/api/v1/finance/gst/registration", json=REGISTRATION)
+        assert res.status_code == 402
+
+
+class TestTheSupplierProfileWrite:
+    """PAN and bank details sit behind the registration write: both decide what every future
+    invoice tells a customer about who to pay. Reading them (masked) does not imply setting them."""
+
+    PATH = "/api/v1/finance/settings/supplier-profile"
+    BODY: ClassVar[dict[str, str]] = {"bank_account_number": "123456789012"}
+
+    async def test_a_reader_cannot_set_it(self, client, org_id) -> None:
+        principal = principal_for(org_id, perms=[f"{p}:ORG" for p in FINANCE_READS])
+        with as_principal(principal):
+            res = await client.put(self.PATH, json=self.BODY)
+        assert res.status_code == 403
+
+    async def test_the_invoice_issuer_cannot_set_it(self, client, org_id) -> None:
+        """Issuing invoices is not configuring where they say to pay."""
+        principal = principal_for(org_id, perms=["finance.billing.invoice.issue:ORG"])
+        with as_principal(principal):
+            res = await client.put(self.PATH, json=self.BODY)
+        assert res.status_code == 403
+
+    async def test_an_own_grant_is_below_the_org_floor(self, client, org_id) -> None:
+        principal = principal_for(org_id, perms=["finance.compliance.registration.write:OWN"])
+        with as_principal(principal):
+            res = await client.put(self.PATH, json=self.BODY)
+        assert res.status_code == 403
+
+    async def test_the_write_grant_sets_it(self, client, org_id) -> None:
+        principal = principal_for(
+            org_id,
+            perms=[
+                "finance.compliance.registration.write:ORG",
+                "finance.compliance.registration.read:ORG",
+            ],
+        )
+        with as_principal(principal):
+            res = await client.put(self.PATH, json=self.BODY)
+        assert res.status_code == 200
+        assert res.json()["profile"]["bank"]["account_number"].endswith("9012")
+        assert "123456789012" not in res.text
+
+    async def test_an_unentitled_organization_is_402(self, client, org_id) -> None:
+        principal = principal_for(
+            org_id, perms=["finance.compliance.registration.write:ORG"], entitlements=[]
+        )
+        with as_principal(principal):
+            res = await client.put(self.PATH, json=self.BODY)
         assert res.status_code == 402
 
 

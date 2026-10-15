@@ -83,7 +83,9 @@ const taxLine = (over: Partial<TaxInvoiceLine>): TaxInvoiceLine => ({
   description: "x",
   hsnSac: "7208",
   quantity: 1,
+  unit: null,
   ratePerUnit: 0,
+  discount: 0,
   taxable: 0,
   taxRatePct: 18,
   cgst: 0,
@@ -314,6 +316,80 @@ describe("buildTaxInvoice: e-invoice", () => {
       inputs({ invoice: invoice({ einvoice: { required: true, status: null, attempts: 0 } }) }),
     );
     expect(gaps.map((g) => g.key)).toContain("irn_missing");
+  });
+});
+
+describe("buildTaxInvoice — Rule 46 supplier, buyer and line facts", () => {
+  it("prints what the document froze at issue over the live records", () => {
+    const { model, gaps } = buildTaxInvoice(
+      inputs({
+        registration: null,
+        invoice: invoice({
+          seller_legal_name: "Frozen Industries Pvt Ltd",
+          seller_address: "Plot 1\nPune 411001",
+          buyer_name: "Frozen Buyer",
+          buyer_address: "12 FC Road\nPune 411004",
+          buyer_state_code: "27",
+          ship_to_address: "Godown 3\nChakan",
+        }),
+      }),
+    );
+    expect(model.supplier.displayName).toBe("Frozen Industries Pvt Ltd");
+    expect(model.supplier.addressLines).toEqual(["Plot 1", "Pune 411001"]);
+    expect(model.buyer.name).toBe("Frozen Buyer");
+    expect(model.buyer.addressLines).toEqual(["12 FC Road", "Pune 411004"]);
+    expect(model.shipToLines).toEqual(["Godown 3", "Chakan"]);
+    expect(gaps.map((g) => g.key)).not.toContain("supplier_registration");
+  });
+
+  it("blocks printing when the registration has no address", () => {
+    const { gaps } = buildTaxInvoice(
+      inputs({ registration: { ...GST_REGISTRATION, address_line1: "", address_line2: "", city: "", pincode: "" } }),
+    );
+    expect(gaps.find((g) => g.key === "supplier_address")?.severity).toBe("blocking");
+    expect(isPrintable(gaps)).toBe(false);
+  });
+
+  it("uses live bank details only for the registration the invoice names", () => {
+    const details = {
+      gstin: GST_REGISTRATION.gstin,
+      legal_name: GST_REGISTRATION.legal_name,
+      trade_name: null,
+      state_code: GST_REGISTRATION.state_code,
+      address_line1: "Plot 14",
+      address_line2: "",
+      city: "Pune",
+      pincode: "411026",
+      pan: "AABCA9012D",
+      bank: { account_name: "A", account_number: "50100123456789", ifsc: "HDFC0001234", bank_name: "HDFC", branch: "", upi_id: "" },
+    };
+    const same = buildTaxInvoice(inputs({ printDetails: details }));
+    expect(same.model.supplier.bank?.account_number).toBe("50100123456789");
+    expect(same.model.supplier.pan).toBe("AABCA9012D");
+    const other = buildTaxInvoice(inputs({ printDetails: { ...details, gstin: "29AABCA9012D1ZX" } }));
+    expect(other.model.supplier.bank).toBeNull();
+  });
+
+  it("asks for an unregistered buyer's address from ₹50,000", () => {
+    const b2c = invoice({ buyer_gstin: null, supply_type: "b2c", subtotal_minor: 50_000_00 });
+    const noAddress = { ...customer("cust-03"), gstin: null, address_line1: "", address_line2: "", pincode: "", city: "" };
+    const { gaps } = buildTaxInvoice(inputs({ invoice: b2c, customer: noAddress }));
+    expect(gaps.find((g) => g.key === "buyer_address")?.severity).toBe("advisory");
+  });
+
+  it("carries units, discounts and the round-off", () => {
+    const { model } = buildTaxInvoice(
+      inputs({
+        invoice: invoice({
+          lines: [line({ unit: "NOS", discount_minor: 5_000 })],
+          round_off_minor: 29,
+        }),
+      }),
+    );
+    expect(model.lines[0]?.unit).toBe("NOS");
+    expect(model.lines[0]?.discount).toBe(5_000);
+    expect(model.showDiscount).toBe(true);
+    expect(model.totals.roundOff).toBe(29);
   });
 });
 

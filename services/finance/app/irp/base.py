@@ -160,6 +160,9 @@ class IrpInvoicePayload:
     generated_at: datetime
 
     lines: list[IrpLine] = field(default_factory=list)
+    #: The adjustment to whole rupees included in `total_minor` (the schema's `RndOffAmt`). Zero
+    #: unless the document was rounded at issue.
+    round_off_minor: int = 0
 
 
 @dataclass(frozen=True, slots=True)

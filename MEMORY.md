@@ -67,6 +67,19 @@ Recorded outside an ADR:
   item name on fulfilment tasks and packages are resolved server-side inside `operations`, and only
   for a caller with the matching org-wide read or a live offer on that task. No permission or role
   was widened, so there is no reconcile step.
+- **Finance tax invoice (2026-10-15, `feat/gst-tax-invoice`).** The Finance customer invoice is a
+  CGST Rule 46 tax invoice. Supplier address lives on `gst_registrations` (per state registration);
+  PAN and bank details on `supplier_profiles`, the account number sealed with `platform_core.pii`
+  and opened only by `GET /finance/invoices/{id}/print-details`, which audits
+  `supplier_profile.bank_disclosed` every time. Invoices freeze seller/buyer name and address,
+  buyer state and delivery address at issue. Lines carry UQC unit, discount (taxable = gross -
+  discount) and an inventory item reference (plain UUID + SKU, picked through the Operations API
+  in the browser, never joined). Round-off is opt-in per invoice and is inside `total_minor`
+  (`total = subtotal + tax + round_off_minor`; IRP payload carries it). New document numbers are
+  `INV-2627-00001` (Rule 46(b) caps a number at 16 characters; the old `INV-2026-27-00001` is 17);
+  the same counter row continues. GST bands add 1.5 % and 40 % (40 % only from 2025-09-22); 12/28 %
+  stay lawful. The issue screen refuses to start until `GET /finance/settings/supplier` is `ready`.
+  No new permission codes.
 - **Marketing site.** The owner chose a "Liquid Glass" look with real product screenshots. It lives in
   the separate marketing repository, not here; this entry records the decision, not the code.
 

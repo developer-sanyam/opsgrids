@@ -33,6 +33,7 @@ import {
 import { complianceSummary, isOutstanding, latestPeriod } from "@/data/compliance";
 import type { ComplianceSummary } from "@/data/compliance";
 import { today as realToday } from "@/lib/format";
+import { roundOffMinor } from "@/invoice/gstMath";
 import { ApiError, apiRequest, buildQuery, paginateFixture as paginate, settle } from "@opsgrids/client";
 import {
   EWAY_BILLS,
@@ -46,6 +47,8 @@ import {
   PURCHASES,
   RETURNS,
   SELLER_GSTIN,
+  SUPPLIER_PROFILE,
+  fixtureSupplierSettings,
   TODAY,
   WITHHOLDINGS,
   WITHHOLDING_RATES,
@@ -88,6 +91,9 @@ import type {
   ReturnDiff,
   ReturnStatus,
   ReturnType,
+  SupplierPrintDetails,
+  SupplierProfileUpsert,
+  SupplierSettings,
   WithholdingCode,
   WithholdingRate,
   WithholdingSummary,
@@ -211,13 +217,19 @@ export async function issueInvoice(input: InvoiceIssueIn): Promise<Invoice> {
     const buyer = FIXTURE_CUSTOMERS.get(input.customer_id) ?? null;
     const placeOfSupply = input.place_of_supply ?? buyer?.gstin?.slice(0, 2) ?? SELLER_GSTIN.slice(0, 2);
     const lines = input.lines.map((line, i) => {
-      const amount = Math.round(line.unit_price_minor * line.quantity);
+      const gross = Math.round(line.unit_price_minor * line.quantity);
+      const discount = line.discount_minor ?? 0;
+      const amount = gross >= 0 ? gross - discount : gross + discount;
       const split = estimateSplit(amount, line.tax_rate_pct ?? input.tax_rate_pct, placeOfSupply);
       return {
         id: `fixture-line-${fixtureInvoiceSeq}-${i}`,
         description: line.description,
         quantity: line.quantity,
+        unit: line.unit ?? null,
         unit_price_minor: line.unit_price_minor,
+        discount_minor: discount,
+        item_id: line.item_id ?? null,
+        item_sku: line.item_sku ?? null,
         amount_minor: amount,
         hsn_sac: line.hsn_sac ?? null,
         tax_rate_pct: line.tax_rate_pct ?? input.tax_rate_pct,
@@ -231,6 +243,7 @@ export async function issueInvoice(input: InvoiceIssueIn): Promise<Invoice> {
     const sgst = lines.reduce((sum, l) => sum + l.sgst_minor, 0);
     const igst = lines.reduce((sum, l) => sum + l.igst_minor, 0);
     const tax = cgst + sgst + igst;
+    const roundOff = input.round_off ? roundOffMinor(subtotal + tax) : 0;
     const prefix = input.document_type === "credit_note" ? "CN" : "INV";
     const number = `${prefix}-FIX-${String(fixtureInvoiceSeq++).padStart(4, "0")}`;
     const invoice: Invoice = {
@@ -246,7 +259,9 @@ export async function issueInvoice(input: InvoiceIssueIn): Promise<Invoice> {
       subtotal_minor: subtotal,
       tax_rate_pct: input.tax_rate_pct,
       tax_minor: tax,
-      total_minor: subtotal + tax,
+      total_minor: subtotal + tax + roundOff,
+      round_off_minor: roundOff,
+      ship_to_address: input.ship_to_address ?? null,
       amount_paid_minor: 0,
       notes: input.notes ?? null,
       corrects_invoice_id: input.corrects_invoice_id ?? null,
@@ -423,6 +438,60 @@ export async function getCompliancePosition(): Promise<CompliancePosition> {
   return { summary, imsOutstanding };
 }
 
+/* ------------------------------------------------------------------- supplier settings */
+
+/**
+ * `GET /finance/settings/supplier` — the registration, PAN and bank details (account masked), and
+ * whether a tax invoice can be issued yet. Never 404: nothing configured is `ready: false`.
+ */
+export async function getSupplierSettings(): Promise<SupplierSettings> {
+  if (USE_FIXTURES) return settle(fixtureSupplierSettings());
+  return apiRequest<SupplierSettings>("/finance/settings/supplier");
+}
+
+/** `PUT /finance/settings/supplier-profile`. Absent fields are unchanged; `""` clears one. */
+export async function setSupplierProfile(input: SupplierProfileUpsert): Promise<SupplierSettings> {
+  if (USE_FIXTURES) {
+    const p = SUPPLIER_PROFILE;
+    if (input.pan !== undefined) p.pan = input.pan === "" ? null : input.pan.toUpperCase();
+    if (input.bank_account_name !== undefined) p.bank.account_name = input.bank_account_name;
+    if (input.bank_account_number !== undefined) {
+      const digits = input.bank_account_number.replace(/\D/g, "");
+      p.bank.account_number = digits === "" ? "" : `${"•".repeat(Math.max(digits.length - 4, 0))}${digits.slice(-4)}`;
+    }
+    if (input.bank_ifsc !== undefined) p.bank.ifsc = input.bank_ifsc.toUpperCase();
+    if (input.bank_name !== undefined) p.bank.bank_name = input.bank_name;
+    if (input.bank_branch !== undefined) p.bank.branch = input.bank_branch;
+    if (input.upi_id !== undefined) p.bank.upi_id = input.upi_id;
+    return settle(fixtureSupplierSettings(), 320);
+  }
+  return apiRequest<SupplierSettings>("/finance/settings/supplier-profile", { method: "PUT", body: input });
+}
+
+/**
+ * `GET /finance/invoices/{id}/print-details` — the printable copy's supplier block with the bank
+ * account number whole. The server audits every call that returns an account number, so this is
+ * only called by the print page.
+ */
+export async function getPrintDetails(invoiceId: string): Promise<SupplierPrintDetails> {
+  if (USE_FIXTURES) {
+    const r = GST_REGISTRATION;
+    return settle({
+      gstin: r.gstin,
+      legal_name: r.legal_name,
+      trade_name: r.trade_name,
+      state_code: r.state_code,
+      address_line1: r.address_line1 ?? "",
+      address_line2: r.address_line2 ?? "",
+      city: r.city ?? "",
+      pincode: r.pincode ?? "",
+      pan: SUPPLIER_PROFILE.pan,
+      bank: SUPPLIER_PROFILE.bank.account_number === "" ? null : { ...SUPPLIER_PROFILE.bank, account_number: "50100123456789" },
+    });
+  }
+  return apiRequest<SupplierPrintDetails>(`/finance/invoices/${encodeURIComponent(invoiceId)}/print-details`);
+}
+
 /* ------------------------------------------------------------------- GST registration */
 
 /** `GET /finance/gst/registration`. 404 means none configured — callers treat that as an
@@ -442,6 +511,10 @@ export async function setGstRegistration(input: GstRegistrationUpsert): Promise<
       trade_name: input.trade_name ?? "",
       registration_type: input.registration_type ?? "regular",
       is_primary: input.is_primary ?? true,
+      address_line1: input.address_line1 ?? GST_REGISTRATION.address_line1 ?? "",
+      address_line2: input.address_line2 ?? GST_REGISTRATION.address_line2 ?? "",
+      city: input.city ?? GST_REGISTRATION.city ?? "",
+      pincode: input.pincode ?? GST_REGISTRATION.pincode ?? "",
     };
     Object.assign(GST_REGISTRATION, updated);
     return settle(GST_REGISTRATION, 320);

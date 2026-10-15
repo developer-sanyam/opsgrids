@@ -31,6 +31,8 @@ import type {
   PurchaseDocument,
   ReturnDiff,
   ReturnTotals,
+  SupplierField,
+  SupplierSettings,
   SupplyType,
   TaxHeadAmounts,
   WithholdingRate,
@@ -882,7 +884,35 @@ export const GST_REGISTRATION: GstRegistration = {
   trade_name: "OpsGrids Demo",
   registration_type: "regular",
   is_primary: true,
+  address_line1: "Plot 14, MIDC Bhosari",
+  address_line2: "",
+  city: "Pune",
+  pincode: "411026",
 };
+
+/** PAN and bank details as the settings read returns them: account number masked. */
+export const SUPPLIER_PROFILE: SupplierSettings["profile"] = {
+  pan: "AABCA9012D",
+  bank: {
+    account_name: "OpsGrids Demo Trading Pvt Ltd",
+    account_number: "••••••••••6789",
+    ifsc: "HDFC0001234",
+    bank_name: "HDFC Bank",
+    branch: "Bhosari",
+    upi_id: "opsgrids@hdfcbank",
+  },
+};
+
+/** The supplier settings read, computed from the fixture registration the way the server does. */
+export function fixtureSupplierSettings(): SupplierSettings {
+  const r = GST_REGISTRATION;
+  const missing: SupplierField[] = [];
+  if (r.legal_name.trim() === "") missing.push("legal_name");
+  if ((r.address_line1 ?? "").trim() === "") missing.push("address_line1");
+  if ((r.city ?? "").trim() === "") missing.push("city");
+  if (!/^[1-9]\d{5}$/.test(r.pincode ?? "")) missing.push("pincode");
+  return { registration: r, profile: SUPPLIER_PROFILE, ready: missing.length === 0, missing };
+}
 
 /* --------------------------------- GST returns ------------------------------ */
 
