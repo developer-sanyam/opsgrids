@@ -70,6 +70,34 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "LeadConvertIn": {
+        "additionalProperties": false,
+        "description": "Optional say over the deal a conversion opens. The whole body is optional, and so is each\nfield: `POST /leads/{id}:convert` with no body opens a zero-value deal in the pipeline's\nentry stage, exactly as before. `deal_value_minor` is integer minor units (INR) -- never a\nfloat; `deal_stage` is a stage key of the organization's pipeline (deal-service checks it\nand refuses an unknown or archived one).",
+        "properties": {
+          "deal_stage": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deal Stage"
+          },
+          "deal_value_minor": {
+            "default": 0,
+            "maximum": 10000000000000.0,
+            "minimum": 0.0,
+            "title": "Deal Value Minor",
+            "type": "integer"
+          }
+        },
+        "title": "LeadConvertIn",
+        "type": "object"
+      },
       "LeadConvertOut": {
         "description": "The result of `:convert` \u2014 the ids the lead became. Returned identically whether this\ncall performed the conversion or a lead already converted is being replayed.",
         "properties": {
@@ -270,6 +298,20 @@
             "title": "Id",
             "type": "string"
           },
+          "next_statuses": {
+            "items": {
+              "enum": [
+                "new",
+                "working",
+                "qualified",
+                "disqualified",
+                "converted"
+              ],
+              "type": "string"
+            },
+            "title": "Next Statuses",
+            "type": "array"
+          },
           "notes": {
             "title": "Notes",
             "type": "string"
@@ -325,6 +367,7 @@
           "phone",
           "source",
           "status",
+          "next_statuses",
           "owner_id",
           "notes",
           "converted_company_id",
@@ -881,6 +924,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/LeadConvertIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "content": {

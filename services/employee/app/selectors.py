@@ -119,7 +119,9 @@ async def highest_generated_number(session: AsyncSession, org_id: uuid.UUID) -> 
     still holds must not be handed out again."""
     stmt = select(
         func.coalesce(
-            func.max(cast(func.substr(Employee.employee_no, len(GENERATED_NO_PREFIX) + 1), BigInteger)),
+            func.max(
+                cast(func.substr(Employee.employee_no, len(GENERATED_NO_PREFIX) + 1), BigInteger)
+            ),
             0,
         )
     ).where(

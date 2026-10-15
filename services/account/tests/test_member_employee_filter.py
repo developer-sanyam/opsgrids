@@ -30,7 +30,11 @@ async def _emails(session: AsyncSession, ctx: object, **kwargs: object) -> set[s
 
 
 async def _link(
-    session: AsyncSession, org: Organization, actor: Membership, target: Membership, employee: uuid.UUID
+    session: AsyncSession,
+    org: Organization,
+    actor: Membership,
+    target: Membership,
+    employee: uuid.UUID,
 ) -> None:
     ctx = ctx_for(org.id, actor, MEMBER_WRITE, Scope.ORG)
     async with session.begin():

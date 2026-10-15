@@ -1,9 +1,9 @@
 """Lead conversion -> deal: the rep's value and stage, and a clash on the plain name.
 
 `POST /internal/v1/organizations/{org}/leads:convert` now takes an optional `value_minor` and
-`stage`, and resolves a taken deal name to the first free "<name> (2)", "(3)" itself, so lead-service
-can send the plain "<Company> -- <Lead name>" with no id fragment. A replay by `deal_id` never
-renames or revalues anything.
+`stage`, and resolves a taken deal name to the first free "<name> (2)", "(3)" itself, so
+lead-service can send the plain "<Company> -- <Lead name>" with no id fragment. A replay by
+`deal_id` never renames or revalues anything.
 """
 
 from __future__ import annotations
@@ -130,9 +130,7 @@ class TestANameThatIsTaken:
         deal = await selectors.get_deal(session, org_id, uuid.UUID(second["deal_id"]))
         assert deal is not None and len(deal.name) <= 200 and deal.name.endswith(" (2)")
 
-    async def test_names_are_per_organization(
-        self, client, org_id, session: AsyncSession
-    ) -> None:
+    async def test_names_are_per_organization(self, client, org_id, session: AsyncSession) -> None:
         """A deal in another tenant with the same name never forces a number here (RLS)."""
         resp = await client.post(_url(org_id), headers=_headers(org_id), json=_payload())
         assert resp.status_code == 200

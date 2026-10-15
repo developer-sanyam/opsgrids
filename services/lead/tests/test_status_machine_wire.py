@@ -89,9 +89,7 @@ class TestARefusedMoveIsAPlainSentence:
             )
         assert response.status_code == 404
 
-    async def test_a_writer_without_the_permission_is_forbidden(
-        self, client, org_id, data
-    ) -> None:
+    async def test_a_writer_without_the_permission_is_forbidden(self, client, org_id, data) -> None:
         with as_principal(principal_for(org_id, ["crm.lead.lead.read:ORG"])):
             response = await client.patch(
                 f"/api/v1/leads/{data['lead_b_id']}", json={"status": "working"}

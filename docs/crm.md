@@ -132,6 +132,17 @@ resolvers registered by `services/customer/app/scope.py`, `services/deal/app/sco
 `services/lead/app/scope.py` are never consulted; every selector passes its own owner column to
 `ctx.apply`, which is the real enforcement point.
 
+**A login with no employee link can still be a rep (2026-10-15).** `PUT /customers/owners/me`
+(`crm.book.owner.write` at ORG, idempotent) makes the caller's own roster row with **`id` = the
+caller's membership id**. For an ORG-scoped caller with no `sref`, deal-service defaults an unnamed
+owner on a new deal or activity to that same membership id (`default_owner`), so the self-serve
+organization owner can log an activity, create a deal or import with a blank Owner column without
+anyone building a team first. The SPA picks "my rep" (employee id, then membership id, then the
+login's own email for rows the old one-click claim made) as the default owner in every form. This
+changes nothing about scope: OWN still compares `subject_ref`, and an OWN-scoped caller with no link
+gets a plain 422 ("Ask an administrator to link your login to a sales rep, or pick an owner").
+ADR-0038, "Amended 2026-10-15", has the rest.
+
 **What changes, proposed.** Proposed in ADR-0038 (pending D-7, D-8, D-9): R2.2 makes the scope
 subject a per-product choice with the employee link as the default, so no other product changes;
 R2.6 adds `membership_id` to the roster and an owner-run, human-reviewed mapping plan; R2.7 flips

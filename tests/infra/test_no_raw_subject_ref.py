@@ -63,9 +63,13 @@ ALLOWED_STRING_SPELLINGS: dict[tuple[str, str], frozenset[str]] = {}
 #: counting helpers and `TestRatchetUntilTheFlip`.
 KNOWN_RAW_READS: dict[tuple[str, str], int] = {
     ("customer/app/services.py", "_assert_owner_assignable"): 1,
-    ("deal/app/api/routes.py", "create_deal"): 1,
+    # The default owner for a new deal or activity. It was one read in `create_deal` and one in
+    # `log_activity`; the self-serve owner has no employee link, so the default moved into one
+    # helper (employee link first, then -- ORG scope only -- the membership id), and `create_deal`
+    # no longer reads the link itself. Same total. R2.7 deletes the helper for `ctx.own_ref`.
+    ("deal/app/api/routes.py", "default_owner"): 2,
     ("deal/app/api/routes.py", "summary"): 2,
-    ("deal/app/api/routes.py", "log_activity"): 2,
+    ("deal/app/api/routes.py", "log_activity"): 1,
 }
 
 #: The same ratchet for string spellings, counted per (file, holder): none today.

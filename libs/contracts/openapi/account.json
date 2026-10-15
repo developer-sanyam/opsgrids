@@ -2638,6 +2638,25 @@
             }
           },
           {
+            "description": "Only the member linked to this HR employee record (ADR-0008).",
+            "in": "query",
+            "name": "employee_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only the member linked to this HR employee record (ADR-0008).",
+              "title": "Employee Id"
+            }
+          },
+          {
             "in": "query",
             "name": "page",
             "required": false,

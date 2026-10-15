@@ -118,7 +118,9 @@ class TestTheRepSetsTheDeal:
 
 
 class TestConvertStaysGuarded:
-    async def test_without_the_permission_it_is_forbidden(self, client, org_id, data, calls) -> None:
+    async def test_without_the_permission_it_is_forbidden(
+        self, client, org_id, data, calls
+    ) -> None:
         with as_principal(principal_for(org_id, ["crm.lead.lead.read:ORG"])):
             response = await client.post(f"/api/v1/leads/{data['lead_a_id']}:convert")
         assert response.status_code == 403 and calls == []

@@ -1311,9 +1311,7 @@ async def ensure_company_and_contact_for_lead(
             contact = await selectors.get_contact_by_phone_index_for_update(
                 session,
                 ctx.organization_id,
-                blind_index(
-                    _canonical_e164(contact_raw_phone), kind="phone", settings=settings()
-                ),
+                blind_index(_canonical_e164(contact_raw_phone), kind="phone", settings=settings()),
             )
             if contact is not None:
                 _record_reuse(session, ctx, "contact", contact.id, "phone")
