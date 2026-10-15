@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import services
 from app.main import app
-from app.models import ApprovalPolicy, ApprovalStep
+from app.models import ApprovalPolicy, ApprovalStep, AuditLog
 from app.services import (
     REQUEST_TYPE_INVENTORY_ADJUSTMENT,
     REQUEST_TYPE_INVENTORY_TRANSFER,
@@ -101,6 +101,25 @@ class TestPolicyRoundTrip:
                 "enabled": True,
             },
         ]
+
+    async def test_a_policy_write_audits_the_user_id_as_the_actor(
+        self, client, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        employee = uuid.uuid4()
+        writer = principal_for(org_id, employee, [WRITE_ORG])
+        with as_principal(writer):
+            response = await client.put(
+                policy_url(REQUEST_TYPE_LEAVE), json={"sla_minutes": 60, "enabled": True}
+            )
+        assert response.status_code == 200
+        async with session.begin():
+            rows = (
+                (await session.execute(select(AuditLog).where(AuditLog.organization_id == org_id)))
+                .scalars()
+                .all()
+            )
+        # The dashboard resolves actors by user id, not employee id.
+        assert [r.actor_id for r in rows] == [writer.sub] and writer.sub != employee
 
     async def test_a_second_write_updates_the_same_row_rather_than_creating_another(
         self, client, session: AsyncSession, org_id: uuid.UUID

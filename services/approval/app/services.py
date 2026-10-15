@@ -1138,6 +1138,7 @@ async def create_delegation(
     starts_at: datetime,
     ends_at: datetime,
     created_by_employee_id: uuid.UUID,
+    actor_user_id: uuid.UUID | None = None,
 ) -> tuple[Delegation, int]:
     """`POST /delegations` (ADR-0006 §5), one transaction:
 
@@ -1254,7 +1255,7 @@ async def create_delegation(
         session,
         AuditLog,
         organization_id=organization_id,
-        actor_id=created_by_employee_id,
+        actor_id=actor_user_id or created_by_employee_id,
         action="approval.delegation.created",
         entity="delegation",
         entity_id=delegation.id,
@@ -1311,7 +1312,7 @@ async def create_delegation(
                     session,
                     AuditLog,
                     organization_id=organization_id,
-                    actor_id=created_by_employee_id,
+                    actor_id=actor_user_id or created_by_employee_id,
                     action="approval.step.delegated",
                     entity="approval_step",
                     entity_id=new_step.id,
@@ -1334,6 +1335,7 @@ async def revoke_delegation(
     delegation_id: uuid.UUID,
     caller_id: uuid.UUID,
     is_org: bool,
+    actor_user_id: uuid.UUID | None = None,
 ) -> Delegation:
     """`POST /delegations/{id}/revoke` (ADR-0006 §5, §11). Revoking is the only mutation
     `trg_delegations_revoke_only` permits, and it changes nothing else about the row or about
@@ -1375,7 +1377,7 @@ async def revoke_delegation(
         session,
         AuditLog,
         organization_id=organization_id,
-        actor_id=caller_id,
+        actor_id=actor_user_id or caller_id,  # audit read resolves user ids
         action="approval.delegation.revoked",
         entity="delegation",
         entity_id=delegation.id,

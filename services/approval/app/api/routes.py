@@ -761,6 +761,7 @@ async def create_delegation(
         starts_at=body.starts_at,
         ends_at=body.ends_at,
         created_by_employee_id=caller_id,
+        actor_user_id=ctx.principal.sub,
     )
     await session.flush()
 
@@ -795,6 +796,7 @@ async def revoke_delegation(
         delegation_id=delegation_id,
         caller_id=caller_id,
         is_org=is_org,
+        actor_user_id=ctx.principal.sub,
     )
     await session.flush()
 
@@ -865,7 +867,7 @@ async def put_policy(
         request_type=request_type,
         sla_minutes=payload.sla_minutes,
         enabled=payload.enabled,
-        actor_id=ctx.subject_ref,
+        actor_id=ctx.principal.sub,
     )
     return PolicyOut(
         request_type=policy.request_type, sla_minutes=policy.sla_minutes, enabled=policy.enabled
