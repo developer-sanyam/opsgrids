@@ -7,13 +7,12 @@ import {
   DataTable,
   EmptyState,
   ErrorState,
+  FilterBar,
   InlineAlert,
-  Select,
   Skeleton,
   Tag,
   TextField,
   formatInZone,
-  useDebouncedValue,
   wallClockToInstant,
 } from "@opsgrids/ui";
 import type { Column } from "@opsgrids/ui";
@@ -66,8 +65,9 @@ export function AuditLogPage() {
   const [actorId, setActorId] = useState("");
   const [service, setService] = useState("");
   const [kind, setKind] = useState("");
+  // FilterBar's search debounces for us: this is the committed value.
   const [rawAction, setRawAction] = useState("");
-  const action = useDebouncedValue(rawAction.trim());
+  const action = rawAction.trim();
   const [attempt, setAttempt] = useState(0);
 
   const sources = useMemo(() => activeSources(entitlements), [entitlements]);
@@ -219,47 +219,60 @@ export function AuditLogPage() {
         description="Who did what in your organisation, and when. Personal-data reveals show which field was opened, never its value."
       />
 
-      <Card className="flex flex-col gap-4 p-4">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="flex flex-col gap-4">
+        <div className="grid grid-cols-1 gap-3 sm:max-w-xl sm:grid-cols-2">
           <TextField label="From" type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
           <TextField label="To" type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} error={rangeError} />
-          <Select
-            label="Person"
-            placeholder="Everyone"
-            options={
-              people.status === "success"
-                ? people.data.map((m) => ({ value: m.user_id, label: m.display_name ?? m.full_name }))
-                : []
-            }
-            value={actorId}
-            onChange={(e) => setActorId(e.target.value)}
-            disabled={people.status !== "success" || people.data.length === 0}
-          />
-          <Select
-            label="Product"
-            placeholder="All products"
-            options={sources.map((s) => ({ value: s.service, label: s.label }))}
-            value={service}
-            onChange={(e) => setService(e.target.value)}
-          />
-          <Select
-            label="Type"
-            placeholder="All activity"
-            options={[{ value: "reveals", label: "Personal-data reveals" }]}
-            value={kind}
-            onChange={(e) => setKind(e.target.value)}
-          />
-          {kind === "reveals" ? null : (
-            <TextField
-              label="Action"
-              placeholder="e.g. member.invited"
-              value={rawAction}
-              onChange={(e) => setRawAction(e.target.value)}
-            />
-          )}
         </div>
+        <FilterBar
+          label="Filter the audit log"
+          search={
+            kind === "reveals"
+              ? undefined
+              : {
+                  label: "Action",
+                  placeholder: "e.g. member.invited",
+                  value: rawAction,
+                  onChange: setRawAction,
+                }
+          }
+          filters={[
+            {
+              key: "person",
+              label: "Person",
+              allLabel: "Everyone",
+              options:
+                people.status === "success"
+                  ? people.data.map((m) => ({ value: m.user_id, label: m.display_name ?? m.full_name }))
+                  : [],
+              value: actorId,
+              onChange: setActorId,
+            },
+            {
+              key: "product",
+              label: "Product",
+              allLabel: "All products",
+              options: sources.map((s) => ({ value: s.service, label: s.label })),
+              value: service,
+              onChange: setService,
+            },
+            {
+              key: "type",
+              label: "Type",
+              allLabel: "All activity",
+              options: [{ value: "reveals", label: "Personal-data reveals" }],
+              value: kind,
+              onChange: setKind,
+            },
+          ]}
+          chips={[
+            ...(fromDate ? [{ key: "from", label: `From: ${fromDate}`, onRemove: () => setFromDate("") }] : []),
+            ...(toDate ? [{ key: "to", label: `To: ${toDate}`, onRemove: () => setToDate("") }] : []),
+          ]}
+          onClearAll={clearFilters}
+        />
         <p className="text-xs text-muted">Times are shown in {zone}.</p>
-      </Card>
+      </div>
 
       {load.status === "loading" && !rangeError ? <Skeleton className="h-80 w-full rounded-card" /> : null}
 
