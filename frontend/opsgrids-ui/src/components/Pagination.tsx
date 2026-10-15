@@ -19,6 +19,8 @@ interface PaginationProps {
   sizeOptions?: number[] | undefined;
   /** What is being counted, plural: "widgets", "suppliers". */
   noun: string;
+  /** The same noun for exactly one ("widget"), so "of 1 widgets" never reads wrongly. */
+  singularNoun?: string | undefined;
   className?: string | undefined;
 }
 
@@ -73,6 +75,7 @@ export function Pagination({
   onSizeChange,
   sizeOptions = [25, 50, 100],
   noun,
+  singularNoun,
   className,
 }: PaginationProps) {
   const announce = useAnnounce();
@@ -82,7 +85,9 @@ export function Pagination({
   const first = total === 0 ? 0 : (page - 1) * size + 1;
   const last = Math.min(page * size, total);
   const summary =
-    total === 0 ? `No ${noun}` : `Showing ${first}–${last} of ${total} ${noun}`;
+    total === 0
+      ? `No ${noun}`
+      : `Showing ${first}–${last} of ${total} ${total === 1 && singularNoun !== undefined ? singularNoun : noun}`;
 
   useEffect(() => {
     if (page === previousPage.current) return;

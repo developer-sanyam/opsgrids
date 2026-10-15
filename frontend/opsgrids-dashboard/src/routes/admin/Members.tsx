@@ -713,11 +713,15 @@ function InviteDialog({ roles, onClose, onSaved }: { roles: Role[]; onClose: () 
         required
         error={emailError ?? save.fieldErrors.email}
       />
-      <div className="max-h-48 overflow-y-auto">
+      <div className="max-h-72 overflow-y-auto">
         <CheckboxGroup
           label="Roles"
           helper="Leave empty for the default role."
-          options={roles.map((role) => ({ value: role.code, label: role.name }))}
+          options={roles.map((role) => ({
+            value: role.code,
+            label: role.name,
+            description: role.description ?? undefined,
+          }))}
           value={roleCodes}
           onChange={setRoleCodes}
         />

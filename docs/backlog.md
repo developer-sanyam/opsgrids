@@ -10,6 +10,20 @@ rather than a horizontal layer. Nothing is "done" until its tests pass.
 
 ---
 
+## Gaps found by the 2026-10-15 customer test (not built)
+
+- **Organization audit log.** There is no org-scoped audit read API: the only audit read is console's
+  operator-only `GET /admin/audit`. The "Audit Logs" sidebar link (`/admin/audit` on the app host) had no
+  page behind it and was removed from every product shell. Building it needs an account-service read
+  endpoint behind `core.identity.audit.read` (sensitive reveals first), then the page and the link back.
+- **General ledger.** `GET /finance/ledger` has no ledger table behind it, so it now returns no accounts
+  (`sample: true`, empty) and Finance shows "Ledger reports are not available yet" with no export.
+  Profit and loss and the trial balance need a posting ledger first.
+- **ADR-0038 D-20 (rep role consolidation, R2.8).** Until it lands, the three default CRM rep roles carry
+  the slice they cover in their names (pipeline, leads, companies and contacts).
+
+---
+
 ## Inventory & manufacturing (Operations)
 
 Phased plan: [inventory/plan.md](inventory/plan.md), decisions in

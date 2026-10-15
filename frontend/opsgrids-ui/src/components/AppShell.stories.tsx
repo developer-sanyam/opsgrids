@@ -9,7 +9,6 @@ import {
   PlusIcon,
   ReceiptIcon,
   SettingsIcon,
-  ShieldIcon,
   UsersIcon,
 } from "../icons";
 import type { AppShellProps } from "./AppShell";
@@ -81,7 +80,6 @@ const meta = {
     ],
     adminLinks: [
       { key: "users", label: "Users", href: "/admin/members", icon: UsersIcon },
-      { key: "audit-logs", label: "Audit Logs", href: "/admin/audit", icon: ShieldIcon },
     ],
     user: { name: "Sofia Marchetti", email: "sofia@acme.example", roleLabel: "Sales Manager" },
     onSignOut: fn(),

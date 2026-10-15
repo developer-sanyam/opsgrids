@@ -84,7 +84,7 @@ export interface AppShellProps {
   /** Cross-subdomain links to other products this caller can open (`usePlatformModules`). Omit
    *  (or pass `[]`) for a surface with no tenant modules — the staff console. */
   modules?: ModuleLink[] | undefined;
-  /** Users / Settings / Audit Logs (`useAdminLinks`), already filtered to what the caller holds. */
+  /** Users / Settings (`useAdminLinks`), already filtered to what the caller holds. */
   adminLinks?: ModuleLink[] | undefined;
   user: AppShellUser;
   onSignOut: () => void;

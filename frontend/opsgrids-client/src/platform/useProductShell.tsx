@@ -19,7 +19,7 @@ export interface ProductShellData {
   onSignOut: () => void;
   /** Other products this caller can open, with the icon *key* the design system resolves. */
   modules: { key: string; label: string; href: string; iconKey: string }[];
-  /** Users / Settings / Audit Logs, as absolute links on the dashboard's origin. */
+  /** Users / Settings, as absolute links on the dashboard's origin. */
   adminLinks: { key: string; label: string; href: string }[];
   grants: { status: string; reload: () => void };
   /** The header bell, or `undefined` when the app asked not to have one. */
