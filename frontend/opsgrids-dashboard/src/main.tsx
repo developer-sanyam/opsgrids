@@ -13,6 +13,7 @@ import { AcceptInvitationPage } from "./routes/AcceptInvitation";
 import { ForgotPasswordPage } from "./routes/ForgotPassword";
 import { HelpPage } from "./routes/Help";
 import { HomePage } from "./routes/Home";
+import { IntegrationsPage } from "./routes/Integrations";
 import { InvoicesPage } from "./routes/Invoices";
 import { LoginPage } from "./routes/Login";
 import { MarketplacePage } from "./routes/Marketplace";
@@ -91,6 +92,7 @@ const router = createBrowserRouter([
           { path: "products", element: <MarketplacePage /> },
           { path: "subscriptions", element: <SubscriptionsPage /> },
           { path: "invoices", element: <InvoicesPage /> },
+          { path: "integrations", element: <IntegrationsPage /> },
           // A payment provider's redirect lands here; the page asks the server, never the URL.
           { path: "billing/return", element: <Suspense fallback={lazyFallback()}><BillingReturnPage /></Suspense> },
           { path: "help", element: <HelpPage /> },

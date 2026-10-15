@@ -8,6 +8,7 @@ import {
   LifeBuoyIcon,
   MapPinIcon,
   NetworkIcon,
+  PlugIcon,
   ReceiptIcon,
   SettingsIcon,
   ShieldIcon,
@@ -34,6 +35,7 @@ const PRODUCT_GROUP: NavGroup = {
     // `ReceiptIcon`, not `LifeBuoyIcon` — the pinned Help entry below used to share that icon
     // with Invoices, which is confusing when both are visible at once.
     { to: "/invoices", label: "Invoices", icon: ReceiptIcon },
+    { to: "/integrations", label: "Integrations", icon: PlugIcon },
   ],
 };
 
