@@ -281,7 +281,8 @@ describe("a draft", () => {
     mockReads();
     renderCampaign();
     await screen.findByDisplayValue(DRAFT.name);
-    expect(screen.getByText(/merge fields such as \{\{first_name\}\} are not filled in/)).toBeTruthy();
+    expect(screen.getByText(/Merge fields are filled in for each recipient when the campaign is sent/)).toBeTruthy();
+    expect(screen.queryByText("Check these merge fields")).toBeNull();
     expect(screen.getByText(/unsubscribe link is added to the foot of every message/)).toBeTruthy();
   });
 });

@@ -739,6 +739,28 @@ async def contacts_by_index(
     return {c.email_index: c for c in (await session.execute(stmt)).scalars()}
 
 
+async def contacts_by_ids(
+    session: AsyncSession, org_id: uuid.UUID, ids: list[uuid.UUID]
+) -> dict[uuid.UUID, Contact]:
+    """Live contacts by id, one query for a whole send batch (merge fields)."""
+    if not ids:
+        return {}
+    stmt = select(Contact).where(
+        Contact.organization_id == org_id, Contact.id.in_(ids), Contact.deleted_at.is_(None)
+    )
+    return {c.id: c for c in (await session.execute(stmt)).scalars()}
+
+
+async def contact_attribute_keys(session: AsyncSession, org_id: uuid.UUID) -> set[str]:
+    """Lower-cased attribute keys any live contact carries — what `{{key}}` can resolve to."""
+    stmt = (
+        select(func.jsonb_object_keys(Contact.attributes))
+        .where(Contact.organization_id == org_id, Contact.deleted_at.is_(None))
+        .distinct()
+    )
+    return {k.lower() for k in (await session.execute(stmt)).scalars()}
+
+
 def suppressions_stmt(ctx: ScopeContext, *, reason: str | None = None) -> Select[Any]:
     """Scope-filtered suppression list, newest first."""
     stmt = select(Suppression).where(

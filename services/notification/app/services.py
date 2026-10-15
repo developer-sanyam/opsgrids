@@ -5223,6 +5223,7 @@ async def _ensure_campaign_sendable(
         raise BusinessRuleProblem("Add a subject before sending.")
     if not (row.text_body.strip() or row.html_body.strip()):
         raise BusinessRuleProblem("Add a body before sending.")
+    await _ensure_merge_fields_known(session, row)
     if row.ab_test:
         if not row.subject_b.strip():
             raise BusinessRuleProblem("Add a subject for version B before sending the A/B test.")
@@ -5945,6 +5946,40 @@ def unsubscribe_url_for_recipient(organization_id: uuid.UUID, recipient_id: uuid
     return f"{base}/engage/unsubscribe/{token}"
 
 
+def _merge_values(contact: Contact | None, email: str) -> dict[str, Any]:
+    """Merge fields for one recipient. The address is the one just opened in memory, never
+    logged. Attributes are the base; the name-derived fields win when they have a value."""
+    name = (contact.name if contact else "").strip()
+    first, _, last = name.partition(" ")
+    attrs = {str(k).lower(): v for k, v in (contact.attributes if contact else {}).items()}
+    company = next(
+        (attrs[k] for k in ("company_name", "company", "crm_company_name") if attrs.get(k)), ""
+    )
+    derived = {
+        "first_name": first, "last_name": last.strip(), "email": email, "company_name": company,
+        "company": company, "name": name, "full_name": name, "customer_name": name,
+    }  # fmt: skip
+    return {**attrs, **{k: v for k, v in derived.items() if v}}
+
+
+async def _ensure_merge_fields_known(session: AsyncSession, row: Campaign) -> None:
+    """Refuse a send whose subject or body names a field nobody can fill (a typo like
+    `{{compny_name}}` would otherwise go out blank to everyone)."""
+    texts = [row.subject, row.text_body, row.html_body]
+    if row.ab_test:
+        texts += [row.subject_b, row.text_body_b, row.html_body_b]
+    used = set().union(*(domain.merge_names(t) for t in texts))
+    unknown = used - domain.MERGE_BUILTINS
+    if unknown:
+        unknown -= await selectors.contact_attribute_keys(session, row.organization_id)
+    if unknown:
+        names = ", ".join("{{" + n + "}}" for n in sorted(unknown))
+        raise BusinessRuleProblem(
+            f"Unknown merge field {names}. Use first_name, last_name, name, email, "
+            "company_name, or an attribute your contacts have, e.g. {{company_name|your business}}."
+        )
+
+
 def campaign_message(
     campaign: Campaign,
     *,
@@ -5952,6 +5987,7 @@ def campaign_message(
     unsubscribe: str,
     html_body: str | None = None,
     variant: str = "a",
+    merge: dict[str, Any] | None = None,
 ) -> Outgoing:
     """One recipient's copy: the campaign body plus the unsubscribe footer, and the RFC 8058
     one-click headers. Built per recipient because the link is per address.
@@ -5966,6 +6002,11 @@ def campaign_message(
     subject = campaign.subject_b if use_b else campaign.subject
     source_html = campaign.html_body_b if use_b else campaign.html_body
     text = (campaign.text_body_b if use_b else campaign.text_body).rstrip()
+    if merge is not None:
+        subject = domain.merge_fields(subject, merge)
+        text = domain.merge_fields(text, merge)
+        if html_body is None:
+            source_html = domain.merge_fields(source_html, merge, escape=True)
     footer = f"Unsubscribe: {unsubscribe}\n"
     text = f"{text}\n\n--\n{footer}" if text else footer
     html: str | None = None
@@ -6447,11 +6488,15 @@ async def claim_campaign_batch(
     )
 
     cfg = settings()
+    contacts = await selectors.contacts_by_ids(
+        session, organization_id, [r.contact_id for r in claimed]
+    )
     # Open/click tracking (slice E1): None unless the campaign opted in. Registers the campaign's
     # link destinations once for the batch; the per-recipient work below is string rewriting only.
     tracking = await e1_tracking.prepare_plan(session, campaign)
     messages: list[ClaimedMessage] = []
     resolved: list[tuple[uuid.UUID, Literal["suppressed", "failed"], str]] = []
+    blank_fields = 0
     for recipient in claimed:
         if recipient.email_index in suppressed:
             resolved.append((recipient.id, "suppressed", ""))
@@ -6475,11 +6520,20 @@ async def claim_campaign_batch(
         )
         try:
             address = pii.open_sealed(recipient.email_enc, settings=cfg)
+            merge = _merge_values(contacts.get(recipient.contact_id), address)
+            blank_fields += sum(
+                1
+                for n in domain.merge_names(campaign.subject + campaign.text_body + source_html)
+                if not merge.get(n)
+            )
+            if tracking is not None and source_html.strip():
+                source_html = domain.merge_fields(source_html, merge, escape=True)
             message = campaign_message(
                 campaign,
                 to_address=address,
                 unsubscribe=unsubscribe_url_for_recipient(organization_id, recipient.id),
                 variant=variant,
+                merge=merge,
                 html_body=(
                     # Off the event loop: a pass over a body of up to 500 KB, and in production
                     # this driver shares a process (and a loop) with every tenant's API traffic.
@@ -6507,6 +6561,10 @@ async def claim_campaign_batch(
             resolved.append((recipient.id, "failed", "Could not prepare this message"))
             continue
         messages.append(ClaimedMessage(recipient_id=recipient.id, outgoing=message))
+    if blank_fields:
+        log.info(
+            "engage.campaign.merge_fields_blank", campaign_id=str(campaign_id), count=blank_fields
+        )
     return "claimed", ClaimedBatch(
         connection=connection,
         sender=sender,
