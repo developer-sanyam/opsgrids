@@ -1,3 +1,5 @@
+> **Historical — superseded by [`SPEC.md`](../SPEC.md) (products, services, API surface) and [`MEMORY.md`](../MEMORY.md) (state, decisions, bugs).** This page is a Phase 0 snapshot (5 deployable units, 194 tests). The code now has 34 services and live products. Its counts and "built" claims are stale; do not rely on them.
+
 # What was built
 
 An inventory of what exists, and how far each piece is trusted. Counts were taken from the

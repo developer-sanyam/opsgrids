@@ -6,7 +6,7 @@ How tests work here, what they cover, and — more usefully — what they do not
 make check          # lint + typecheck + every Python suite; the fast backend path
 make frontend-gate  # every frontend row: types, lint, boundaries, tests, builds, audit, licences
 make gate           # every row CI runs, run locally — needs `make infra` and a migrated database
-make gate-full      # gate + the end-to-end journey (and later: images, visual, a11y)
+make gate-full      # gate + the end-to-end journey + screenshots and axe (images later)
 ```
 
 With GitHub Actions unavailable, `make gate` is the only full verification there is. Every CI
@@ -18,17 +18,22 @@ The full list of tools, what each enforces and where it runs is in
 
 ## Counts
 
-Collected, not hand-maintained — regenerate them rather than edit them (2026-09-23):
+Collected, not hand-maintained — regenerate them rather than edit them (2026-10-15, `main` @ `1dbeebd4`):
 
 | Suite | Tests | Command |
 |---|---|---|
-| Services (35, each in its own process) | 4,756 | `make test-services` |
-| `libs/platform-core` | 341 | `make test-libs` |
-| Repository tooling (`tests/infra`) | 1,208 | `make test-infra` |
-| End-to-end journeys (`e2e/`) | 76 | `make e2e` |
-| Frontend (14 packages, 198 files, vitest) | 2,061 | `make frontend-test` |
+| Services (34, each in its own process) | 17,734 collected | `make test-services` |
+| `libs` (`platform-core` 928, plus `contracts`) | 954 collected | `make test-libs` |
+| Repository tooling (`tests/infra`) | 1,235 collected | `make test-infra` |
+| End-to-end journeys (`e2e/`) | 76 collected | `make e2e` |
+| Frontend (vitest) | 9,059 (18 packages; on Node 22.14, two timing-sensitive tests failed in the full parallel run and passed alone) | `make frontend-test` |
 
-Python counts: count with `uv run pytest --collect-only`; the frontend count is vitest's own total.
+Python counts: `uv run pytest --collect-only -q`, run inside each `services/<name>` for the services
+(the service total is the sum over all 34). The frontend count is vitest's own total.
+
+Some `libs/platform-core` integration tests need RabbitMQ or MailHog and fail without `make infra`.
+Run the frontend suites on Node 22 (`engines` is `>=22`). On Node 24.19, 13 tests in `opsgrids-ui` and
+`opsgrids-client` (router leave-guards and the SSO loop) failed on 2026-10-15; they pass on 22.14.
 
 ## How CI runs this, and how long it takes
 
@@ -185,7 +190,7 @@ Ordered by how much a failure would cost:
 
 1. **Negative authorization.** For every endpoint: the caller who should be refused. More valuable
    than the happy path — the happy path breaks loudly and gets noticed.
-2. **Cross-tenant.** Seed in org A, call with an org-B token, assert never `200`. Fifteen services
+2. **Cross-tenant.** Seed in org A, call with an org-B token, assert never `200`. Seventeen services
    carry a `test_cross_tenant_isolation.py`; `libs/platform-core/tests/test_tenancy.py` covers the
    transaction-local GUC itself; the end-to-end journey proves it through the whole stack.
 3. **Fail-closed behaviour.** Kill Redis and assert the request is *refused*, not admitted.
@@ -210,12 +215,32 @@ distinguishes "refused" from "refused after forwarding it anyway".
 
 ## Gaps
 
-- **Cross-tenant isolation is per service, not universal.** Fifteen services have the suite; the
+- **Cross-tenant isolation is per service, not universal.** Seventeen of 34 services have the suite; the
   rest rely on the shared chokepoint and RLS. A service without one has not proven its own lists.
 - **`opsgrids-internal` has no frontend tests** — the one package still on `--passWithNoTests`.
 - **No load or soak testing.**
 - **No mutation testing**, so the *quality* of these assertions is unmeasured.
 - **No coverage thresholds.** Nothing fails when a critical path loses its tests.
+
+## Frontend visual, accessibility and layout checks
+
+Details and every variable: [`frontend/VISUAL-TESTING.md`](../frontend/VISUAL-TESTING.md). Run from
+`frontend/` with Node 22 or newer and pnpm 11.
+
+```bash
+pnpm visual:check     # screenshots + axe against opsgrids-visual/baselines/darwin (2,454 PNGs)
+pnpm visual:update    # accept a reviewed change: rewrites baselines and a11y-baseline.json
+pnpm --filter @opsgrids/visual run sweep   # the layout sweep: all 14 apps at 320/360/390/414 px
+SWEEP_APPS=product-finance SWEEP_ROUTE=/invoices SWEEP_WIDTHS=390 pnpm --filter @opsgrids/visual run sweep
+```
+
+The sweep's mobile categories apply below 768 px: `g` touch target under 44x44, `h` text field under
+16px (iOS zooms), `j` dialog, drawer or menu larger than the viewport or with its primary action
+off-screen, `k` table wider than the viewport with no scroll container, `l` fixed bar without
+safe-area insets or covering content, `m` text under 12px. Categories `a` to `f` (page overflow,
+escaped boxes, misaligned rows, clipped text, no bottom space) run at every width. The sweep writes
+`report.json` and screenshots under `opsgrids-visual/test-results/sweep`. Fix a hit in `opsgrids-ui`
+first and in the app second.
 
 ## The quality gate
 
@@ -247,9 +272,12 @@ has no tooling is reported **N/A with its reason**, never green.
 
 What has no tooling yet, and why:
 
-- **Visual regression** and **runtime accessibility** (axe over rendered states) — there is no
-  component workshop to run them over. `jsx-a11y` catches what is visible in the markup; it
-  cannot see contrast, focus order or live-region behaviour. `gate-full` is where they land.
+- **Visual regression and runtime accessibility** exist, but only locally and only on macOS: `make
+  ui-visual` (part of `gate-full`) takes screenshots and runs axe over 402 workshop stories and
+  7 app pages, at 375, 768 and 1280 px, in both themes. There are no Linux baselines, so it does
+  not run in CI. See [`frontend/VISUAL-TESTING.md`](../frontend/VISUAL-TESTING.md).
+- **The layout sweep** is a developer tool, not a gate row. It walks every route of 14 apps in sample
+  mode and flags layout defects (see the section above the gate table).
 - **Performance budget** — no bundle-size or field-metric budget is enforced.
 - **Design-token lint** — nothing rejects a raw colour or spacing value in feature code.
 - **Query plans** — nothing checks `EXPLAIN` output. It needs representative data volumes and an

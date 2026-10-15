@@ -12,7 +12,7 @@ code disagree, the code wins and this page is the bug.
 | What is in flight right now | [`HANDOVER.md`](HANDOVER.md) |
 | Long-form architecture | [`docs/architecture.md`](docs/architecture.md) (sections 2, 10, 11 and 19 predate later services; prefer this page's inventory) |
 
-Last verified against `main` @ `d73bb9e4` (2026-10-14).
+Last verified against `main` @ `1dbeebd4` (2026-10-15), which is what production runs.
 
 ---
 
@@ -64,7 +64,7 @@ partner webhooks ─────────────────────
 |---|---|
 | Backend | Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2 async + asyncpg, Alembic, aio-pika, redis-py, structlog, httpx |
 | Auth | EdDSA (Ed25519) JWTs, JWKS; argon2 passwords; TOTP MFA + step-up (ADR-0023) |
-| Frontend | Node ≥22, pnpm workspace, React 19, react-router 7, Vite; shared `opsgrids-ui`, `opsgrids-client`, `opsgrids-config` |
+| Frontend | Node ≥22, pnpm workspace, React 19, react-router 7, Vite; shared `opsgrids-ui`, `opsgrids-client`, `opsgrids-config`. Every app is mobile-first: card tables below 768px, 44px touch targets, 16px fields, bottom nav, sheets (see section 10) |
 | Packaging | `uv` workspace, `uv.lock`; one image per service |
 | Production | One Azure VM, Docker Compose, Caddy — `infrastructure/edge/` (ADR-0012, ADR-0013) |
 
@@ -171,15 +171,37 @@ with `make edge-web APP=<app>`, built from the **local checkout**. A memory ceil
 container. Runbook: [`infrastructure/edge/RUNBOOK.md`](infrastructure/edge/RUNBOOK.md); env keys:
 [`docs/deploy/`](docs/deploy/).
 
-## 10. Features being built
+## 10. Features
+
+### Shipped in the 2026-10-14 release (PRs #148–#170, live)
+
+| Area | What it does | Where |
+|---|---|---|
+| Finance printable GST tax invoice and credit note | Chrome-free A4 page at `/invoices/:id/print` with supplier and buyer GSTIN, place of supply, HSN/SAC lines, tax summary by rate, totals in words. Missing supplier facts are reported on screen, never printed as placeholders. IRN and QR print only when the GST portal is connected (it is not). Operations orders link to the same document | `frontend/product-finance/src/routes/InvoicePrint.tsx`, `frontend/product-finance/src/invoice/` |
+| Operations auto item codes | A blank SKU on item create and on the inventory bulk import takes the next `ITM-000001`-style code from a per-organization counter. Typed codes still work; generated codes skip any SKU, variant SKU or barcode already in use | `services/operations/app/inventory/item_codes.py` |
+| Worker task display fields | Fulfilment task and package payloads carry the order number, bin code/name and item name/unit, resolved inside `operations`. A field is filled only for a caller with the matching org-wide read or a live offer on that task. `GET /api/v1/operations/fulfilment/tasks?assigned_to_me=true` narrows the list to the caller's own offers. No permission was added or widened | ADR-0024 addendum (2026-10-14); `frontend/worker-app` |
+| Mobile-responsive UI | `DataTable` cards below 768px (`mobileCard="table"` opts out), 44px hit areas (`hit-44`), 16px fields, sheets for dialogs and menus, `PageHeader` `secondaryActions`, `StickyActionBar`, a bottom nav in `AppShell`, and per-product mobile fixes in every app | `frontend/opsgrids-ui/src/components/` |
+| Shared shells | `ProductShell`, `ProductLoginScreen` (`opsgrids-ui`) and `ProductAuthProvider` (`opsgrids-client`) replace per-app copies | `frontend/opsgrids-ui`, `frontend/opsgrids-client` |
+| Layout sweep | Opens every route of 14 apps in sample mode and flags overflow, misalignment, small touch targets and more. A developer tool, not CI | `frontend/opsgrids-visual/sweep/`, `frontend/VISUAL-TESTING.md` |
+| Money and time display | Money uses the currency's own exponent; instants render in the viewer's zone and name it | `frontend/opsgrids-ui`, product apps |
+| Engage sample mode | Every Engage screen is served from fixtures in sample mode; the Communication overview no longer returns 500 | `frontend/product-engage` |
+| Shared Python helpers | Permission-catalogue classes, `GuardedSweep`, keyset cursors, scope resolvers and more moved into `platform-core` | `libs/platform-core/src/platform_core/` |
+
+### Programmes in progress
 
 | Programme | Spec | State |
 |---|---|---|
 | CRM overhaul (4 sub-projects, 26 releases) | `docs/superpowers/specs/2026-10-07-crm-overhaul-programme-design.md`, ADR-0038 (D-1…D-41 accepted at defaults) | R1.1, R1.2a/b, R2.1–R2.4, R3.3 merged and live; next R2.5 (stage editing, `crm.pipeline.stage.write`) |
 | Order invoicing via CRM identity bridge | ADR-0024/0025, PR #146 | Live in `log_only`; per-org opt-in |
-| GST tax invoices | PR #145 | Groundwork, inert until supplier settings exist |
+| GST tax invoices | PR #145 | Groundwork, inert until supplier settings exist; GST portal not connected |
 | Inventory & manufacturing | ADR-0014, [`docs/inventory/plan.md`](docs/inventory/plan.md) | Phases 0–9 live |
 | Insights projection | ADR-0020 | Built on `sprint/insights*` branches (+99 MB), not deployable until the owner raises the memory ceiling |
+
+### Not built
+
+- Error tracking and tracing. No Sentry or OpenTelemetry SDK ships ([`docs/operations.md`](docs/operations.md)).
+- Off-box backups. The script exists; the bucket is not configured.
+- Linux visual baselines.
 
 Open product questions: [`docs/adr/open-questions-register.md`](docs/adr/open-questions-register.md).
 Backlog: [`docs/backlog.md`](docs/backlog.md).

@@ -9,10 +9,8 @@ Start here.
 | Get it running on your machine | [getting-started.md](getting-started.md) |
 | Join the team and pick up your first task | [onboarding/](onboarding/README.md) |
 | Understand how the system fits together | [architecture.md](architecture.md) |
-| See the whole system on one page | [architecture.html](architecture.html) |
-| Know what exists and how far it is trusted | [what-was-built.md](what-was-built.md) |
+| Know what exists, how it is built and what it exposes | [../SPEC.md](../SPEC.md) |
 | Know what the platform can and cannot do today | [features.md](features.md) |
-| See products, system design and the API surface on one page | [../SPEC.md](../SPEC.md) |
 | Know what was decided and what already broke once | [../MEMORY.md](../MEMORY.md) |
 | Pick up where the last session stopped | [../HANDOVER.md](../HANDOVER.md) |
 
@@ -25,8 +23,12 @@ Start here.
 | Write or run tests | [testing.md](testing.md) |
 | Know which check enforces what, and run it | [TOOLCHAIN.md](TOOLCHAIN.md) |
 | Package and price something — bundles, prepaid packs, seat classes, reseller pricing | [commerce-packaging.md](commerce-packaging.md) |
-| Use or extend the visual system | [theme-guide.md](theme-guide.md) |
-| Know what the theme already provides | [existing-theme-features.md](existing-theme-features.md) |
+| Use or extend the visual system | [../frontend/CLAUDE.md](../frontend/CLAUDE.md) · `frontend/opsgrids-ui` |
+| Run the screenshot, accessibility and layout-sweep checks | [../frontend/VISUAL-TESTING.md](../frontend/VISUAL-TESTING.md) |
+| Understand the CRM as it is and as the overhaul changes it | [crm.md](crm.md) |
+| Design against the approval engine's schema | [approval-engine-data-model.md](approval-engine-data-model.md) |
+| Know what Engage guarantees on contact erasure and unsubscribe links | [engage-erasure-and-unsubscribe.md](engage-erasure-and-unsubscribe.md) |
+| Know why no network call runs inside a database transaction | [io-outside-transactions.md](io-outside-transactions.md) |
 
 ### Deciding what to do next
 
@@ -35,11 +37,11 @@ Start here.
 | Know what is next and what is blocked | [backlog.md](backlog.md) |
 | Know which sales claims the code actually supports, and what closing the rest costs | [ecosystem-gaps.md](ecosystem-gaps.md) |
 | Understand the longer arc and its sequencing | [plan.md](plan.md) |
-| Know whether this can be deployed | [production-readiness.md](production-readiness.md) |
+| Know what is still risky in production | [production-readiness.md](production-readiness.md) |
 | Understand why something is shaped the way it is | [decisions.md](decisions.md) · [adr/](adr/) |
 | Know whether an ADR question is decided, and which backlog item builds it | [adr/open-questions-register.md](adr/open-questions-register.md) |
 | Learn from what has already gone wrong | [discoveries.md](discoveries.md) |
-| Run it, or work out why it is misbehaving | [operations.md](operations.md) |
+| Run it, or work out why it is misbehaving | [operations.md](operations.md) · [../infrastructure/edge/RUNBOOK.md](../infrastructure/edge/RUNBOOK.md) |
 | Filter the product catalogue (proposal) | [subcategory-filter-plan.md](subcategory-filter-plan.md) |
 
 ## The one-paragraph version
@@ -76,6 +78,17 @@ code disagree, the code is right and the document is a bug — please fix it.
 
 Two pages are worth reading even if you think you know this codebase:
 [discoveries.md](discoveries.md), because every defect found here passed a green test suite, and
-[production-readiness.md](production-readiness.md), because the honest answer to "can we deploy
-this" is currently no and the reasons are specific.
+[production-readiness.md](production-readiness.md), because production is live and the open risks
+are specific: no off-box backup, a memory budget over the box, CI not running.
+
+### Other references
+
 - [Inventory & manufacturing plan](inventory/plan.md) · [ADR-0014](adr/0014-inventory-and-manufacturing.md)
+
+### Historical — kept for the record, not current
+
+| Page | Superseded by |
+|---|---|
+| [what-was-built.md](what-was-built.md) | [../SPEC.md](../SPEC.md), [../MEMORY.md](../MEMORY.md) |
+| [theme-guide.md](theme-guide.md), [existing-theme-features.md](existing-theme-features.md) | [../frontend/CLAUDE.md](../frontend/CLAUDE.md), `frontend/opsgrids-ui` |
+| [architecture.html](architecture.html) | [../SPEC.md](../SPEC.md) |

@@ -1,3 +1,5 @@
+> **Historical — superseded by [`frontend/CLAUDE.md`](../frontend/CLAUDE.md) (design and code rules) and the `frontend/opsgrids-ui` package (tokens in `src/styles/console.css`, components in `src/components/`).** This page describes a theme in the marketing site's `globals.css`, which was removed on 2026-09-19. `opsgrids-ui` is no longer empty. Nothing below is current.
+
 # Theme guide
 
 How to use and extend the visual system. What exists today is in

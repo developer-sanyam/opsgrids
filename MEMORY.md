@@ -9,11 +9,23 @@ Never record secrets, `.env` values, IP addresses, ssh key paths or customer dat
 
 ---
 
-## 1. Current architecture (as of 2026-10-14)
+## 1. Current architecture (as of 2026-10-15)
 
-- **Production = `main` @ `d73bb9e4`** (deployed 2026-10-12, PRs #136–#147). No open PRs.
+- **Production = `main` @ `1dbeebd4`** (deployed 2026-10-15 in three batches, PRs #148–#170; the
+  previous release was `d73bb9e4`, 2026-10-12). No open PRs. Pre-deploy backups exist on the box
+  only: `BACKUP_S3_*` is empty, so there is no off-box copy.
 - 34 service directories, 2 of them gateways; 3 are still skeletons (`config`, `eventbridge`,
   `quotation`). 13 permission manifests, 34 OpenAPI documents.
+- Shared Python helpers now live in `platform-core` (#166, #169): `platform_core.catalogue`
+  (permission-catalogue classes), `GuardedSweep` (every hand-written cron sweep), `supervise`,
+  `db.constraint_name`/`sqlstate`, `pagination` keyset cursors, `auth.column_scope_resolver`,
+  `events.actor_for`/`parse_envelope_dt`, `validation.reject_explicit_null`, `dns.answer_text`.
+- Frontend shells are shared: `ProductShell`, `ProductLoginScreen` (`opsgrids-ui`) and
+  `ProductAuthProvider` (`opsgrids-client`) replace the per-app copies. On a phone every app gets a
+  bottom nav (destinations and quick actions per product), sheets for dialogs and menus, and
+  card-style tables.
+- Layout sweep (`frontend/opsgrids-visual/sweep/`) opens every route of 14 apps in sample mode; a
+  developer tool, not CI. Visual baselines: 402 stories + 7 app pages, 2,454 PNGs, darwin only.
 - One Azure VM runs everything (ADR-0012/0013): ~36 containers, Compose profiles per product,
   Caddy, one shared `edge-relay`, consumers folded into API processes. The box is RAM-bound and at
   its owner-accepted ceiling (`EDGE_BUDGET_ACCEPTED_MB=3945`); **no new container without an owner
@@ -21,6 +33,7 @@ Never record secrets, `.env` values, IP addresses, ssh key paths or customer dat
 - GitHub Actions is unavailable (account billing) — CI and the Deploy workflow do not run. Deploys
   are manual `make deploy` by, or with explicit approval of, the owner.
 - 15 web bundles published from `main`: dashboard, internal, buyer, worker, and one per product app.
+  `ci-plan.sh` now plans the worker and internal bundles too (#156).
 
 ## 2. Decisions
 
@@ -44,6 +57,18 @@ The ones that bite most often in day-to-day work:
 | 0040 | CI shards service tests by item on a tuned throwaway Postgres |
 
 Recorded outside an ADR:
+
+- **Mobile (2026-10-14, #157).** `DataTable` renders cards below 768px by default; opt out with
+  `mobileCard="table"`. Text fields are 16px below 768px (iOS zooms smaller ones). Compact controls
+  get a 44px target with the `hit-44` class. `PageHeader` folds `secondaryActions` into a menu on a
+  phone. `StickyActionBar` is the one bottom action bar (#167). `FormDialog`, `Drawer`, `Menu` and
+  `CommandMenu` become sheets that clear the notch.
+- **Worker task display fields (2026-10-14, #159, ADR-0024 addendum).** Order number, bin code and
+  item name on fulfilment tasks and packages are resolved server-side inside `operations`, and only
+  for a caller with the matching org-wide read or a live offer on that task. No permission or role
+  was widened, so there is no reconcile step.
+- **Marketing site.** The owner chose a "Liquid Glass" look with real product screenshots. It lives in
+  the separate marketing repository, not here; this entry records the decision, not the code.
 
 - Commit messages and PRs name no AI assistant.
 - Tests run on real PostgreSQL, never SQLite.
@@ -78,6 +103,16 @@ passed a green test suite; most were contract failures between two components th
 | 2026-10-11 | Deploy stopped at migrate: two Alembic heads in `notification` | Single-head test per service (#133) |
 | 2026-10-12 | IDOR on several routes | Fixed in #136; every endpoint needs a negative-authz test |
 | 2026-10-12 | Six orders stuck in `on_accept` | Runbook `docs/runbooks/2026-10-12-unblock-on-accept-orders.md` |
+| 2026-10-14 | Engage and Operations screens showed "Request failed with 500" in sample mode | The sample-data fixtures lacked those endpoints, not the API. A sampleMode guard test now fails when a screen calls an endpoint no fixture serves (#149, #153) |
+| 2026-10-14 | `AppShell` bottom padding never applied | An unlayered CSS rule beat the layered utility. Spacing the shell owns must not be overridable by an unlayered rule (#150) |
+| 2026-10-14 | Money shown ÷100 for JPY and KWD; instants rendered in UTC or an unlabelled host zone | Formatters use the currency's own exponent and the viewer's zone, and name it (#156) |
+| 2026-10-14 | `SENTRY_DSN` and OTLP settings were declared, passed to every service and required by preflight, but read by nothing | Removed; `docs/operations.md` says error tracking is not wired. A test pins it (#156) |
+| 2026-10-14 | `ci-plan.sh` never planned the worker and internal bundles | Added to the app list; the plan test pins the full list (#156) |
+| 2026-10-14 | `ENGAGE_TRACKING_SECRET` set on the box had no effect | Compose never forwarded it to notification; it does now (#156) |
+| 2026-10-14 | Sweep failure backoff waited a full poll interval before the first retry | Backoff starts at `min(poll_interval, max_backoff)` (#156) |
+| 2026-10-14 | `make boundaries` failed for every service except `operations` | The shared `.importlinter` held operations-only contracts. They moved to `.importlinter.operations`; a `tests/infra` check keeps the shared contracts identical (#166) |
+| 2026-10-14 | `product-engage` import cycles | Request shapes moved into leaf `types` modules (#167) |
+| 2026-10-14 | Sticky `FormDialog` footer sat 16px above the scroll body's edge, so fields showed beneath it | `-bottom-4` makes it flush (#170) |
 
 ## 4. Known sharp edges
 
@@ -96,3 +131,7 @@ passed a green test suite; most were contract failures between two components th
 Add one dated line per architecture change, decision, or fixed bug that a future session needs.
 
 - 2026-10-14 — SPEC.md, MEMORY.md, HANDOVER.md added; `.claude/settings.json` tracked as the project permission policy.
+- 2026-10-14 — Finance prints a GST tax invoice and credit note at `/invoices/:id/print` (#151); Operations generates `ITM-000001`-style item codes when the SKU is blank, per organization (#152).
+- 2026-10-14 — Mobile-responsive shared UI and the layout sweep (#155, #157, #161, #163, #164); worker app shows real order numbers, bins and items (#159); audit fixes (#156); dead code removed (#158).
+- 2026-10-14 — Duplicate helpers consolidated into `platform-core`, `tools/`, `tests/infra` and `e2e` (#165–#169); visual baselines regenerated (#170).
+- 2026-10-15 — Production deployed to `main` @ `1dbeebd4` in three batches. Docs refreshed: HANDOVER, MEMORY, SPEC, `docs/operations.md`, `docs/production-readiness.md`; `docs/what-was-built.md`, `docs/theme-guide.md` and `docs/architecture.html` marked historical.
