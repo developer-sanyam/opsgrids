@@ -265,7 +265,7 @@ class TestCustomerAuthoredRoleIsUntouchedAndReported:
     async def test_the_role_is_skipped_and_named_in_the_diff(
         self, session: AsyncSession, org: Organization, people: dict[str, Membership]
     ) -> None:
-        # `manager` holds `ORG_ADMIN`, which does not carry `identity.audit.read` — the
+        # `manager` holds `ORG_ADMIN`, so the
         # role's grant has to be something the caller actually holds, now that
         # `create_role` enforces the same ceiling `invite` and `set_member_roles` do.
         manager = people["manager"]

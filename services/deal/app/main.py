@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from app import consumers
+from app.api.audit import router as audit_router
 from app.api.internal import router as internal_router
 from app.api.routes import router
 from app.config import settings
@@ -58,7 +59,7 @@ app = create_app(
     settings(),
     title="Deal service",
     description="Deal service — part of the OpsGrids platform.",
-    routers=[router],
+    routers=[audit_router, router],
     on_startup=_start_background_worker,
     on_shutdown=_stop_background_worker,
 )

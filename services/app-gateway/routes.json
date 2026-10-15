@@ -112,6 +112,16 @@
     { "prefix": "/api/v1/itsm", "upstream": "http://localhost:8173", "product": "itsm" },
 
     { "prefix": "/api/v1/storefront/public", "upstream": "http://localhost:8174" },
-    { "prefix": "/api/v1/storefront", "upstream": "http://localhost:8174", "product": "storefront" }
+    { "prefix": "/api/v1/storefront", "upstream": "http://localhost:8174", "product": "storefront" },
+
+    { "prefix": "/api/v1/audit/account", "upstream": "http://localhost:8111" },
+    { "prefix": "/api/v1/audit/customer", "upstream": "http://localhost:8130", "product": "crm" },
+    { "prefix": "/api/v1/audit/deal", "upstream": "http://localhost:8131", "product": "crm" },
+    { "prefix": "/api/v1/audit/lead", "upstream": "http://localhost:8135", "product": "crm" },
+    { "prefix": "/api/v1/audit/employee", "upstream": "http://localhost:8120", "product": "hrms" },
+    { "prefix": "/api/v1/audit/operations", "upstream": "http://localhost:8172", "product": "operations" },
+    { "prefix": "/api/v1/audit/notification", "upstream": "http://localhost:8151", "product": "engage" },
+    { "prefix": "/api/v1/audit/storefront", "upstream": "http://localhost:8174", "product": "storefront" },
+    { "prefix": "/api/v1/audit/finance", "upstream": "http://localhost:8171", "product": "finance" }
   ]
 }

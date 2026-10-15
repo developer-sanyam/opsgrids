@@ -620,3 +620,43 @@ export interface LeaveBalance {
   leave_type_code: string;
   balance_half_days: number;
 }
+
+/** `AuditEntryOut` (`libs/platform-core/src/platform_core/audit_read.py`): one audit row as the
+ * organization may read it. Field *names* only; no value ever leaves the service. */
+export interface AuditEntry {
+  id: string;
+  at: string;
+  service: string;
+  product: string;
+  /** The user id (`sub`) of the person who acted; `null` for a system action. */
+  actor_id: string | null;
+  /** OpsGrids staff acted on the organization's behalf. */
+  by_operator: boolean;
+  action: string;
+  entity: string;
+  entity_id: string | null;
+  /** The fields this entry touched; for a reveal, the fields that were opened. */
+  fields: string[];
+  /** A personal-data reveal (`entity.sensitive_read`). */
+  sensitive: boolean;
+  reason: string | null;
+}
+
+/** `AuditPageOut`: one source's page, newest first. */
+export interface AuditPage {
+  service: string;
+  product: string;
+  items: AuditEntry[];
+  next_cursor: string | null;
+}
+
+export interface AuditQuery {
+  /** Inclusive lower bound, an ISO instant with an offset. */
+  from?: string | undefined;
+  /** Exclusive upper bound, an ISO instant with an offset. */
+  to?: string | undefined;
+  actor_id?: string | undefined;
+  action?: string | undefined;
+  cursor?: string | undefined;
+  limit?: number | undefined;
+}

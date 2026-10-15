@@ -408,6 +408,10 @@
           "scope": "ORG"
         },
         {
+          "code": "core.identity.audit.read",
+          "scope": "ORG"
+        },
+        {
           "code": "core.identity.membership.read",
           "scope": "ORG"
         },

@@ -31,6 +31,7 @@ const OrganizationPage = lazy(() => import("./routes/admin/Organization").then((
 const OrgUnitsPage = lazy(() => import("./routes/admin/OrgUnits").then((m) => ({ default: m.OrgUnitsPage })));
 const LocationsPage = lazy(() => import("./routes/admin/Locations").then((m) => ({ default: m.LocationsPage })));
 const DomainsPage = lazy(() => import("./routes/admin/Domains").then((m) => ({ default: m.DomainsPage })));
+const AuditLogPage = lazy(() => import("./routes/admin/AuditLog").then((m) => ({ default: m.AuditLogPage })));
 const BillingReturnPage = lazy(() => import("./routes/BillingReturn").then((m) => ({ default: m.BillingReturnPage })));
 
 function lazyFallback() {
@@ -42,11 +43,11 @@ function lazyFallback() {
  * server-side (ADR-0003 §3) — the fallback exists so a customer who follows a stale link or a
  * bookmark past a permission they lost sees an explanation instead of a blank screen.
  */
-function admin(perm: string, element: ReactNode) {
+function admin(perm: string, element: ReactNode, scope: "OWN" | "ORG" = "OWN") {
   return (
     <RequirePermission
       perm={perm}
-      scope="OWN"
+      scope={scope}
       fallback={
         <div className="flex flex-col gap-2 py-12 text-center">
           <p className="text-base font-bold">You don't have access to this page</p>
@@ -100,6 +101,7 @@ const router = createBrowserRouter([
           { path: "admin/org-units", element: admin("core.org.unit.read", <OrgUnitsPage />) },
           { path: "admin/locations", element: admin("core.org.location.read", <LocationsPage />) },
           { path: "admin/domains", element: admin("core.identity.domain.read", <DomainsPage />) },
+          { path: "admin/audit", element: admin("core.identity.audit.read", <AuditLogPage />, "ORG") },
           { path: "*", element: <NotFoundPage /> },
         ],
       },

@@ -57,7 +57,13 @@
     "`/api/v1/webhooks/collections` is the provider-neutral path to the same handler (ADR-0033):",
     "Cashfree merchants register it and Cashfree Orders name it as `notify_url`. Public in",
     "`WEBHOOK_PUBLIC_PATHS` for POST only, the same 256 KiB cap; payment takes the provider from",
-    "the account row, never from the path."
+    "the account row, never from the path.",
+    "",
+    "`/api/v1/audit/<service>` is one source of the organization audit log each (ADR-0044): the",
+    "service's own `audit_logs`, read back through `platform_core.audit_read`. The dashboard merges",
+    "the sources. Each prefix carries its product's gate, so a product the organization has not",
+    "activated answers 402 and the dashboard skips it. tests/infra/test_route_table_parity.py holds",
+    "the dev and prod tables and the services' OpenAPI documents together."
   ],
   "routes": [
     { "prefix": "/api/v1/auth/operator", "upstream": "http://auth:8000", "blocked": true },
@@ -128,6 +134,16 @@
     { "prefix": "/api/v1/storefront/public", "upstream": "http://storefront:8000" },
     { "prefix": "/api/v1/storefront", "upstream": "http://storefront:8000", "product": "storefront" },
 
-    { "prefix": "/api/v1/documents", "upstream": "http://document:8000", "max_body_bytes": 6291456 }
+    { "prefix": "/api/v1/documents", "upstream": "http://document:8000", "max_body_bytes": 6291456 },
+
+    { "prefix": "/api/v1/audit/account", "upstream": "http://account:8000" },
+    { "prefix": "/api/v1/audit/customer", "upstream": "http://customer:8000", "product": "crm" },
+    { "prefix": "/api/v1/audit/deal", "upstream": "http://deal:8000", "product": "crm" },
+    { "prefix": "/api/v1/audit/lead", "upstream": "http://lead:8000", "product": "crm" },
+    { "prefix": "/api/v1/audit/employee", "upstream": "http://employee:8000", "product": "hrms" },
+    { "prefix": "/api/v1/audit/operations", "upstream": "http://operations:8000", "product": "operations" },
+    { "prefix": "/api/v1/audit/notification", "upstream": "http://notification:8000", "product": "engage" },
+    { "prefix": "/api/v1/audit/storefront", "upstream": "http://storefront:8000", "product": "storefront" },
+    { "prefix": "/api/v1/audit/finance", "upstream": "http://finance:8000", "product": "finance" }
   ]
 }

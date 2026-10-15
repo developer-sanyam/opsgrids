@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from app import consumers
+from app.api.audit import router as audit_router
 from app.api.internal import router as internal_router
 from app.api.routes import router
 from app.config import settings
@@ -84,7 +85,7 @@ app = create_app(
     settings(),
     title="Finance service",
     description="Finance service — part of the OpsGrids platform.",
-    routers=[router],
+    routers=[audit_router, router],
     # A stalled relay is silent, and a stalled relay here means an auto-filing agent never hears
     # that an invoice was issued. `/health/outbox` counts through the outbox engine so it is not
     # blind to the rows the app role cannot see.
