@@ -122,6 +122,8 @@ def shipment_out(shipment: Shipment) -> ShipmentOut:
         status=shipment.status,
         carrier_name=shipment.carrier_name,
         tracking_reference=shipment.tracking_reference,
+        channel_id=str(shipment.channel_id) if shipment.channel_id else None,
+        external_shipment_id=shipment.external_shipment_id,
         failure_reason=shipment.failure_reason,
         delivered_at=shipment.delivered_at,
         created_at=shipment.created_at,

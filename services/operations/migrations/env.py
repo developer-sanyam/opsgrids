@@ -100,6 +100,7 @@ APPEND_ONLY_TABLES = (
     "scan_events",
     "shipment_transitions",
     "channel_sync_logs",
+    "integration_events",
     "roll_events",
     "lot_genealogy",
     "putaway_captures",
@@ -131,7 +132,10 @@ RECONCILE_DISCOVERY_TABLES: dict[str, tuple[str, ...]] = {
     "inventory_items": ("organization_id", "deleted_at"),
     "pick_tasks": ("organization_id",),
     "shipments": ("organization_id", "deleted_at"),
-    "channels": ("organization_id", "id", "status", "deleted_at"),
+    # `kind`: the channel sweep polls `sales` connections only. `provider`: the public integration
+    # webhook (`app/channels/webhooks.py::webhook_channel`) resolves a connection's tenant before
+    # any is bound, and checks the provider it names. Neither is a secret.
+    "channels": ("organization_id", "id", "status", "deleted_at", "kind", "provider"),
     # Phase 3: the reservation-expiry sweep asks which organizations hold an active reservation
     # past its `expires_at`.
     "inventory_reservations": ("organization_id", "status", "expires_at"),

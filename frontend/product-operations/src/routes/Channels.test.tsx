@@ -39,6 +39,7 @@ function channel(overrides: Partial<ChannelOut> = {}): ChannelOut {
   return {
     id: "chan-1",
     provider: "mock_marketplace",
+    kind: "sales",
     name: "My sandbox shop",
     status: "connected",
     external_shop_id: "shop-1",

@@ -73,6 +73,7 @@ TENANT_TABLES = (
     "job_work_receipts",
     "job_work_materials",
     "job_work_orders",
+    "integration_events",
     "channel_sync_logs",
     "channel_order_imports",
     "channel_sku_mappings",

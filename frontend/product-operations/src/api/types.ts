@@ -1446,6 +1446,7 @@ export interface DiscrepancyTrendPointOut {
  */
 
 export type ChannelProvider = "mock_marketplace";
+export type ChannelKind = "sales" | "erp" | "pos" | "carrier";
 export type ChannelStatus = "connected" | "disconnected" | "error";
 export type ChannelSyncType = "order_import" | "inventory_push" | "fulfilment_push" | "health_check";
 export type ChannelSyncStatus = "success" | "failed";
@@ -1453,6 +1454,7 @@ export type ChannelSyncStatus = "success" | "failed";
 export interface ChannelOut {
   id: string;
   provider: ChannelProvider;
+  kind: ChannelKind;
   name: string;
   status: ChannelStatus;
   external_shop_id: string;

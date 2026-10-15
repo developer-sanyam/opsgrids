@@ -108,6 +108,7 @@
     { "prefix": "/api/v1/projects-workspace", "upstream": "http://localhost:8170", "product": "projects" },
     { "prefix": "/api/v1/finance", "upstream": "http://localhost:8171", "product": "finance" },
     { "prefix": "/api/v1/operations/inventory/data/import", "upstream": "http://localhost:8172", "product": "operations", "max_body_bytes": 8388608 },
+    { "prefix": "/api/v1/webhooks/operations", "upstream": "http://localhost:8172", "max_body_bytes": 262144 },
     { "prefix": "/api/v1/operations", "upstream": "http://localhost:8172", "product": "operations" },
     { "prefix": "/api/v1/itsm", "upstream": "http://localhost:8173", "product": "itsm" },
 

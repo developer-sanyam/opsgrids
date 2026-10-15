@@ -2024,6 +2024,17 @@
             "title": "External Shop Id",
             "type": "string"
           },
+          "kind": {
+            "default": "sales",
+            "enum": [
+              "sales",
+              "erp",
+              "pos",
+              "carrier"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
           "name": {
             "maxLength": 120,
             "minLength": 1,
@@ -2125,6 +2136,16 @@
             "title": "Id",
             "type": "string"
           },
+          "kind": {
+            "enum": [
+              "sales",
+              "erp",
+              "pos",
+              "carrier"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
           "last_error_code": {
             "anyOf": [
               {
@@ -2188,7 +2209,6 @@
             "type": "string"
           },
           "provider": {
-            "const": "mock_marketplace",
             "title": "Provider",
             "type": "string"
           },
@@ -2210,6 +2230,7 @@
         "required": [
           "id",
           "provider",
+          "kind",
           "name",
           "status",
           "external_shop_id",
@@ -5549,6 +5570,34 @@
           "results"
         ],
         "title": "InspectionResultsIn",
+        "type": "object"
+      },
+      "IntegrationWebhookAck": {
+        "description": "The answer to a recorded (or already-recorded) webhook delivery.",
+        "properties": {
+          "duplicate": {
+            "title": "Duplicate",
+            "type": "boolean"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "received",
+              "ignored"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "outcome",
+          "duplicate"
+        ],
+        "title": "IntegrationWebhookAck",
         "type": "object"
       },
       "InventoryDiscrepancyOut": {
@@ -19487,10 +19536,29 @@
         "description": "`POST /dispatch/shipments` \u2014 the carrier handover (Fulfilment plan F5): creates the\nshipment, already at `PICKUP_HANDOVER`, posts the dispatch `issue` move against whatever pick\nand pack transferred (ADR-0024 \u00a76), and moves the order `READY -> HANDED_OVER -> DELIVERED`\nin the same call once `app.orders.services.check_billing_gate` passes \u2014 the delivery/courier\ncounterpart to `POST /orders/{id}/hand-over`'s counter/walk-in path.\n\n`carrier_name`/`tracking_reference` are manual text only \u2014 no carrier API integration exists\nin this build (Fulfilment plan F5's own \"not in phase\" list); `tracking_reference` may be\nunknown at handover and set (or corrected) on a later transition instead.\n\n`payment_confirmed` mirrors `OrderHandoverIn`'s own field exactly \u2014 the carrier-desk\noperator's attestation that a cash/prepaid order's payment was collected, the same documented\nstand-in for `services/payment`'s tenant collections module (ADR-0024 A4) the counter path\nalready uses (security review M3). Inert for a credit-terms order.",
         "properties": {
           "carrier_name": {
-            "maxLength": 120,
-            "minLength": 1,
-            "title": "Carrier Name",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Carrier Name"
+          },
+          "channel_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channel Id"
           },
           "order_id": {
             "format": "uuid",
@@ -19522,8 +19590,7 @@
         },
         "required": [
           "order_id",
-          "order_version",
-          "carrier_name"
+          "order_version"
         ],
         "title": "ShipmentIn",
         "type": "object"
@@ -19533,6 +19600,17 @@
           "carrier_name": {
             "title": "Carrier Name",
             "type": "string"
+          },
+          "channel_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channel Id"
           },
           "created_at": {
             "format": "date-time",
@@ -19550,6 +19628,17 @@
               }
             ],
             "title": "Delivered At"
+          },
+          "external_shipment_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Shipment Id"
           },
           "failure_reason": {
             "anyOf": [
@@ -23551,6 +23640,28 @@
                 }
               ],
               "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "sales",
+                    "erp",
+                    "pos",
+                    "carrier"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
             }
           },
           {
@@ -40158,6 +40269,59 @@
         "summary": "Add a location to a warehouse",
         "tags": [
           "operations"
+        ]
+      }
+    },
+    "/api/v1/webhooks/operations/{provider}": {
+      "post": {
+        "operationId": "integration_webhook_api_v1_webhooks_operations__provider__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider",
+            "required": true,
+            "schema": {
+              "title": "Provider",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "connection",
+            "required": true,
+            "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "title": "Connection",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntegrationWebhookAck"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "A connected channel's webhook -- per-connection signature, idempotent inbox",
+        "tags": [
+          "webhooks"
         ]
       }
     },

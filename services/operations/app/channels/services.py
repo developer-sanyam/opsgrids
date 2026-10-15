@@ -174,10 +174,15 @@ async def connect_channel(
     default_warehouse_id: uuid.UUID,
     default_currency: str,
     auto_accept_orders: bool,
+    kind: str = "sales",
     request: Request | None = None,
 ) -> Channel:
     if provider not in domain.CHANNEL_PROVIDERS:
         raise ValidationProblem(f"{provider!r} is not a channel provider this build supports")
+    if kind != domain.CHANNEL_PROVIDER_KINDS[provider]:
+        raise ValidationProblem(
+            f"{provider!r} is a {domain.CHANNEL_PROVIDER_KINDS[provider]} channel"
+        )
     if not api_key.strip():
         raise ValidationProblem("A channel connection needs a credential")
     warehouse = await inv_selectors.get_warehouse(
@@ -197,6 +202,7 @@ async def connect_channel(
         organization_id=ctx.organization_id,
         created_by=str(ctx.principal.sub),
         provider=provider,
+        kind=kind,
         name=name,
         status="connected",
         external_shop_id=external_shop_id,
@@ -220,6 +226,7 @@ async def connect_channel(
         entity_id=channel.id,
         after={
             "provider": provider,
+            "kind": kind,
             "name": name,
             "external_shop_id": external_shop_id,
             "default_warehouse_id": str(warehouse.id),

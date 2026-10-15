@@ -117,5 +117,11 @@ turns this ADR's "review point" into a check that is recorded and cannot be skip
 `http://account:8000` would be refused as private addresses, which is the guard working correctly.
 A runtime monkeypatch of `httpx`: it changes library behaviour for every call, invisibly.
 
+**Implemented 2026-10-16** (integrations framework), ahead of Q8, by
+`tests/infra/test_outbound_http_classified.py`. It walks `services/*/app` and `libs/*/src` with `ast`
+(so docstrings and a local list named `requests` do not count) and keys each site by file and
+enclosing function; the table is `CLASSIFIED`, tagged `platform-configured` or `egress-guard`, and a
+stale entry fails as well as a missing one. `tools/` and tests are out of scope.
+
 **Consequences.** **Implemented with Q8** (eventbridge outbound webhooks). If Q8 slips, this test
 is still the first thing any new tenant-URL fetch must land with. The register lists it.

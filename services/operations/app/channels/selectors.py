@@ -18,13 +18,17 @@ from app.schemas import ChannelOut, ChannelSkuMappingOut, ChannelSyncLogOut
 from platform_core.auth import ScopeContext
 
 
-def channels_stmt(ctx: ScopeContext, *, status: str | None = None) -> Select[Any]:
+def channels_stmt(
+    ctx: ScopeContext, *, status: str | None = None, kind: str | None = None
+) -> Select[Any]:
     stmt = select(Channel).where(
         Channel.organization_id == ctx.organization_id, Channel.deleted_at.is_(None)
     )
     stmt = ctx.apply(stmt, owner_col=None)
     if status:
         stmt = stmt.where(Channel.status == status)
+    if kind:
+        stmt = stmt.where(Channel.kind == kind)
     return stmt.order_by(Channel.created_at.desc())
 
 
@@ -132,6 +136,7 @@ def channel_out(channel: Channel) -> ChannelOut:
     return ChannelOut(
         id=str(channel.id),
         provider=channel.provider,
+        kind=channel.kind,
         name=channel.name,
         status=channel.status,
         external_shop_id=channel.external_shop_id,

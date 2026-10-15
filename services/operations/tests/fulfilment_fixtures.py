@@ -270,25 +270,27 @@ async def dispatch_order(  # type: ignore[no-untyped-def]
     order_id: uuid.UUID,
     order_version: int,
     *,
-    carrier_name: str = "Acme Couriers",
+    carrier_name: str | None = "Acme Couriers",
     tracking_reference: str | None = "TRK-0001",
     payment_confirmed: bool = False,
     perms: list[str] | None = None,
+    channel_id: uuid.UUID | None = None,
 ):
     principal = principal_for(
         org_id, perms if perms is not None else [DISPATCH_WRITE_PERM], subject_ref=uuid.uuid4()
     )
+    body: dict = {
+        "order_id": str(order_id),
+        "order_version": order_version,
+        "tracking_reference": tracking_reference,
+        "payment_confirmed": payment_confirmed,
+    }
+    if carrier_name is not None:
+        body["carrier_name"] = carrier_name
+    if channel_id is not None:
+        body["channel_id"] = str(channel_id)
     with as_principal(principal):
-        return await client.post(
-            "/api/v1/operations/dispatch/shipments",
-            json={
-                "order_id": str(order_id),
-                "order_version": order_version,
-                "carrier_name": carrier_name,
-                "tracking_reference": tracking_reference,
-                "payment_confirmed": payment_confirmed,
-            },
-        )
+        return await client.post("/api/v1/operations/dispatch/shipments", json=body)
 
 
 async def transition_shipment(  # type: ignore[no-untyped-def]

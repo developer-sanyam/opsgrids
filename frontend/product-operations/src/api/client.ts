@@ -2645,6 +2645,8 @@ export async function listChannels(params: ListChannelsParams = {}): Promise<Pag
     page: params.page ?? 1,
     size: params.size ?? DEFAULT_PAGE_SIZE,
     status: params.status === "all" ? undefined : params.status,
+    // This page connects sales channels; carriers, ERPs and POS get their own screens.
+    kind: "sales",
   });
   return apiRequest<Page<ChannelOut>>(`/operations/channels${query}`);
 }
