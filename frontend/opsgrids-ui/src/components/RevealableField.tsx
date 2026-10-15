@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 
-import { EyeIcon, MailIcon, PhoneIcon } from "../icons";
+import { EyeIcon, MailIcon, MessageIcon, PhoneIcon } from "../icons";
 import { cn } from "../lib/cn";
 import { formatPhone } from "../lib/phone";
 import { Button } from "./Button";
@@ -40,6 +40,13 @@ function telHref(value: string): string {
   return `tel:${value.replace(/[^\d+]/g, "")}`;
 }
 
+/** A click-to-chat link: `https://wa.me/` takes the international number as digits only, no `+`.
+ *  `null` for anything too short to be a full international number. */
+function whatsAppHref(value: string): string | null {
+  const digits = value.replace(/\D/g, "");
+  return digits.length >= 8 && digits.length <= 15 ? `https://wa.me/${digits}` : null;
+}
+
 /**
  * A masked value with a Reveal that shows the real one in place, where it stays for the session.
  * Presentational: `useRevealedField` (`@opsgrids/client`) owns the value and the call.
@@ -47,6 +54,8 @@ function telHref(value: string): string {
  * **One tap, no code, no auto-hide** (owner decision 2026-10-15, ADR-0023 addendum): a caller
  * who holds the permission taps Reveal and the value appears and stays, as a `tel:` / `mailto:`
  * link with a 44px target so a rep on a call can tap it to dial. The server records every reveal.
+ * A revealed phone also gets a WhatsApp action (`https://wa.me/<digits>`, new tab), built from the
+ * same revealed value: it never appears while the number is masked and asks for nothing new.
  *
  * **Focus finds its way back.** The Reveal button goes away once the value shows, so when the
  * reveal settles and focus has fallen to the page, it moves to the value's link. If the person
@@ -107,6 +116,18 @@ export function RevealableField({ kind, label, noun, masked, canReveal, field }:
             </>
           )}
         </span>
+        {kind === "phone" && field.value !== null && whatsAppHref(field.value) !== null ? (
+          <a
+            href={whatsAppHref(field.value) ?? undefined}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={`WhatsApp ${formatPhone(field.value)} (opens in a new tab)`}
+            className="inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-tile px-2 text-sm font-semibold text-muted transition-colors hover:text-accent"
+          >
+            <MessageIcon className="size-4" aria-hidden="true" />
+            WhatsApp
+          </a>
+        ) : null}
         {offered && !revealed ? (
           <Button
             ref={buttonRef}

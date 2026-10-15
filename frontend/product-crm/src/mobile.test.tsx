@@ -105,9 +105,10 @@ describe("LeadDetail: converting", () => {
     expect(convert.getAttribute("aria-describedby")).toBe(reason.id);
   });
 
-  it("shows no reason once the lead is qualified, and Convert is available", async () => {
+  it("shows no reason once the lead is qualified and owned, and Convert is available", async () => {
     setAccessToken(SESSION_TOKEN);
-    stubGateway({ "GET /api/v1/leads/lead-1": () => json({ ...LEAD, status: "qualified" }) });
+    // An owner too: a lead with none cannot be converted (LeadDetail.owner.test.tsx).
+    stubGateway({ "GET /api/v1/leads/lead-1": () => json({ ...LEAD, status: "qualified", owner_id: "own-1" }) });
     renderScreen(<LeadDetailPage />, {
       at: "/leads/lead-1",
       path: "/leads/:id",

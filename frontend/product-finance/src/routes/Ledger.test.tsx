@@ -29,6 +29,21 @@ describe("LedgerPage", () => {
     expect(screen.queryByRole("button", { name: "Export CSV" })).toBeNull();
     expect(screen.queryByText(/₹/)).toBeNull();
     expect(screen.queryByRole("table")).toBeNull();
+    // The honest empty state is not sample data: no "Sample data" pill beside the title.
+    expect(screen.queryByText("Sample data")).toBeNull();
+  });
+
+  it("marks representative figures as sample data when they are drawn", async () => {
+    report.current = {
+      period_label: "FY 2026-27",
+      as_of: "2026-10-15",
+      accounts: [{ code: "4000", name: "Sales", type: "revenue", debit_minor: 0, credit_minor: 100000 }],
+      sample: true,
+    };
+    renderPage();
+
+    expect(await screen.findByRole("table")).toBeTruthy();
+    expect(screen.getByText("Sample data")).toBeTruthy();
   });
 
   it("shows the trial balance and its export when the report has real accounts", async () => {

@@ -897,6 +897,10 @@ async def _forward(
     except httpx.ReadTimeout as exc:
         log.error("gateway.upstream_timeout", upstream=route.upstream, path=url)
         raise UpstreamUnavailableProblem("That service took too long to respond") from exc
+    except httpx.RemoteProtocolError as exc:
+        # The service dropped the connection without answering: ours to retry, not a 500.
+        log.error("gateway.upstream_disconnected", upstream=route.upstream, path=url)
+        raise UpstreamUnavailableProblem("That service is temporarily unavailable") from exc
 
     response_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in HOP_BY_HOP}
     if webhook:
@@ -928,14 +932,24 @@ async def _send_riding_out_restarts(
 ) -> httpx.Response:
     """Send, retrying only a refused connection, with backoff, for `upstream_connect_grace`.
 
-    Only `ConnectError` is retried: the request provably never reached the service. A read
-    timeout or a reset mid-response may have executed the request, and is never retried.
-    The budget counts the sleeps, not the wall clock, so the ceiling is the same under load.
+    `ConnectError` is retried: the request provably never reached the service. A read timeout
+    or a reset mid-response may have executed the request, and is never retried -- with one
+    exception: an idempotent read (`GET`, `HEAD`, `OPTIONS`) that met `RemoteProtocolError` is
+    sent once more. That is a pooled keep-alive connection the upstream closed as it was reused
+    (the 2026-10-15 transient 500s on first load); repeating a read is harmless, repeating a
+    write never is. The budget counts the sleeps, not the wall clock, so the ceiling is the same
+    under load.
     """
     delay, slept = 0.25, 0.0
+    resent_read = False
     while True:
         try:
             return await client.send(upstream_request, stream=True)
+        except httpx.RemoteProtocolError:
+            if resent_read or upstream_request.method not in _IDEMPOTENT_READS:
+                raise
+            resent_read = True
+            log.warning("gateway.upstream_dropped_connection", upstream=route.upstream)
         except httpx.ConnectError:
             if slept + delay > policy.upstream_connect_grace:
                 raise
@@ -945,11 +959,25 @@ async def _send_riding_out_restarts(
             delay = min(delay * 2, 2.0)
 
 
+#: The methods `_send_riding_out_restarts` may send twice after a dropped connection.
+_IDEMPOTENT_READS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+#: How long an idle pooled connection to a service is kept. Below uvicorn's default
+#: `--timeout-keep-alive` of 5 s on purpose: with both at 5 s the gateway could pick up a
+#: connection in the instant the service was closing it, and the request failed with
+#: `RemoteProtocolError` -- a 500 on the first request after any pause.
+UPSTREAM_KEEPALIVE_EXPIRY_SECONDS = 2.0
+
+
 def http_client(policy: GatewayPolicy) -> httpx.AsyncClient:
     """One pooled client for the process. Building one per request is a socket leak."""
     return httpx.AsyncClient(
         timeout=policy.upstream_timeout,
-        limits=httpx.Limits(max_connections=200, max_keepalive_connections=50),
+        limits=httpx.Limits(
+            max_connections=200,
+            max_keepalive_connections=50,
+            keepalive_expiry=UPSTREAM_KEEPALIVE_EXPIRY_SECONDS,
+        ),
         follow_redirects=False,
     )
 

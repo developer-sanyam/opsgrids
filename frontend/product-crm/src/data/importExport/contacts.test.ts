@@ -100,6 +100,34 @@ describe("contacts: toPayload", () => {
   });
 });
 
+// 2026-10-15 customer retest: contacts.email is nullable since ADR-0038 D-14, but the import still
+// demanded it ("Email is required", and the sample header read "Email *").
+describe("contacts: a phone-only row", () => {
+  it("does not mark Email as required, so the sample sheet header has no asterisk", () => {
+    const email = contactImport.columns.find((c) => c.key === "email");
+    expect(email?.required).not.toBe(true);
+  });
+
+  it("builds a create body with no email when the row has a phone", () => {
+    const payload = payloadFor({ fullName: "Ravi Kapoor", company: "Northwind Logistics", phone: "+919000000013" });
+    expect(payload).toEqual({
+      full_name: "Ravi Kapoor",
+      company_id: "comp-1",
+      owner_id: "own-1",
+      title: "",
+      status: "lead",
+      raw_phone: "+919000000013",
+    });
+    expect("email" in payload).toBe(false);
+  });
+
+  it("refuses a row with neither an email nor a phone, in words", () => {
+    expect(() => payloadFor({ fullName: "Nobody", company: "Northwind Logistics" })).toThrow(
+      /Add an Email or a Phone/,
+    );
+  });
+});
+
 describe("contacts: what the user is told about a very large book", () => {
   it("says an organisation with more than 20,000 contacts cannot import contacts in this release", () => {
     expect(contactImport.notes?.join(" ")).toContain(

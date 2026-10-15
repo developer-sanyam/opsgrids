@@ -48,13 +48,15 @@ class TestAssignmentRule:
                     session, own, mode="round_robin", owner_ids=[uuid.uuid4()]
                 )
 
-    async def test_a_lead_created_with_no_rule_configured_gets_no_owner(
+    async def test_a_lead_created_with_no_rule_configured_goes_to_its_creator(
         self, session, org_id
     ) -> None:
+        # It used to stay unassigned, and an unassigned lead cannot be converted
+        # (`tests/test_assignment_fallback.py` covers the fallback's edges).
         write = ctx_for(org_id, "crm.lead.lead.write", Scope.ORG)
         async with session.begin():
-            lead = await _create(session, write, "Unassigned")
-        assert lead.owner_id is None
+            lead = await _create(session, write, "Mine")
+        assert lead.owner_id == write.principal.membership_id
 
     async def test_leads_rotate_through_the_configured_owners_in_order(
         self, session, org_id

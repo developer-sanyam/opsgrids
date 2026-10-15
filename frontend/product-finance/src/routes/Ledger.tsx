@@ -116,7 +116,7 @@ export function LedgerPage() {
         title="Ledger & Reports"
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            {ledger.status === "success" && ledger.data.sample ? <SampleChip /> : null}
+            {hasAccounts && ledger.status === "success" && ledger.data.sample ? <SampleChip /> : null}
             {hasAccounts ? (
               <Button
                 variant="outline"
