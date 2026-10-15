@@ -62,6 +62,8 @@ storefront, not by account.
   and `itsm`. `auth` is a source too, but only for its sign-in family (`only_actions`: password, OAuth and SSO
   sign-in, password change and its failure) and each row is *bare*: actor, action and time, with no entity id (a
   sign-in row's entity id is the session id), fields, reason or operator flag. Its MFA and step-up rows stay out.
+  `subscription` returns `reason` only when it is a machine code (`reason_codes_only`): its operator notes are
+  free text and staff-only.
   Not sources: `catalog` and `product` (their rows belong to the platform organization, not a customer's),
   `metering` (writes no audit rows) and `scheduler`, `config`, `eventbridge`, `quotation`, `console`.
   Sign-out, password-reset requests and failed sign-ins write no audit row today (events only; a failed sign-in

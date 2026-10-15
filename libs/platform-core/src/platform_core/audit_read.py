@@ -167,7 +167,9 @@ def is_operator(acting_as: Any) -> bool:
     return isinstance(acting_as, str) and acting_as.startswith(OPERATOR_ACTING_AS_PREFIX)
 
 
-def to_entry(row: Any, *, service: str, product: str, bare: bool = False) -> AuditEntryOut:
+def to_entry(
+    row: Any, *, service: str, product: str, bare: bool = False, reason_codes_only: bool = False
+) -> AuditEntryOut:
     if bare:
         # Actor, action and time only: no entity id (a session id, for sign-ins), no field
         # names, no reason, no operator flag.
@@ -197,8 +199,16 @@ def to_entry(row: Any, *, service: str, product: str, bare: bool = False) -> Aud
         entity_id=row.entity_id,
         fields=touched_fields(row.action, row.before, row.after),
         sensitive=row.action == SENSITIVE_READ_ACTION,
-        reason=row.reason,
+        reason=_reason(row.reason, codes_only=reason_codes_only),
     )
+
+
+def _reason(reason: Any, *, codes_only: bool) -> str | None:
+    """A machine reason code passes; free text (an operator's note) is dropped when the source
+    says its notes are staff-only."""
+    if not codes_only or (isinstance(reason, str) and _FIELD_NAME.match(reason)):
+        return reason if isinstance(reason, str) else None
+    return None
 
 
 def _decode_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
@@ -220,6 +230,7 @@ async def read_audit_page(
     cursor: str | None,
     limit: int,
     only_actions: frozenset[str] | None = None,
+    reason_codes_only: bool = False,
 ) -> AuditPageOut:
     """The selector. `ctx.apply` is a no-op at the ORG floor the route demands, and is called
     anyway so a future scope below ORG narrows to the caller's own actions instead of leaking."""
@@ -254,7 +265,13 @@ async def read_audit_page(
         service=service,
         product=product,
         items=[
-            to_entry(r, service=service, product=product, bare=only_actions is not None)
+            to_entry(
+                r,
+                service=service,
+                product=product,
+                bare=only_actions is not None,
+                reason_codes_only=reason_codes_only,
+            )
             for r in rows
         ],
         next_cursor=next_cursor,
@@ -273,6 +290,7 @@ def build_audit_router(
     service: str,
     product: str,
     only_actions: frozenset[str] | None = None,
+    reason_codes_only: bool = False,
 ) -> APIRouter:
     """`GET /audit/<service>` (under `/api/v1`) over this service's own `audit_logs`.
 
@@ -282,6 +300,9 @@ def build_audit_router(
     `only_actions` narrows the source to those actions and returns them *bare* (actor, action,
     time — nothing else). `auth` uses it: its trail also holds MFA and step-up rows, and a
     sign-in row's entity id is the session id.
+
+    `reason_codes_only` returns `reason` only when it is a machine code (`dunning_retry`) and
+    drops free text. `subscription` uses it: an operator's note there is staff-only by design.
     """
     router = APIRouter(tags=["audit"])
 
@@ -326,6 +347,7 @@ def build_audit_router(
             cursor=cursor,
             limit=limit,
             only_actions=only_actions,
+            reason_codes_only=reason_codes_only,
         )
 
     return router

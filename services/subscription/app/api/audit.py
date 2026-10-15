@@ -11,4 +11,8 @@ from __future__ import annotations
 from app.models import AuditLog
 from platform_core.audit_read import build_audit_router
 
-router = build_audit_router(AuditLog, service="subscription", product="core")
+#: An operator's note (free text in `reason`) is staff-only (`ExtendTrialIn.note`): only machine
+#: reason codes such as `dunning_retry` are returned to the organization.
+router = build_audit_router(
+    AuditLog, service="subscription", product="core", reason_codes_only=True
+)
