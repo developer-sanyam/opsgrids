@@ -76,3 +76,14 @@ class TestCheckOutOrdering:
         assert not checkout_after_checkin(check_in, check_in - timedelta(minutes=1))
         with pytest.raises(CheckOutBeforeCheckIn):
             assert_checkout_after_checkin(check_in, check_in - timedelta(minutes=1))
+
+
+def test_the_work_day_rolls_over_at_local_midnight_not_utc_midnight() -> None:
+    """00:30 IST on the 16th is 19:00 UTC on the 15th: it is already the 16th for the org."""
+    from datetime import date
+
+    from app.domain import work_date_in
+
+    at = datetime(2026, 10, 15, 19, 0, tzinfo=UTC)
+    assert work_date_in(at, "Asia/Kolkata") == date(2026, 10, 16)
+    assert work_date_in(at, "UTC") == date(2026, 10, 15)

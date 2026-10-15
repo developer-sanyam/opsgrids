@@ -1434,8 +1434,10 @@ async def request_password_reset(
     first_time = credential is None or (
         credential.password_hash is None and credential.last_login_at is None
     )
-    memberships = user.active_memberships()
-    welcome = first_time and bool(memberships)
+    # The welcome tells the reader they own the organization, so only its creator (ORG_OWNER)
+    # gets it; an invitee setting a first password gets the ordinary link.
+    owned = [m for m in user.active_memberships() if "ORG_OWNER" in m.roles]
+    welcome = first_time and bool(owned)
     reset_url = f"{cfg.app_base_url.rstrip('/')}/reset-password?token={raw}"
     payload: dict[str, object] = {
         "user_id": str(user.user_id),
@@ -1448,7 +1450,7 @@ async def request_password_reset(
     }
     if welcome:
         payload["full_name"] = user.full_name
-        payload["organization_name"] = memberships[0].organization_name
+        payload["organization_name"] = owned[0].organization_name
     # The email goes out through notify-service, from the outbox — so a crash between
     # writing the token and sending the mail cannot lose the reset.
     publish_event(

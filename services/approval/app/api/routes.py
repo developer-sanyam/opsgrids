@@ -574,6 +574,8 @@ async def decide_request(
         has_org_decide=ctx.scope is Scope.ORG,
         outcome=body.outcome,
         comment=body.comment,
+        is_owner="ORG_OWNER" in ctx.principal.roles,
+        self_approve=body.self_approve,
     )
     await session.flush()
     # Built through the same shape `GET /requests/{id}` returns, so the two endpoints can never

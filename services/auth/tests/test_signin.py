@@ -29,12 +29,15 @@ from platform_core.errors import (
     UnauthorizedProblem,
 )
 from tests.conftest import (
+    MEMBERSHIP_A,
     ORG_A,
     ORG_B,
     PASSWORD,
     USER,
     FakeDirectory,
     FakeEntitlements,
+    membership,
+    user_in_one_org,
     user_in_two_orgs,
 )
 
@@ -898,10 +901,30 @@ class TestPasswords:
         )
 
     async def test_a_brand_new_account_gets_the_welcome_not_the_reset_notice(
-        self, session, cfg, directory, redis
+        self, session, cfg, redis
     ) -> None:
         """A sign-up has no password and has never signed in: its first mail is a welcome that
         names the organization, on a link that tells the page to greet rather than warn."""
+        from app.models import OutboxEvent
+
+        owner = user_in_one_org()
+        owner.memberships[0] = membership(
+            ORG_A, MEMBERSHIP_A, "acme", "Acme Technologies", roles=["ORG_OWNER"]
+        )
+        async with session.begin():
+            await services.request_password_reset(
+                session, cfg=cfg, directory=FakeDirectory([owner]), email="sam@example.com"
+            )
+        rows = (await session.execute(select(OutboxEvent))).scalars().all()
+        assert [r.event_type for r in rows] == [services.EVT_PASSWORD_SETUP_REQUESTED]
+        payload = rows[0].payload
+        assert payload["organization_name"]
+        assert payload["reset_url"].endswith("&welcome=1")
+
+    async def test_an_invited_employee_never_gets_the_owner_welcome(
+        self, session, cfg, directory, redis
+    ) -> None:
+        """The welcome says "you are its owner"; only the organization's creator may get it."""
         from app.models import OutboxEvent
 
         async with session.begin():
@@ -909,10 +932,8 @@ class TestPasswords:
                 session, cfg=cfg, directory=directory, email="sam@example.com"
             )
         rows = (await session.execute(select(OutboxEvent))).scalars().all()
-        assert [r.event_type for r in rows] == [services.EVT_PASSWORD_SETUP_REQUESTED]
-        payload = rows[0].payload
-        assert payload["organization_name"]
-        assert payload["reset_url"].endswith("&welcome=1")
+        assert [r.event_type for r in rows] == [services.EVT_PASSWORD_RESET_REQUESTED]
+        assert "organization_name" not in rows[0].payload
 
     async def test_an_account_that_has_a_password_gets_the_ordinary_reset(
         self, session, cfg, directory, registered, redis

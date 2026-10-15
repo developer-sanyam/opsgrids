@@ -14,6 +14,11 @@ class Settings(ServiceSettings):
     db_admin_role: str | None = "opsgrids_admin"
     db_outbox_role: str | None = "opsgrids_outbox"
 
+    #: Attendance days roll over at local midnight in this zone. shortcut: one zone for every
+    #: organization (the org's own timezone lives in account's schema); make it per-org when a
+    #: non-India customer needs it. Matches account's organization default.
+    org_timezone: str = "Asia/Kolkata"
+
     #: Runs this service's single event consumer (`app/consumers.py`) as a supervised background
     #: task inside the API process instead of the separate `attendance-worker` container (the
     #: memory-headroom follow-up that folds every service's remaining worker in). Off by default

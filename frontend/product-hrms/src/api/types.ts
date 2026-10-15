@@ -450,6 +450,8 @@ export interface RequestDetailOut {
 export interface DecisionIn {
   outcome: "approve" | "reject";
   comment?: string | null;
+  /** The owner confirming approval of their own unassigned request. */
+  self_approve?: boolean;
 }
 
 /** Mirrors `ChainRungOut`. */

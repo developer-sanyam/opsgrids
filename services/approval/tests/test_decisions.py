@@ -284,6 +284,104 @@ class TestRequesterNeverEligible:
             )
 
 
+class TestOwnerSelfApproval:
+    """The audited fallback: a lone owner whose own request has no approver may confirm it."""
+
+    async def _own_unassigned(self, session: AsyncSession, org_id: uuid.UUID):  # type: ignore[no-untyped-def]
+        owner = uuid.uuid4()
+        request = await open_request(session, org_id, requester_employee_id=owner)
+        assert request is not None
+        return owner, request
+
+    async def test_the_owner_may_approve_their_own_unassigned_request_when_they_confirm(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        owner, request = await self._own_unassigned(session, org_id)
+        async with session.begin():
+            decided = await services.decide_request(
+                session,
+                organization_id=org_id,
+                request_id=request.id,
+                caller_id=owner,
+                has_org_decide=True,
+                outcome="approve",
+                comment=None,
+                is_owner=True,
+                self_approve=True,
+            )
+        assert decided.status == "approved" and decided.self_approved is True
+        async with session.begin():
+            audit = (
+                (
+                    await session.execute(
+                        select(AuditLog).where(AuditLog.action == "approval.request.self_approved")
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert len(audit) == 1 and audit[0].actor_id == owner
+
+    async def test_without_the_confirmation_the_refusal_explains_what_to_do(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        owner, request = await self._own_unassigned(session, org_id)
+        with pytest.raises(ForbiddenProblem, match="Settings") as exc:
+            await _decide(
+                session, org_id, request_id=request.id, caller_id=owner, has_org_decide=True
+            )
+        assert "no longer" not in exc.value.detail
+        assert exc.value.errors and exc.value.errors[0]["code"] == "self_approval_blocked"
+
+    async def test_a_non_owner_org_holder_cannot_self_approve(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        hr, request = await self._own_unassigned(session, org_id)
+        with pytest.raises(ForbiddenProblem) as exc:
+            async with session.begin():
+                await services.decide_request(
+                    session,
+                    organization_id=org_id,
+                    request_id=request.id,
+                    caller_id=hr,
+                    has_org_decide=True,
+                    outcome="approve",
+                    comment=None,
+                    is_owner=False,
+                    self_approve=True,
+                )
+        assert exc.value.errors and exc.value.errors[0]["code"] == "self_approval_blocked"
+
+    async def test_the_owner_cannot_self_approve_an_assigned_request_or_reject_it(
+        self, session: AsyncSession, org_id: uuid.UUID
+    ) -> None:
+        owner, manager = uuid.uuid4(), uuid.uuid4()
+        async with session.begin():
+            await seed_person(session, org_id, manager)
+            await seed_person(session, org_id, owner, reporting_manager_id=manager)
+        assigned = await open_request(session, org_id, requester_employee_id=owner)
+        assert assigned is not None
+        _, unassigned = await self._own_unassigned(session, org_id)
+        for request_id, caller, outcome in (
+            (assigned.id, owner, "approve"),
+            (unassigned.id, unassigned.requester_employee_id, "reject"),
+        ):
+            with pytest.raises(ForbiddenProblem) as exc:
+                async with session.begin():
+                    await services.decide_request(
+                        session,
+                        organization_id=org_id,
+                        request_id=request_id,
+                        caller_id=caller,
+                        has_org_decide=True,
+                        outcome=outcome,
+                        comment=None,
+                        is_owner=True,
+                        self_approve=True,
+                    )
+            assert exc.value.errors and exc.value.errors[0]["code"] == "self_approval_blocked"
+
+
 class TestNoSubjectRef:
     async def test_a_caller_with_no_employee_link_decides_nothing(
         self, session: AsyncSession, org_id: uuid.UUID

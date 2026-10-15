@@ -14,7 +14,8 @@ Everything geographic is deliberately *not* here: the fence test is a PostGIS qu
 from __future__ import annotations
 
 import enum
-from datetime import datetime
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 
 class AttendanceStatus(enum.StrEnum):
@@ -95,3 +96,9 @@ def assert_checkout_after_checkin(check_in_at: datetime, check_out_at: datetime)
     """Raise `CheckOutBeforeCheckIn` unless the check-out strictly follows the check-in."""
     if not checkout_after_checkin(check_in_at, check_out_at):
         raise CheckOutBeforeCheckIn(check_in_at, check_out_at)
+
+
+def work_date_in(now: datetime, timezone: str) -> date:
+    """The calendar day `now` falls on in the organization's zone: attendance days roll over at
+    local midnight, so 00:30 IST is the new day even though UTC is still on the old one."""
+    return now.astimezone(ZoneInfo(timezone)).date()

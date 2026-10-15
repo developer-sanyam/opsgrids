@@ -28,6 +28,7 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKeyConstraint,
@@ -284,6 +285,10 @@ class ApprovalRequest(Base, TenantBase):
     application_state: Mapped[str | None] = mapped_column(String(20))
     application_failure_reason: Mapped[str | None] = mapped_column(String(500))
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The org owner approved their own unassigned request (no other approver existed).
+    self_approved: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
     __table_args__ = (
         # Both lead with `organization_id`; left to the convention both would be named
@@ -308,7 +313,8 @@ class ApprovalRequest(Base, TenantBase):
             name="acting_for_needs_decider",
         ),
         CheckConstraint(
-            "decided_by_employee_id is null or decided_by_employee_id <> requester_employee_id",
+            "decided_by_employee_id is null or decided_by_employee_id <> requester_employee_id "
+            "or self_approved",
             name="decider_not_requester",
         ),
         CheckConstraint("decided_at is null or decided_at >= opened_at", name="decided_after_open"),

@@ -644,13 +644,21 @@ async def add_member(
 
     wanted = list(role_codes or [])
     role_ids: list[uuid.UUID] = []
+    has_core_role = False
     for code in wanted:
         role = await selectors.get_role_by_code(session, org_id, code)
         if role is None:
             raise NotFoundProblem(f"No role named {code!r} in this organization")
         role_ids.append(role.id)
+        has_core_role = has_core_role or role.product == "core"
     if not role_ids:
         role_ids = await _default_role_ids(session, org_id)
+    elif not has_core_role:
+        # Everyone is a Member: product roles (EMPLOYEE, ...) cannot carry core grants such as
+        # own approvals or location read, so a list with no core role must not drop the baseline.
+        member = await selectors.get_role_by_code(session, org_id, "MEMBER")
+        if member is not None and member.id not in role_ids:
+            role_ids.append(member.id)
 
     for role_id in role_ids:
         session.add(

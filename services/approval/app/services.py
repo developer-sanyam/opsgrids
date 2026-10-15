@@ -749,6 +749,8 @@ async def decide_request(
     has_org_decide: bool,
     outcome: str,
     comment: str | None,
+    is_owner: bool = False,
+    self_approve: bool = False,
 ) -> ApprovalRequest:
     """`POST /requests/{id}/decision` (ADR-0006 §7), one transaction:
 
@@ -772,14 +774,38 @@ async def decide_request(
         raise ForbiddenProblem("Not eligible to decide this request")
 
     now = await db_now(session)
-    eligibility = await check_eligibility(
-        session,
-        organization_id=organization_id,
-        request=request,
-        caller_id=caller_id,
-        has_org_decide=has_org_decide,
-        now=now,
-    )
+    self_approved = request.requester_employee_id == caller_id
+    if self_approved:
+        # ADR-0006 §6 rule 3 stands (the requester is never eligible) with one audited
+        # exception: the org owner may approve their own request when it has no approver, and
+        # only on an explicit confirmation. Approval cannot see who else holds decide:ORG, so
+        # "owner + unassigned step" is the proxy for "no one else can decide this".
+        open_step = await selectors.get_open_step(session, organization_id, request_id)
+        if not (
+            self_approve
+            and outcome == "approve"
+            and is_owner
+            and has_org_decide
+            and open_step is not None
+            and open_step.approver_employee_id is None
+        ):
+            raise ForbiddenProblem(
+                "You can't decide your own request. Ask another approver, or add one in "
+                "Settings > Members. The organization owner can approve their own request "
+                "when nobody else is set up to.",
+                errors=[{"code": "self_approval_blocked", "owner_can_self_approve": is_owner}],
+            )
+        node = await selectors.get_hierarchy_node(session, organization_id, caller_id)
+        eligibility = Eligibility(True, None, node.display_name if node else None)
+    else:
+        eligibility = await check_eligibility(
+            session,
+            organization_id=organization_id,
+            request=request,
+            caller_id=caller_id,
+            has_org_decide=has_org_decide,
+            now=now,
+        )
     if not eligibility.eligible:
         raise ForbiddenProblem("Not eligible to decide this request")
 
@@ -803,6 +829,7 @@ async def decide_request(
 
     request.status = step.outcome
     request.decided_by_employee_id = caller_id
+    request.self_approved = self_approved
     request.acting_for_employee_id = eligibility.acting_for_employee_id
     request.decided_at = now
     request.comment = comment
@@ -815,11 +842,11 @@ async def decide_request(
         acting_as=(
             str(eligibility.acting_for_employee_id) if eligibility.acting_for_employee_id else None
         ),
-        action="approval.request.decided",
+        action="approval.request.self_approved" if self_approved else "approval.request.decided",
         entity="approval_request",
         entity_id=request.id,
         before={"status": "pending"},
-        after={"status": request.status},
+        after={"status": request.status, "self_approved": self_approved},
         # `comment` and `request_note` never land in an audit before/after blob (ADR-0006 §3).
     )
     publish_event(

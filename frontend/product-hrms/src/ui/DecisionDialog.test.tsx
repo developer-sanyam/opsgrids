@@ -14,6 +14,9 @@ import type { RequestDetailOut } from "@/api/types";
 import { DecisionDialog } from "./DecisionDialog";
 
 const decideRequest = vi.fn();
+const myEmployeeId = vi.fn(() => "emp-other");
+
+vi.mock("@/lib/subject", () => ({ getMyEmployeeId: () => myEmployeeId() }));
 
 vi.mock("@/api/approvals", () => ({
   decideRequest: (...args: unknown[]) => decideRequest(...args),
@@ -96,6 +99,23 @@ describe("DecisionDialog", () => {
 
     await waitFor(() => expect(onDecided).toHaveBeenCalled());
     expect(decideRequest).toHaveBeenCalledWith("req-1", { outcome: "approve", comment: "Looks right." });
+  });
+
+  it("asks the owner to confirm approving their own request and says so to the server", async () => {
+    myEmployeeId.mockReturnValue("emp-ananya");
+    decideRequest.mockResolvedValue({ ...REQUEST, status: "approved" });
+    const user = userEvent.setup();
+    renderDialog("approve");
+
+    expect(screen.getByText("Approve your own correction?")).toBeDefined();
+    await user.click(screen.getByRole("button", { name: "Approve your own request" }));
+    await waitFor(() => expect(decideRequest).toHaveBeenCalled());
+    expect(decideRequest).toHaveBeenCalledWith("req-1", {
+      outcome: "approve",
+      comment: null,
+      self_approve: true,
+    });
+    myEmployeeId.mockReturnValue("emp-other");
   });
 
   it("renders the 409 'already decided by someone else' branch and hands the typed comment back", async () => {
