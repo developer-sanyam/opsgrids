@@ -303,6 +303,18 @@
             "title": "Name",
             "type": "string"
           },
+          "phone": {
+            "anyOf": [
+              {
+                "maxLength": 24,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          },
           "pincode": {
             "default": "",
             "maxLength": 6,
@@ -393,6 +405,11 @@
           },
           "name": {
             "title": "Name",
+            "type": "string"
+          },
+          "phone": {
+            "default": "",
+            "title": "Phone",
             "type": "string"
           },
           "pincode": {
@@ -591,6 +608,18 @@
               }
             ],
             "title": "Name"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "maxLength": 24,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
           },
           "pincode": {
             "anyOf": [

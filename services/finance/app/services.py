@@ -314,8 +314,52 @@ def _checked_buyer_state(gstin: str | None, state_code: str | None) -> str | Non
     return code
 
 
+def _phone_aad(organization_id: uuid.UUID) -> bytes:
+    """Associated data a customer's phone is sealed under: the organization, so a sealed number
+    lifted onto another tenant's row will not open there."""
+    return f"finance.customer.phone:{organization_id}".encode()
+
+
+def _seal_phone(customer: Customer, raw: str | None, organization_id: uuid.UUID) -> None:
+    """Normalise and seal a phone onto a customer, or clear it for an empty value. Refused, never
+    guessed, when it cannot be read; the refusal never repeats the number."""
+    if raw is None or not raw.strip():
+        customer.phone_enc = None
+        customer.phone_masked = ""
+        return
+    try:
+        number = domain.normalise_phone(raw)
+    except ValueError as exc:
+        raise BusinessRuleProblem(f"The customer's phone number is not valid: {exc}") from exc
+    sealed, masked = pii.seal(
+        number, kind="phone", settings=settings(), aad=_phone_aad(organization_id)
+    )
+    customer.phone_enc = sealed
+    customer.phone_masked = masked
+
+
+async def _refuse_duplicate_gstin(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    gstin: str | None,
+    *,
+    excluding: uuid.UUID | None = None,
+) -> None:
+    """A GSTIN names one legal registration, so two live customers holding the same one are one
+    party entered twice. Refused with a 409 that says so — which is also what lets a re-uploaded
+    import sheet skip the rows it already added rather than doubling the directory."""
+    if gstin is None:
+        return
+    existing = await selectors.live_customer_with_gstin(
+        session, organization_id, gstin, excluding=excluding
+    )
+    if existing is not None:
+        raise ConflictProblem(f"A customer with GSTIN {gstin} already exists: {existing.name}")
+
+
 def _customer_facts(customer: Customer) -> dict[str, Any]:
-    """The editable facts of a customer, for the before/after of its audit rows and events."""
+    """The editable facts of a customer, for the before/after of its audit rows and events —
+    the phone only as its mask."""
     return {
         "name": customer.name,
         "contact_name": customer.contact_name,
@@ -327,6 +371,7 @@ def _customer_facts(customer: Customer) -> dict[str, Any]:
         "address_line2": customer.address_line2,
         "pincode": customer.pincode,
         "state_code": customer.state_code,
+        "phone": customer.phone_masked,
         "is_tds_deductor": customer.is_tds_deductor,
         "deducts_tds_194q": customer.deducts_tds_194q,
         "tcs_applicable": customer.tcs_applicable,
@@ -371,6 +416,7 @@ async def create_customer(
     gstin = _checked_gstin(payload.gstin, whose="The customer's")
     _check_withholding_exclusion(payload.deducts_tds_194q, payload.tcs_applicable)
     state_code = _checked_buyer_state(gstin, payload.state_code)
+    await _refuse_duplicate_gstin(session, ctx.organization_id, gstin)
     state = payload.state
     if state_code is not None and not state.strip():
         state = domain.GST_STATE_CODES[state_code]
@@ -394,6 +440,7 @@ async def create_customer(
         deducts_tds_194q=payload.deducts_tds_194q,
         tcs_applicable=payload.tcs_applicable,
     )
+    _seal_phone(customer, payload.phone, ctx.organization_id)
     session.add(customer)
     await session.flush()
 
@@ -447,6 +494,11 @@ async def update_customer(
 
     if "gstin" in changes:
         changes["gstin"] = _checked_gstin(changes["gstin"], whose="The customer's")
+        await _refuse_duplicate_gstin(
+            session, ctx.organization_id, changes["gstin"], excluding=customer.id
+        )
+    if "phone" in changes:
+        _seal_phone(customer, changes.pop("phone"), ctx.organization_id)
     if "pincode" in changes:
         changes["pincode"] = _checked_pincode(changes["pincode"], whose="The customer's")
     for line in ("address_line1", "address_line2"):

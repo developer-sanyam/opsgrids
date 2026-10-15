@@ -304,6 +304,32 @@ def document_number(prefix: str, financial_year: str, seq: int) -> str:
     return number
 
 
+_E164_RE = re.compile(r"^\+[1-9]\d{7,14}$")
+_IN_MOBILE_RE = re.compile(r"^[6-9]\d{9}$")
+
+
+def normalise_phone(raw: str) -> str:
+    """A phone number as E.164. A number with a country code is taken as written (`00` counts as
+    `+`); a bare Indian mobile — ten numerals starting 6-9, alone or behind a trunk `0` or a bare
+    `91` — becomes `+91…`. Finance bills in India, so that is the one national format it reads;
+    anything else is refused rather than guessed, because a guessed country code reaches a
+    stranger. Raises `ValueError`, whose message never repeats the number."""
+    compact = re.sub(r"[\s\-().]", "", raw.strip())
+    if compact.startswith("00"):
+        compact = "+" + compact[2:]
+    if compact.startswith("+"):
+        if _E164_RE.match(compact):
+            return compact
+        raise ValueError("a phone number with a country code has 8 to 15 numerals after the +")
+    if _IN_MOBILE_RE.match(compact):
+        return "+91" + compact
+    if len(compact) == 11 and compact.startswith("0") and _IN_MOBILE_RE.match(compact[1:]):
+        return "+91" + compact[1:]
+    if len(compact) == 12 and compact.startswith("91") and _IN_MOBILE_RE.match(compact[2:]):
+        return "+" + compact
+    raise ValueError("give a 10-numeral Indian mobile, or the number with its country code (+…)")
+
+
 def compose_address(*parts: str) -> str:
     """Address lines joined one per printed line, blanks dropped. Empty when every part is."""
     return "\n".join(p.strip() for p in parts if p and p.strip())

@@ -77,6 +77,8 @@ class CustomerOut(BaseModel):
     pincode: str = ""
     #: The GST state code of the billing address; null when not recorded.
     state_code: str | None = None
+    #: The phone number, masked (`•••••• 3210`); empty when none is on file. Never the number.
+    phone: str = Field(default="", validation_alias="phone_masked")
     # ---------------------------------------------------------------- withholding
     # Facts about this buyer that decide whether tax is withheld on what this organization
     # bills them. Carried here (not just on `CustomerCreate`) so an edit form can prefill them —
@@ -639,6 +641,9 @@ class CustomerCreate(BaseModel):
     #: GST state code of the billing address. When given, `state` is filled from it if blank, and
     #: a GSTIN must belong to the same state.
     state_code: str | None = Field(default=None, min_length=2, max_length=2)
+    #: E.164 (`+919876543210`), or a bare Indian mobile (`9876543210`, `09876543210`,
+    #: `919876543210`), which is stored as +91. Sealed on write; reads return only its mask.
+    phone: str | None = Field(default=None, max_length=24)
     # Withholding facts about the buyer. All three default to false, which is what keeps
     # withholding opt-in: an organization that has not told the platform about its counterparties
     # has no TDS or TCS figures invented for it. 194Q and 206C(1H) are mutually exclusive by
@@ -667,6 +672,8 @@ class CustomerUpdate(BaseModel):
     address_line2: str | None = Field(default=None, max_length=200)
     pincode: str | None = Field(default=None, max_length=6)
     state_code: str | None = Field(default=None, min_length=2, max_length=2)
+    #: A new number replaces the one on file; an empty string removes it.
+    phone: str | None = Field(default=None, max_length=24)
     is_tds_deductor: bool | None = None
     deducts_tds_194q: bool | None = None
     tcs_applicable: bool | None = None

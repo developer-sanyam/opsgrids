@@ -118,6 +118,18 @@ class Customer(Base, TenantBase):
     #: place of supply; a GSTIN, when present, must agree with it (`services._checked_buyer_state`).
     state_code: Mapped[str | None] = mapped_column(String(2))
 
+    # ---------------------------------------------------------------- phone
+    # The platform's sealed-envelope pattern (`platform_core.pii`), the same pair customer-service
+    # keeps for a CRM contact: the number sealed, its mask beside it. Every read returns the mask;
+    # nothing in finance opens the number today.
+
+    #: `•••••• 3210`: the only form any read returns. Empty when no number is on file.
+    phone_masked: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="", server_default=""
+    )
+    #: The E.164 number, sealed with this organization as associated data.
+    phone_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+
     #: The CRM contact (`services/customer`) this billed party was resolved from, when it was
     #: — `ensure_customer_for_crm_contact`'s own idempotency key. A plain UUID, never a foreign
     #: key (ADR-0000 §10: `customer` is a different schema); validated against customer-service
