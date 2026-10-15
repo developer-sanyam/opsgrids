@@ -26,6 +26,9 @@ function Loaded({ data }: { data: Messaging360 }) {
   const gone = (name: "whatsapp" | "email") => data.unavailable.includes("channels") || data.unavailable.includes(name);
   const whatsapp = gone("whatsapp") ? null : data.channels.whatsapp;
   const email = gone("email") ? null : data.channels.email;
+  // Null because the section is down is "Not available"; null because Engage has no record yet is not.
+  const missing = (name: "whatsapp" | "email") =>
+    gone(name) ? "Not available" : name === "whatsapp" ? "No WhatsApp yet" : "No email yet";
   if (whatsapp === null && email === null && data.timeline.length === 0) {
     return (
       <EmptyState
@@ -40,7 +43,7 @@ function Loaded({ data }: { data: Messaging360 }) {
       <div className="grid gap-3 sm:grid-cols-2">
         <Channel title="WhatsApp">
           {whatsapp === null ? (
-            <p className="text-sm text-muted">Not available</p>
+            <p className="text-sm text-muted">{missing("whatsapp")}</p>
           ) : (
             <>
               <p className="inline-flex items-center gap-2 text-sm text-ink">
@@ -63,7 +66,7 @@ function Loaded({ data }: { data: Messaging360 }) {
         </Channel>
         <Channel title="Email">
           {email === null ? (
-            <p className="text-sm text-muted">Not available</p>
+            <p className="text-sm text-muted">{missing("email")}</p>
           ) : (
             <>
               <p className="inline-flex items-center gap-2 text-sm text-ink">

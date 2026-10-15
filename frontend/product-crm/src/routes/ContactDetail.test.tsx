@@ -79,6 +79,15 @@ describe("Messaging card", () => {
     expect(await screen.findAllByText("Not available")).toHaveLength(2);
   });
 
+  it("says No WhatsApp yet / No email yet when Engage has no record of the contact", async () => {
+    routes[GET_360] = () =>
+      json({ ...THREE_SIXTY, channels: { whatsapp: null, email: null }, unavailable: [] });
+    show(["engage"]);
+    expect(await screen.findByText("No WhatsApp yet")).toBeTruthy();
+    expect(screen.getByText("No email yet")).toBeTruthy();
+    expect(screen.queryByText("Not available")).toBeNull();
+  });
+
   it("shows the empty state when there is nothing", async () => {
     routes[GET_360] = () => json({ channels: { whatsapp: null, email: null }, timeline: [], unavailable: [] });
     show(["engage"]);
