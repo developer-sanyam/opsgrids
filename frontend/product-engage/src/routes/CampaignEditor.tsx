@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 
 import { Can, useAsync } from "@opsgrids/client";
 import { ArrowLeftIcon } from "@opsgrids/ui";
@@ -34,7 +34,7 @@ import {
   useAnnounce,
 } from "@/ui";
 import { CampaignForm } from "./CampaignForm";
-import type { FocusRequest } from "./CampaignForm";
+import type { CampaignPrefill, FocusRequest } from "./CampaignForm";
 import { CampaignReport } from "./CampaignReport";
 import type { StatusChanged } from "./CampaignReport";
 import { CampaignSendPanel } from "./CampaignSendPanel";
@@ -281,6 +281,8 @@ function CampaignEditor({ campaignId }: { campaignId: string }) {
 
 function NewCampaign() {
   const navigate = useNavigate();
+  // "Use template" on the email templates page sends the template here in the router state.
+  const prefill = (useLocation().state as { template?: CampaignPrefill } | null)?.template;
   const loader = useCallback(() => loadRefs(), []);
   const state = useAsync(loader, []);
 
@@ -322,6 +324,7 @@ function NewCampaign() {
             refs={refs}
             resolved={{ lists: refs.lists.items, gone: new Set() }}
             focusRequest={null}
+            {...(prefill !== undefined ? { prefill } : {})}
             onDirtyChange={noop}
             onSaved={(saved) =>
               navigate(`/campaigns/${saved.id}`, {

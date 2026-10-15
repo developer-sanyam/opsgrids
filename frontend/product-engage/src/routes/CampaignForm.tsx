@@ -149,7 +149,13 @@ const CHANNEL_OPTIONS = [
   },
 ];
 
-function seed(campaign: CampaignOut | null): Values {
+/** An email template's subject and plain-text body, to start a new campaign from. */
+export interface CampaignPrefill {
+  subject: string;
+  textBody: string;
+}
+
+function seed(campaign: CampaignOut | null, prefill?: CampaignPrefill): Values {
   return {
     name: campaign?.name ?? "",
     channel: campaign?.channel ?? "email",
@@ -159,9 +165,9 @@ function seed(campaign: CampaignOut | null): Values {
     audience: campaign?.audience ?? "all_sendable",
     listId: campaign?.list_id ?? "",
     segmentId: campaign?.segment_id ?? "",
-    subject: campaign?.subject ?? "",
+    subject: campaign?.subject ?? prefill?.subject ?? "",
     htmlBody: campaign?.html_body ?? "",
-    textBody: campaign?.text_body ?? "",
+    textBody: campaign?.text_body ?? prefill?.textBody ?? "",
     abTest: campaign?.ab_test ?? false,
     subjectB: campaign?.subject_b ?? "",
     htmlBodyB: campaign?.html_body_b ?? "",
@@ -312,6 +318,7 @@ export function CampaignForm({
   refs,
   resolved,
   focusRequest,
+  prefill,
   onDirtyChange,
   onSaved,
 }: {
@@ -321,10 +328,12 @@ export function CampaignForm({
   /** The lists this screen can name: the paged read, plus the campaign's own by id. */
   resolved: ResolvedLists;
   focusRequest: FocusRequest | null;
+  /** Fills a new campaign's subject and body from an email template. */
+  prefill?: CampaignPrefill;
   onDirtyChange: (dirty: boolean) => void;
   onSaved: (campaign: CampaignOut, message: string) => void;
 }) {
-  const [values, setValues] = useState<Values>(() => seed(campaign));
+  const [values, setValues] = useState<Values>(() => seed(campaign, prefill));
   const [errors, setErrors] = useState<Errors>({});
   const [submitting, setSubmitting] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -377,7 +386,7 @@ export function CampaignForm({
   const [seen, setSeen] = useState(campaign);
   if (campaign !== seen) {
     setSeen(campaign);
-    setValues(seed(campaign));
+    setValues(seed(campaign, prefill));
     setErrors({});
     setFailure(null);
   }
@@ -399,7 +408,7 @@ export function CampaignForm({
   if (readOnly !== wasReadOnly) {
     setWasReadOnly(readOnly);
     if (readOnly) {
-      setValues(seed(campaign));
+      setValues(seed(campaign, prefill));
       setErrors({});
       setFailure(null);
     }
