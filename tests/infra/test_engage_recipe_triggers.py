@@ -9,8 +9,7 @@ that way.
 
 The recipes are read as text and the list from a fresh interpreter in `services/notification`
 (`import app` is ambiguous across services). Only `crm.*` triggers are held to the list: the other
-products' recipes are those products' to keep, and one of them ("Follow up a storefront enquiry")
-is known to wait for its key (registry `EV42`).
+products' recipes are those products' to keep.
 """
 
 from __future__ import annotations

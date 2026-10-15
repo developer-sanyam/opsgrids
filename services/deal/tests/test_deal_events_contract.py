@@ -131,6 +131,20 @@ class TestProducerSide:
         assert event.payload["closed_at"] == opened_at.isoformat()
         assert event.payload["created_at"] == opened_at.isoformat()
 
+    async def test_events_carry_the_crm_ids(self, session, org_id, mode) -> None:
+        _, middle, _, _, _ = mode
+        deal_id = await make_deal(session, org_id, name="Addressed")
+        await move_deal(session, org_id, deal_id, new_stage=middle)
+        async with session.begin():
+            deal = await selectors.get_deal(session, org_id, deal_id)
+            assert deal is not None
+            company_id, contact_id = deal.company_id, deal.primary_contact_id
+        for event in await staged(session, deal_id):
+            assert event.payload["crm_company_id"] == str(company_id)
+            assert event.payload["crm_contact_id"] == (
+                str(contact_id) if contact_id is not None else None
+            )
+
     async def test_deleted_is_unchanged(self, session, org_id, mode) -> None:
         ctx = ctx_for(org_id, "crm.pipeline.deal.delete", Scope.ORG)
         deal_id = await make_deal(session, org_id, name="Doomed")

@@ -22,6 +22,7 @@
     "payment_id": { "type": "string", "format": "uuid" },
     "reference": { "type": "string", "minLength": 1 },
     "customer_id": { "type": "string", "format": "uuid" },
+    "crm_contact_id": { "type": ["string", "null"], "format": "uuid" },
     "received_date": { "type": "string", "format": "date" },
     "method": { "enum": ["bank_transfer", "upi", "card", "cheque", "cash"] },
     "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },

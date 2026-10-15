@@ -21,6 +21,8 @@
   ],
   "properties": {
     "organization_id": { "type": "string", "format": "uuid" },
+    "crm_company_id": { "type": "string", "format": "uuid" },
+    "crm_contact_id": { "type": ["string", "null"], "format": "uuid" },
     "deal_id": { "type": "string", "format": "uuid" },
     "from": { "type": "string", "pattern": "^[a-z0-9_]{1,20}$" },
     "to": { "type": "string", "pattern": "^[a-z0-9_]{1,20}$" },

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/finance.billing.invoice.overdue/v1",
+  "title": "finance.billing.invoice.overdue",
+  "description": "An invoice is past its due date and still unpaid, published once, the day after the due date. Never for a paid, void or draft invoice or a credit note. `crm_contact_id` is null when the finance customer has no CRM link. Ids and amounts only; no personal data.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "organization_id",
+    "invoice_id",
+    "number",
+    "customer_id",
+    "crm_contact_id",
+    "currency",
+    "amount_due_minor",
+    "days_overdue"
+  ],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "invoice_id": { "type": "string", "format": "uuid" },
+    "number": { "type": "string", "minLength": 1 },
+    "customer_id": { "type": "string", "format": "uuid" },
+    "crm_contact_id": { "type": ["string", "null"], "format": "uuid" },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "amount_due_minor": { "type": "integer", "minimum": 1 },
+    "days_overdue": { "type": "integer", "minimum": 1 }
+  }
+}

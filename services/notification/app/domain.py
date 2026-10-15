@@ -159,6 +159,7 @@ SUBSCRIBABLE_EVENTS: Final[tuple[str, ...]] = (
     # finance
     "finance.billing.customer.created",
     "finance.billing.invoice.issued",
+    "finance.billing.invoice.overdue",
     "finance.billing.payment.received",
     "finance.compliance.eway_bill.cancelled",
     "finance.compliance.eway_bill.failed",

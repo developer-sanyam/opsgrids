@@ -29,7 +29,7 @@ import asyncio
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -132,6 +132,10 @@ EVT_CUSTOMER_ARCHIVED = "finance.billing.customer.archived"
 EVT_INVOICE_ISSUED = "finance.billing.invoice.issued"
 EVT_INVOICE_PAID = "finance.billing.invoice.paid"
 EVT_PAYMENT_RECEIVED = "finance.billing.payment.received"
+#: Internal to finance: the scheduler delivers this the day after an invoice's due date, and the
+#: consumer re-reads the invoice. Only an invoice still unpaid then publishes `EVT_INVOICE_OVERDUE`.
+EVT_INVOICE_OVERDUE_CHECK = "finance.billing.invoice.overdue_check"
+EVT_INVOICE_OVERDUE = "finance.billing.invoice.overdue"
 #: The compliance events. `filed` is the one the auto-filing consumer both produces the trigger
 #: for and confirms against — it carries the IRN, so a consumer never has to read back to learn
 #: whether the attempt succeeded.
@@ -969,6 +973,8 @@ async def create_invoice(
             "number": invoice.number,
             "document_type": invoice.document_type,
             "customer_id": str(invoice.customer_id),
+            # SP4 EV33: lets an automation address the customer; null when no CRM link.
+            "crm_contact_id": str(customer.crm_contact_id) if customer.crm_contact_id else None,
             "status": invoice.status,
             "total_minor": invoice.total_minor,
             "currency": invoice.currency,
@@ -982,6 +988,25 @@ async def create_invoice(
         },
         actor=actor_for(ctx),
     )
+
+    if invoice.document_type == "invoice":
+        # One reminder at due date + 1 day (UTC midnight). The key makes a redelivered issue
+        # event schedule it once.
+        schedule_event(
+            session,
+            OutboxEvent,
+            organization_id=ctx.organization_id,
+            due_at=datetime.combine(invoice.due_date + timedelta(days=1), time.min, tzinfo=UTC),
+            idempotency_key=f"invoice:{invoice.id}:overdue",
+            target_event_type=EVT_INVOICE_OVERDUE_CHECK,
+            target_aggregate_type="invoice",
+            target_aggregate_id=invoice.id,
+            target_payload={
+                "organization_id": str(ctx.organization_id),
+                "invoice_id": str(invoice.id),
+            },
+            target_actor=actor_for(ctx),
+        )
 
     # Auto-filing starts here, and it starts as a *row*. Staged on the outbox inside this same
     # transaction, the request is sent by the relay only after the invoice has committed — so
@@ -1615,6 +1640,7 @@ async def record_payment(
             "payment_id": str(payment.id),
             "reference": payment.reference,
             "customer_id": str(payment.customer_id),
+            "crm_contact_id": str(customer.crm_contact_id) if customer.crm_contact_id else None,
             "amount_minor": payment.amount_minor,
             "allocations": [
                 {"invoice_id": str(a.invoice_id), "amount_minor": a.amount_minor}
@@ -1624,6 +1650,53 @@ async def record_payment(
         actor=actor_for(ctx),
     )
     return payment
+
+
+async def check_invoice_overdue(
+    session: AsyncSession, ctx: ScopeContext, invoice_id: uuid.UUID, *, today: date | None = None
+) -> bool:
+    """Publish `invoice.overdue` if the invoice is still unpaid, not void and past its due date.
+
+    Re-reads the invoice and its allocations, so a payment made after the schedule was set is
+    seen. Returns whether an event was staged."""
+    today = today or datetime.now(UTC).date()
+    invoice = await selectors.get_invoice(session, ctx.organization_id, invoice_id)
+    if (
+        invoice is None
+        or invoice.document_type != "invoice"
+        or invoice.status in ("draft", "void", "paid")
+        or today <= invoice.due_date
+    ):
+        return False
+    paid = (await selectors.paid_by_invoice(session, ctx.organization_id, [invoice.id])).get(
+        invoice.id, 0
+    )
+    amount_due = invoice.total_minor - paid
+    if amount_due <= 0:
+        return False
+    customer = await selectors.get_customer(session, ctx.organization_id, invoice.customer_id)
+    publish_event(
+        session,
+        OutboxEvent,
+        organization_id=ctx.organization_id,
+        event_type=EVT_INVOICE_OVERDUE,
+        aggregate_type="invoice",
+        aggregate_id=invoice.id,
+        payload={
+            "organization_id": str(ctx.organization_id),
+            "invoice_id": str(invoice.id),
+            "number": invoice.number,
+            "customer_id": str(invoice.customer_id),
+            "crm_contact_id": (
+                str(customer.crm_contact_id) if customer and customer.crm_contact_id else None
+            ),
+            "currency": invoice.currency,
+            "amount_due_minor": amount_due,
+            "days_overdue": (today - invoice.due_date).days,
+        },
+        actor=actor_for(ctx),
+    )
+    return True
 
 
 # --------------------------------------------------------------------- GST registration

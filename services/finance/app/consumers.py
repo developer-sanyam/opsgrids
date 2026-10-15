@@ -234,6 +234,25 @@ async def file_requested_invoice(envelope: dict[str, Any]) -> None:
 consumer.on(services.EVT_INVOICE_FILING_REQUESTED)(file_requested_invoice)
 
 
+async def invoice_overdue_check(envelope: dict[str, Any]) -> None:
+    """The scheduler's due-date-plus-one-day delivery: re-read the invoice and publish
+    `invoice.overdue` only if it is still unpaid and not void."""
+    event_id = uuid.UUID(envelope["event_id"])
+    organization_id = uuid.UUID(str(envelope["organization_id"]))
+    async with _session_scope(organization_id) as session:
+        if await already_processed(session, ProcessedEvent, event_id):
+            return
+        await services.check_invoice_overdue(
+            session,
+            services.service_ctx(organization_id),
+            uuid.UUID(envelope["payload"]["invoice_id"]),
+        )
+        mark_processed(session, ProcessedEvent, event_id, envelope["event_type"])
+
+
+consumer.on(services.EVT_INVOICE_OVERDUE_CHECK)(invoice_overdue_check)
+
+
 #: `operations` originates this — bare string, named locally rather than imported, for the same
 #: reason `payment.app.consumers.EVT_INVOICE_FINALIZED` is: `import app` is ambiguous across
 #: services, so one process may only ever hold one service's `app`, and this process is finance's.
