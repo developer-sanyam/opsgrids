@@ -143,6 +143,7 @@ SUBSCRIBABLE_EVENTS: Final[tuple[str, ...]] = (
     "core.user.mfa_enrolled",
     "core.user.password_changed",
     "core.user.password_reset_requested",
+    "core.user.password_setup_requested",
     # crm
     "crm.book.company.created",
     "crm.book.contact.created",

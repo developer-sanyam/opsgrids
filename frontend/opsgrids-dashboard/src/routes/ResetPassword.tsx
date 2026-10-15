@@ -2,22 +2,24 @@ import { useId, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
-import { ApiError } from "@opsgrids/client";
+import { ApiError, MIN_PASSWORD_LENGTH } from "@opsgrids/client";
 
 import { setPasswordFromLink } from "@/api";
 import { AuthCard, Button, Field, InlineError, inputClass } from "@/ui";
 
-/** Mirrors auth's `Password` constraint closely enough to fail fast; the service is the judge. */
-const MIN_LENGTH = 12;
+/** Mirrors auth's `Password` constraint to fail fast; the service is the judge. */
+const MIN_LENGTH = MIN_PASSWORD_LENGTH;
 
 /**
  * The landing page of the emailed link: `/reset-password?token=…`. Used by a fresh sign-up
- * setting a first password and by anyone resetting one — the service does not distinguish, and
- * neither does the wording.
+ * setting a first password and by anyone resetting one. The welcome email's link adds
+ * `welcome=1`: that only changes the wording (a greeting instead of a notice that other sessions
+ * were signed out, which is meaningless on an account that has none) and grants nothing.
  */
 export function ResetPasswordPage() {
   const [params] = useSearchParams();
   const token = params.get("token") ?? "";
+  const firstTime = params.get("welcome") === "1";
 
   const passwordId = useId();
   const confirmId = useId();
@@ -73,9 +75,13 @@ export function ResetPasswordPage() {
 
   if (done) {
     return (
-      <AuthCard title="Your password is set">
+      <AuthCard title={firstTime ? "You're all set" : "Your password is set"}>
         <div className="flex flex-col gap-4">
-          <p className="text-sm text-muted">Every other session on this account has been signed out.</p>
+          <p className="text-sm text-muted">
+            {firstTime
+              ? "Your password is set. Sign in to open your workspace."
+              : "Every other session on this account has been signed out."}
+          </p>
           <Link
             to="/login"
             className="inline-flex h-11 items-center self-start rounded-full bg-accent px-5 font-semibold text-on-accent transition-colors hover:bg-accent-strong"
@@ -88,7 +94,7 @@ export function ResetPasswordPage() {
   }
 
   return (
-    <AuthCard title="Choose a password">
+    <AuthCard title={firstTime ? "Welcome to OpsGrids" : "Choose a password"}>
       <form onSubmit={handleSubmit} className="flex flex-col gap-4" noValidate>
         {error ? (
           <InlineError>

@@ -78,7 +78,7 @@ CRM_PIPELINE_ROLE_TEMPLATES: list[RoleTemplate] = [
     ),
     RoleTemplate(
         code="CRM_DEAL_REP",
-        name="Sales representative",
+        name="Sales representative (pipeline)",
         product=PRODUCT,
         description=(
             "Every person with a CRM seat. Reads the whole board — sales works from one "
