@@ -176,10 +176,20 @@ def _build_app_engine(
         # Suppressed deliberately: this runs while a connection is being returned, often
         # because something already failed. Raising here would replace the real error
         # with this one and could poison the pool.
-        with suppress(Exception):
+        #
+        # The adapter opens a transaction on the first statement, and this hook runs *after*
+        # the connection was rolled back, so the RESET's own transaction would otherwise stay
+        # open for as long as the connection sits in the pool: `idle in transaction`, one per
+        # service, holding a snapshot (2026-10-15 production finding). Commit it on success,
+        # roll it back on failure (an aborted transaction must not be parked either).
+        try:
             cur = dbapi_conn.cursor()
             cur.execute(f"RESET {TENANT_GUC}")
             cur.close()
+            dbapi_conn.commit()
+        except Exception:
+            with suppress(Exception):
+                dbapi_conn.rollback()
 
     return engine
 
