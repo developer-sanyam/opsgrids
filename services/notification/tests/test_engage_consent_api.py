@@ -513,22 +513,18 @@ async def test_lookup_by_address_returns_only_that_subjects_events(client, sessi
 # --------------------------------------------------------------------- unmask
 
 
-async def test_unmask_opens_the_address_only_with_the_permission_and_the_step_up(
-    client, session, org_id
-) -> None:
+async def test_unmask_opens_the_address_with_the_permission_alone(client, session, org_id) -> None:
     event = await _seed_event(session, org_id)
     event_id = event.id
     path = f"{BASE}/{event_id}:unmask"
 
-    with as_principal(caller(org_id, [f"{M_UNMASK}:ORG"])):
-        no_step_up = await client.post(path)
-    assert no_step_up.status_code == 403
-
+    # Negative authz: a one-time code does not stand in for the permission.
     with as_principal(caller(org_id, BOTH, amr=["otp"])):
         no_permission = await client.post(path)
     assert no_permission.status_code == 403
 
-    with as_principal(caller(org_id, [f"{M_UNMASK}:ORG"], amr=["otp"])):
+    # No step-up needed (owner decision 2026-10-15, ADR-0023 addendum).
+    with as_principal(caller(org_id, [f"{M_UNMASK}:ORG"])):
         revealed = await client.post(path)
     assert revealed.status_code == 200, revealed.text
     assert revealed.json() == {"event_id": str(event_id), "address": ADDRESS}
@@ -558,7 +554,7 @@ async def test_a_refused_unmask_writes_no_audit_row_and_reveals_nothing(
 ) -> None:
     event = await _seed_event(session, org_id)
     event_id = event.id
-    with as_principal(caller(org_id, [f"{M_UNMASK}:ORG"])):
+    with as_principal(caller(org_id, [f"{C_READ}:ORG"], amr=["otp"])):
         refused = await client.post(f"{BASE}/{event_id}:unmask")
     assert refused.status_code == 403
     assert ADDRESS not in refused.text

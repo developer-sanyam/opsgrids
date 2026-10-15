@@ -366,9 +366,8 @@ ENGAGE = PermissionCatalogue(
             "ORG",
         ),
         # Reading a customer's actual words, unmasked. Dangerous in the same sense
-        # `crm.book.contact.read_sensitive` is, and paired the same way: the permission alone is
-        # not enough, `app/api/engage.py` also demands `amr={"otp"}` — an ordinary inbox session
-        # must not be a standing route to every customer's message history.
+        # `crm.book.contact.read_sensitive` is, and paired the same way: the permission is the
+        # gate (no step-up since 2026-10-15, ADR-0023 addendum); every reveal is audited.
         PermissionSpec(
             "inbox",
             "message",

@@ -6,6 +6,7 @@ import {
   setAccessToken,
   setUnauthorizedHandler,
 } from "../session";
+import { clearRevealedValues } from "../reveal/revealedValues";
 import { clearStepUpToken } from "../stepup/holder";
 import * as authApi from "./api";
 import { AuthContext } from "./context";
@@ -76,6 +77,8 @@ export function AuthProvider({ fixtureUser = null, children }: AuthProviderProps
     setAccessToken(null);
     // A step-up token is proof of a code typed in *this* session; it goes with it.
     clearStepUpToken();
+    // Revealed values are session-sticky and end with the session.
+    clearRevealedValues();
     expiresAtRef.current = null;
     pending.current = null;
     setUser(null);
@@ -151,6 +154,7 @@ export function AuthProvider({ fixtureUser = null, children }: AuthProviderProps
   useEffect(() => {
     setUnauthorizedHandler(() => {
       clearStepUpToken();
+      clearRevealedValues();
       pending.current = null;
       expiresAtRef.current = null;
       setUser(null);
@@ -191,6 +195,7 @@ export function AuthProvider({ fixtureUser = null, children }: AuthProviderProps
       if (!active) return;
       if (result.outcome === "unauthorized") {
         clearStepUpToken();
+        clearRevealedValues();
         pending.current = null;
         expiresAtRef.current = null;
         setUser(null);
@@ -217,6 +222,8 @@ export function AuthProvider({ fixtureUser = null, children }: AuthProviderProps
   /** Apply a completed login result: store the token and load the user. */
   const complete = useCallback(
     async (result: Extract<LoginResult, { status: "complete" }>) => {
+      // A new sign-in (another person, or another organization): nothing revealed before it carries over.
+      clearRevealedValues();
       setAccessToken(result.access_token);
       expiresAtRef.current = Date.now() + result.expires_in * 1000;
       pending.current = null;
@@ -308,6 +315,7 @@ export function AuthProvider({ fixtureUser = null, children }: AuthProviderProps
     // Before the network call, not after: a slow sign-out must not leave a code's worth of
     // access sitting in memory for as long as the request takes.
     clearStepUpToken();
+    clearRevealedValues();
     try {
       await authApi.logout();
     } catch {

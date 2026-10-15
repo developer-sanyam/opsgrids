@@ -61,16 +61,13 @@ EmployeeRead = Annotated[ScopeContext, Depends(require("hrms.people.employee.rea
 EmployeeWrite = Annotated[
     ScopeContext, Depends(require("hrms.people.employee.write", minimum=Scope.ORG))
 ]
-#: Unmasking is dangerous: it needs its own permission **and** an access token whose `amr`
-#: includes `otp`. The guard refuses a token without it, even when the permission is held. That
-#: is all it checks — a token that *carries* `otp`; it does not measure how recently a code was
-#: presented. A member gets such a token from `POST /auth/mfa/step-up` (a short-lived, access-only
-#: token, not remembered by the session; ADR-0023), or by presenting a code at sign-in, in which
-#: case the whole session carries `otp` for its lifetime. No scope floor: OWN is legitimate (a
-#: person unmasking their own record), and the object-level `assert_can_touch` enforces the rest.
+#: Unmasking is dangerous: it needs its own permission and nothing else at the door. There is no
+#: step-up since 2026-10-15 (ADR-0023 addendum): holding `read_sensitive` is enough, and the
+#: reveal is audited every time. No scope floor: OWN is legitimate (a person unmasking their own
+#: record), and the object-level `assert_can_touch` enforces the rest.
 EmployeeUnmask = Annotated[
     ScopeContext,
-    Depends(require("hrms.people.employee.read_sensitive", amr={"otp"})),
+    Depends(require("hrms.people.employee.read_sensitive")),
 ]
 
 
@@ -204,7 +201,7 @@ async def unmask_pii(
     request: Request,
 ) -> EmployeePiiUnmasked:
     """The single decrypting endpoint. Guarded by the dangerous `read_sensitive` permission and a
-    second-factor step-up (`amr={"otp"}`), then re-scoped to this one employee. The service opens
+    no step-up (ADR-0023 addendum), then re-scoped to this one employee. The service opens
     the requested fields and writes the `entity.sensitive_read` audit row in the same
     transaction, so a revealed value never exists without a record that it was revealed."""
     employee = await selectors.get_employee(session, ctx.organization_id, employee_id)

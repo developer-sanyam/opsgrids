@@ -14,7 +14,6 @@
  */
 
 import { ApiError, apiRequest, buildQuery as qs, settle } from "@opsgrids/client";
-import type { RevealRequestOptions } from "@opsgrids/client";
 
 import {
   ATTENDANCE_TODAY,
@@ -170,19 +169,16 @@ export async function transitionEmployee(
   return apiRequest<EmployeeOut>(`/employees/${employeeId}/transition`, { method: "POST", body });
 }
 
-/** `POST /employees/{id}/pii/unmask` — `hrms.people.employee.read_sensitive` **and** an `amr`
- *  step-up the SDK does not carry yet (see the report). Writes an audit row on every call. */
+/** `POST /employees/{id}/pii/unmask` — `hrms.people.employee.read_sensitive`, no second factor
+ *  (ADR-0023 addendum, 2026-10-15). Writes an audit row on every call. */
 export async function unmaskEmployeePii(
   employeeId: string,
   body: PiiUnmaskIn,
-  /** `revealRequest(headers)`: the step-up token as the call's only bearer. */
-  reveal?: RevealRequestOptions,
 ): Promise<EmployeePiiUnmasked> {
   if (USE_FIXTURES) return settle(__unmaskFixturePii(employeeId, body));
   return apiRequest<EmployeePiiUnmasked>(`/employees/${employeeId}/pii/unmask`, {
     method: "POST",
     body,
-    ...reveal,
   });
 }
 

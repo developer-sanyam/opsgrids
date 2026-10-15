@@ -911,7 +911,7 @@
     },
     "/api/v1/leads/{lead_id}:reveal": {
       "post": {
-        "description": "The only public route that returns a lead's real phone number or email.\n\nA POST rather than a GET on purpose: it has a side effect \u2014 it writes an\n`entity.sensitive_read` audit row naming the field \u2014 and it must never be cached,\npre-fetched, logged in a query string or replayed from browser history the way a GET can\nbe. The response says so itself (`Cache-Control: no-store`).\n\nGuarded by the dangerous `read_sensitive` permission and a step-up token (`_reveal_guard`),\nthen re-scoped to this one lead inside `services.reveal_lead_field`, which also owns the\nnot-found, the nothing-on-file, the per-user reveal budget and the audit steps. This route\ntakes the ordinary tenant session, so the audit row commits before the response is sent.",
+        "description": "The only public route that returns a lead's real phone number or email.\n\nA POST rather than a GET on purpose: it has a side effect \u2014 it writes an\n`entity.sensitive_read` audit row naming the field \u2014 and it must never be cached,\npre-fetched, logged in a query string or replayed from browser history the way a GET can\nbe. The response says so itself (`Cache-Control: no-store`).\n\nGuarded by the dangerous `read_sensitive` permission alone (`_reveal_guard`; no step-up,\nADR-0023 addendum), then re-scoped to this one lead inside `services.reveal_lead_field`, which\nalso owns the\nnot-found, the nothing-on-file, the per-user reveal budget and the audit steps. This route\ntakes the ordinary tenant session, so the audit row commits before the response is sent.",
         "operationId": "reveal_lead_field_api_v1_leads__lead_id__reveal_post",
         "parameters": [
           {
@@ -947,7 +947,7 @@
             "description": "Successful Response"
           },
           "403": {
-            "description": "Missing `crm.lead.lead.read_sensitive`, a step-up token (`Additional authentication required: otp, stepup` \u2014 a session that gave a code at sign-in is not enough; `POST /auth/mfa/step-up` mints one), or the lead is outside the caller's scope."
+            "description": "Missing `crm.lead.lead.read_sensitive` (no step-up or one-time code is needed when it is held), or the lead is outside the caller's scope."
           },
           "404": {
             "description": "The lead is not part of this organization, or it has no value on file for the requested field."
@@ -963,7 +963,7 @@
             "description": "Validation Error"
           },
           "429": {
-            "description": "This user has spent their reveal budget in this organization: 30 per 10 minutes or 200 per day, shared with the contact reveal. Only a request that would have revealed a value spends from it. `Retry-After` is the length of the window that was spent, in seconds."
+            "description": "This user has spent their reveal budget in this organization: 60 per 10 minutes or 600 per day, shared with the contact reveal. Only a request that would have revealed a value spends from it. `Retry-After` is the length of the window that was spent, in seconds."
           },
           "503": {
             "description": "The budget could not be checked (Redis is unreachable), so nothing is revealed. Retry shortly."

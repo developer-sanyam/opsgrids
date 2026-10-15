@@ -1,6 +1,6 @@
 # ADR-0023 — Member step-up: prove a one-time code, get a short-lived `otp` token
 
-Status: **accepted (built)** · Date: 2026-09-27 · Service: `auth`
+Status: **accepted (built)**; **reveals no longer require it, see the 2026-10-15 addendum at the end** · Date: 2026-09-27 · Service: `auth`
 
 Builds on [ADR-0000](0000-phase-0-decisions.md) §2 (only `auth-service` mints tokens), §3 (an access
 token carries no permission list) and the 2026-09-17 note under §5 (`is_dangerous` is metadata, not
@@ -571,3 +571,69 @@ separately.** In order:
    (`..._still_passes_this_route_risk_5`) that fails when the gap is closed.
 10. **A converted lead's email is plaintext in the contact** (risk 13), so the step-up protects a
     lead's email only until it is converted. Pre-existing, accepted, and a follow-up.
+
+## Addendum 2026-10-15 — reveals no longer need a step-up
+
+**Decision (owner, 2026-10-15, explicit):** "if the user has access they don't need to ask for 2FA."
+A caller who holds the reveal permission reveals with one tap. No one-time code, no step-up token.
+The reason is operational: a sales rep on a call has to reveal again and again, and a code prompt
+on every reveal made the call harder. The owner also asked that a revealed value stay visible
+(no 30-second re-mask) and stay revealed for the session.
+
+**What changed.** The PII reveal routes dropped `amr=` from their guard and now require the
+permission alone:
+
+| Route | Permission |
+|---|---|
+| `POST /customer/contacts/{id}/phone:reveal` | `crm.book.contact.read_sensitive` |
+| `POST /lead/leads/{id}:reveal` | `crm.lead.lead.read_sensitive` |
+| `POST /employee/employees/{id}/pii/unmask` | `hrms.people.employee.read_sensitive` |
+| `POST /storefront/enquiries/{id}:reveal` | `storefront.sales.enquiry.unmask` |
+| Engage message unmask and consent-event unmask | `engage.inbox.message.unmask` |
+
+The second-review-round rule that lead and customer must also demand the `stepup` marker (A.8) is
+withdrawn for those two routes. `tests/infra/test_step_up_marker.py` now pins that no reveal route
+asks for `amr` or `STEP_UP_AMR` again, and that nothing but `step_up` can mint the marker.
+
+**What remains, unchanged:**
+
+1. **Masked by default.** A value is fetched only when the person taps Reveal; the masked form is
+   what every list and detail read returns.
+2. **The permission.** No permission is a 403 (and the control is hidden); scope is re-applied to
+   the one record, across tenants as before (404 or 403 as it was).
+3. **An audit row on every reveal call** (`entity.sensitive_read`, field name and never the value).
+   The row still records the token's `amr` and `session_id`, so an auditor can tell how the
+   session signed in.
+4. **The reveal budget.** Customer and lead still share one per-user, per-organization Redis
+   budget; the key bytes are unchanged. The limits moved from 30 per 10 minutes and 200 per day to
+   **60 per 10 minutes and 600 per day** (`reveal_burst_limit`, `reveal_daily_limit` in both
+   services' settings), sized for a rep working a call list (about 200 records a day, bursts of
+   about 30 in ten minutes, a lead having both a phone and an email). A scrape is still stopped:
+   that is 60 reveals in ten minutes, not hundreds a minute.
+
+**Client behaviour.** `useRevealedField` (`@opsgrids/client`) takes no step-up. The value has no
+auto-hide and no Hide control. It is kept in memory only, keyed by subject, record and field, for
+the signed-in session: going back to the same record shows it with no second call and so no second
+audit row. The cache is emptied on sign-out, on a 401, on a failed refresh and on a new sign-in
+(which covers an organization switch). It is never written to `localStorage`, `sessionStorage`,
+a cookie or the URL. A revealed phone is a `tel:` link and an email a `mailto:` link with a 44px
+target. The copy no longer mentions a code: "Email and phone are masked. Revealing one is
+recorded."
+
+**What a stolen session now reaches.** A stolen session token can reveal whatever its owner's
+permission and scope allow, at up to 60 per ten minutes and 600 per day, each one audited. Before
+this change the step-up was the control that stopped that (risk 5 and the second-review round).
+The owner has accepted the trade for these routes; the audit row and the budget are what
+constrain it now.
+
+**Left on the step-up deliberately (not PII reveals):**
+
+- `POST /operations/inventory/putaway/{move_id}/location:reveal` (`amr={"otp"}`, ADR-0028, D3). It
+  is administrator-only worker location evidence, not contact data, and ADR-0028 carries its own
+  open "keep or revert" owner decision with a documented revert (and a test that fails when the
+  pages and the route disagree). It is unchanged here; reverting it is one line plus the pages.
+- Operator and staff routes (`aud=operator`, `otp in amr`) in account and console, merchant account
+  writes in payment, MFA enrolment, password change, and statutory portal credentials.
+- `POST /auth/mfa/step-up` itself and the `useStepUp` / `StepUpDialog` building blocks stay: nothing
+  in the reveal flow calls them any more, but they remain the mechanism if a future sensitive
+  action needs a fresh code.

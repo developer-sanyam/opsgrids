@@ -52,10 +52,9 @@ HRMS = PermissionCatalogue(
         ),
         # Unmasking sensitive PII is a distinct permission, never folded into `read`: the wildcard
         # match keeps the dot, so `hrms.people.employee.read` can never satisfy
-        # `...read_sensitive`. `is_dangerous` marks it as such; the route is what enforces the
-        # step-up, by demanding a token whose `amr` includes `otp` (`amr={"otp"}` — a member
-        # gets one from `POST /auth/mfa/step-up`, ADR-0023). It defaults to OWN so a person can see
-        # their own full details, and tops out at ORG for an HR administrator.
+        # `...read_sensitive`. `is_dangerous` marks it as such; the route needs the permission
+        # and nothing more (no step-up since 2026-10-15, ADR-0023 addendum). It defaults to OWN
+        # so a person can see their own full details, and tops out at ORG for an HR administrator.
         PermissionSpec(
             "people",
             "employee",
@@ -83,7 +82,7 @@ HRMS_ROLE_TEMPLATES: list[RoleTemplate] = [
             ("hrms.people.employee.read", "ORG"),
             ("hrms.people.employee.write", "ORG"),
             # Administering people includes unmasking their details across the organization — but
-            # only ever behind the `otp` step-up the route demands (`amr={"otp"}`).
+            # only ever as a permission-gated, audited, budgeted reveal.
             ("hrms.people.employee.read_sensitive", "ORG"),
         ),
     ),

@@ -1,33 +1,17 @@
 /**
- * The deal's primary contact carries the same Reveal as the Contacts screen — the same field, the
- * same step-up, the same 30 seconds. `LeadDetail.reveal.test.tsx` pins the behaviour in depth;
+ * The deal's primary contact carries the same Reveal as the Contacts screen — the same field, one
+ * tap, no code, and it stays for the session (ADR-0023 addendum, 2026-10-15). `LeadDetail.reveal.test.tsx` pins the behaviour in depth;
  * here it is enough to see it work where the deal puts it, be absent without the grant, and be
  * called for the right contact.
  */
-import { screen, waitFor } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  clearStepUpToken,
-  setAccessToken,
-  setUnauthorizedHandler,
-} from "@opsgrids/client";
+import { clearRevealedValues, setAccessToken, setUnauthorizedHandler } from "@opsgrids/client";
 
 import { DealDetailPage } from "@/routes/DealDetail";
-import {
-  enterCode,
-  json,
-  ME,
-  problem,
-  renderScreen,
-  SESSION_TOKEN,
-  stepUpDialog,
-  stepUpToken,
-  STEP_UP,
-  STEP_UP_TOKEN,
-  stubGateway,
-} from "@/reveal/testKit";
+import { json, problem, renderScreen, SESSION_TOKEN, stubGateway } from "@/reveal/testKit";
 import type { Answer, Gateway } from "@/reveal/testKit";
 
 const REVEAL = "POST /api/v1/contacts/con-1/phone:reveal";
@@ -86,12 +70,10 @@ beforeEach(() => {
   routes = {
     "GET /api/v1/deals/deal-1": () => json(DEAL),
     "GET /api/v1/deals/activities": () => json({ items: [], total: 0, page: 1, size: 200, pages: 0 }),
-    [STEP_UP]: () => stepUpToken(),
     [REVEAL]: () => json({ contact_id: "con-1", phone: PHONE }),
-    [ME]: () => json({ user_id: "u-1", mfa_enabled: true }),
   };
   setAccessToken(SESSION_TOKEN);
-  clearStepUpToken();
+  clearRevealedValues();
   setUnauthorizedHandler(vi.fn());
 });
 
@@ -99,7 +81,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   setUnauthorizedHandler(null);
   setAccessToken(null);
-  clearStepUpToken();
+  clearRevealedValues();
   localStorage.clear();
   sessionStorage.clear();
 });
@@ -132,44 +114,20 @@ describe("DealDetail reveal", () => {
     expect(screen.getByText("+91 98••• ••210")).toBeTruthy();
   });
 
-  it("offers nothing without a second factor set up, and keeps the phone masked", async () => {
-    routes[ME] = () => json({ user_id: "u-1", mfa_enabled: false });
-    await openDeal();
-
-    expect(screen.queryByRole("button", { name: /reveal/i })).toBeNull();
-    expect(screen.getByText("+91 98••• ••210")).toBeTruthy();
-  });
-
-  it("reveals the number after a code, from the contact's endpoint with the step-up token, and hides it on Hide", async () => {
+  it("reveals the number on one tap, with no code dialog, from the contact's endpoint with the session token", async () => {
     const user = userEvent.setup();
     await openDeal();
+    expect(gateway.callsTo(REVEAL)).toHaveLength(0);
 
     await user.click(revealPhone());
-    expect(stepUpDialog()).toBeTruthy();
-    expect(gateway.callsTo(REVEAL)).toHaveLength(0);
-    await enterCode(user);
 
     const link = await screen.findByRole("link", { name: PHONE });
     expect(link.getAttribute("href")).toBe("tel:+919876543210");
-    expect(gateway.callsTo(REVEAL)[0]?.authorization).toBe(`Bearer ${STEP_UP_TOKEN}`);
-
-    await user.click(screen.getByRole("button", { name: "Hide phone number" }));
-
-    expect(document.body.textContent).not.toContain("98765");
-    expect(screen.getByText("+91 98••• ••210")).toBeTruthy();
-  });
-
-  it("leaves the mask and says nothing when the dialog is cancelled", async () => {
-    const user = userEvent.setup();
-    await openDeal();
-    await user.click(revealPhone());
-
-    await user.click(screen.getByRole("button", { name: "Cancel" }));
-
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.getByText("+91 98••• ••210")).toBeTruthy();
-    expect(screen.queryByRole("alert")).toBeNull();
-    await waitFor(() => expect(document.activeElement).toBe(revealPhone()));
+    expect(gateway.callsTo(REVEAL)[0]?.authorization).toBe(`Bearer ${SESSION_TOKEN}`);
+    // It stays: no Hide, and it is not re-fetched on another look.
+    expect(screen.queryByRole("button", { name: /hide/i })).toBeNull();
+    expect(gateway.callsTo(REVEAL)).toHaveLength(1);
   });
 
   it("says why, under the number, when the contact is not this person's", async () => {
@@ -178,7 +136,6 @@ describe("DealDetail reveal", () => {
     await openDeal();
 
     await user.click(revealPhone());
-    await enterCode(user);
 
     expect(
       await screen.findByText("This contact is not assigned to you, so you cannot reveal its details."),

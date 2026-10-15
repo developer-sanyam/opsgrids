@@ -58,7 +58,7 @@
     {
       "action": "unmask",
       "default_scope": "ORG",
-      "description": "Reveal an enquiry's real email and phone number (audited, requires step-up)",
+      "description": "Reveal an enquiry's real email and phone number (audited)",
       "is_dangerous": false,
       "max_scope": "ORG",
       "module": "sales",

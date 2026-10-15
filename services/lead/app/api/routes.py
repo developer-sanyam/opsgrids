@@ -68,26 +68,21 @@ LeadRead = Annotated[ScopeContext, Depends(require("crm.lead.lead.read"))]
 LeadWrite = Annotated[ScopeContext, Depends(require("crm.lead.lead.write"))]
 LeadConvert = Annotated[ScopeContext, Depends(require("crm.lead.lead.convert"))]
 REVEAL_PERMISSION = "crm.lead.lead.read_sensitive"
-#: What auth-service's `POST /auth/mfa/step-up` puts in a token's `amr` and nothing else does
-#: (`STEP_UP_AMR` in `services/auth/app/services.py`; `tests/infra/test_step_up_marker.py` keeps
-#: the copies equal). `otp` alone is not enough: a session that gave a code **at sign-in** carries
-#: `otp` on every token it mints for its whole life (up to seven days), and every session opened
-#: after an authenticator is set up is one of those — so a stolen session token would pass a guard
-#: that asked only for `otp`. `require` demands every member of the set (ADR-0023).
-STEP_UP_AMR = "stepup"
-_require_reveal = require(REVEAL_PERMISSION, amr={"otp", STEP_UP_AMR})
+#: Holding the permission is the whole gate: no step-up, no one-time code (owner decision
+#: 2026-10-15, ADR-0023 addendum). What still constrains a reveal is the permission, the scope
+#: applied to the one record, the audit row and the per-user reveal budget.
+_require_reveal = require(REVEAL_PERMISSION)
 
 
 async def _reveal_guard(principal: CurrentPrincipal, request: Request) -> ScopeContext:
-    """The reveal route's authorization: the dangerous permission **and** a code proved for this
-    reveal — a step-up token (`otp` *and* the step-up marker, `STEP_UP_AMR`), which a session that
-    merely gave a code at sign-in does not hold — the same pairing customer-service requires to
-    reveal a contact's phone. An ordinary CRM session must not be a route to a prospect's contact
-    details.
+    """The reveal route's authorization: the dangerous permission, and nothing else at the door.
+    There is no step-up: a caller who holds `read_sensitive` reveals with one tap (owner decision
+    2026-10-15, ADR-0023 addendum). The value stays masked until this route is called, the scope
+    is re-applied to the one record, an audit row is written, and the budget is spent.
 
     It is `require(...)` itself, wrapped, so the rules are the platform's; the wrapper adds what
-    `require` cannot: a refusal is logged (`services.log_reveal_refused`) — the permission and
-    step-up checks happen here, before the route body exists, so this is the only place that can
+    `require` cannot: a refusal is logged (`services.log_reveal_refused`) — the permission
+    check happens here, before the route body exists, so this is the only place that can
     see them. The per-user reveal budget is **not** spent here: it is spent in
     `services.reveal_lead_field`, after the request has been shown to be one that could reveal
     something (a real lead, in scope, with a value on file) and before anything is decrypted, so
@@ -96,11 +91,10 @@ async def _reveal_guard(principal: CurrentPrincipal, request: Request) -> ScopeC
     try:
         ctx: ScopeContext = _require_reveal(principal)
     except ForbiddenProblem:
-        # `require` refuses for exactly two reasons when no scope floor is set.
-        held = principal.scope_for(REVEAL_PERMISSION) is not None
+        # With no step-up in the guard, `require` refuses for one reason: the permission.
         services.log_reveal_refused(
             principal,
-            reason="step_up_required" if held else "missing_permission",
+            reason="missing_permission",
             lead_id=_path_uuid(request, "lead_id"),
             request=request,
         )
@@ -279,9 +273,8 @@ async def convert_lead(
     responses={
         403: {
             "description": (
-                "Missing `crm.lead.lead.read_sensitive`, a step-up token "
-                "(`Additional authentication required: otp, stepup` — a session that gave a "
-                "code at sign-in is not enough; `POST /auth/mfa/step-up` mints one), or the "
+                "Missing `crm.lead.lead.read_sensitive` (no step-up or one-time code is "
+                "needed when it is held), or the "
                 "lead is outside the caller's scope."
             )
         },
@@ -293,8 +286,8 @@ async def convert_lead(
         },
         429: {
             "description": (
-                "This user has spent their reveal budget in this organization: 30 per 10 "
-                "minutes or 200 per day, shared with the contact reveal. Only a request that "
+                "This user has spent their reveal budget in this organization: 60 per 10 "
+                "minutes or 600 per day, shared with the contact reveal. Only a request that "
                 "would have revealed a value spends from it. `Retry-After` is the length of "
                 "the window that was spent, in seconds."
             )
@@ -322,8 +315,9 @@ async def reveal_lead_field(
     pre-fetched, logged in a query string or replayed from browser history the way a GET can
     be. The response says so itself (`Cache-Control: no-store`).
 
-    Guarded by the dangerous `read_sensitive` permission and a step-up token (`_reveal_guard`),
-    then re-scoped to this one lead inside `services.reveal_lead_field`, which also owns the
+    Guarded by the dangerous `read_sensitive` permission alone (`_reveal_guard`; no step-up,
+    ADR-0023 addendum), then re-scoped to this one lead inside `services.reveal_lead_field`, which
+    also owns the
     not-found, the nothing-on-file, the per-user reveal budget and the audit steps. This route
     takes the ordinary tenant session, so the audit row commits before the response is sent.
     """

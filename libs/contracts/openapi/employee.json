@@ -1241,7 +1241,7 @@
     },
     "/api/v1/employees/{employee_id}/pii/unmask": {
       "post": {
-        "description": "The single decrypting endpoint. Guarded by the dangerous `read_sensitive` permission and a\nsecond-factor step-up (`amr={\"otp\"}`), then re-scoped to this one employee. The service opens\nthe requested fields and writes the `entity.sensitive_read` audit row in the same\ntransaction, so a revealed value never exists without a record that it was revealed.",
+        "description": "The single decrypting endpoint. Guarded by the dangerous `read_sensitive` permission and a\nno step-up (ADR-0023 addendum), then re-scoped to this one employee. The service opens\nthe requested fields and writes the `entity.sensitive_read` audit row in the same\ntransaction, so a revealed value never exists without a record that it was revealed.",
         "operationId": "unmask_pii_api_v1_employees__employee_id__pii_unmask_post",
         "parameters": [
           {

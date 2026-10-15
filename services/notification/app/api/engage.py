@@ -212,17 +212,16 @@ ConversationWrite = Annotated[
 MessageReply = Annotated[
     ScopeContext, Depends(require("engage.inbox.message.reply", minimum=Scope.ORG))
 ]
-#: The dangerous, stepped-up unmask. `amr={"otp"}` pairs with the permission the same way
-#: `crm.book.contact.read_sensitive` does — an ordinary inbox session must not be a standing
-#: route to a customer's real words.
+#: The dangerous unmask: the permission alone, no step-up (ADR-0023 addendum, 2026-10-15), audited
+#: on every call.
 MessageUnmask = Annotated[
     ScopeContext,
-    Depends(require("engage.inbox.message.unmask", minimum=Scope.ORG, amr={"otp"})),
+    Depends(require("engage.inbox.message.unmask", minimum=Scope.ORG)),
 ]
-#: The same permission and the same step-up, reused for opening a consent event's address: there
+#: The same permission and the same gate, reused for opening a consent event's address: there
 #: is no separate "unmask a consent subject" code, and adding one would need a production role
 #: reconcile. Revealing who a consent event is about is the same class of act as revealing a
-#: customer's words, and is gated, stepped-up and audited exactly the same way.
+#: customer's words, and is gated and audited exactly the same way.
 ConsentUnmask = MessageUnmask
 
 

@@ -293,7 +293,7 @@ async def test_a_reply_reopens_a_closed_conversation(client, session, org_id) ->
 # --------------------------------------------------------------------- unmask
 
 
-async def test_unmask_requires_the_permission_and_the_step_up(client, session, org_id) -> None:
+async def test_unmask_requires_the_permission_and_needs_no_step_up(client, session, org_id) -> None:
     _, message = await _seed_conversation(session, org_id, body="the real words")
     # Captured before either call: a 403 dependency failure still rolls the shared session back
     # (see the window-boundary test above for why that matters), and the second call must not
@@ -301,12 +301,13 @@ async def test_unmask_requires_the_permission_and_the_step_up(client, session, o
     conversation_id = message.conversation_id
     message_id = message.id
 
-    # Holds the permission but never stepped up.
-    with as_principal(caller(org_id, [f"{M_UNMASK}:ORG"])):
-        no_step_up = await client.post(f"{BASE}/{conversation_id}/messages/{message_id}:unmask")
-    assert no_step_up.status_code == 403
+    # Negative authz: a one-time code does not stand in for the permission.
+    with as_principal(caller(org_id, [], amr=["otp"])):
+        no_permission = await client.post(f"{BASE}/{conversation_id}/messages/{message_id}:unmask")
+    assert no_permission.status_code == 403
 
-    with as_principal(caller(org_id, [f"{M_UNMASK}:ORG"], amr=["otp"])):
+    # Holds the permission, never stepped up: revealed (ADR-0023 addendum, 2026-10-15).
+    with as_principal(caller(org_id, [f"{M_UNMASK}:ORG"])):
         revealed = await client.post(f"{BASE}/{conversation_id}/messages/{message_id}:unmask")
     assert revealed.status_code == 200
     assert revealed.json()["body"] == "the real words"

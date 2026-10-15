@@ -101,7 +101,6 @@ describe("fixture mode: creates are refused like the server refuses them", () =>
 });
 
 describe("fixture mode: revealing a sealed value needs no step-up and no gateway", () => {
-  const NO_STEP_UP = { Authorization: "" };
 
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -112,23 +111,23 @@ describe("fixture mode: revealing a sealed value needs no step-up and no gateway
     vi.stubGlobal("fetch", fetchMock);
     const { revealLeadField } = await fixtureClient();
 
-    expect(await revealLeadField("lead-1", "phone", NO_STEP_UP)).toBe("+91 98765 04821");
-    expect(await revealLeadField("lead-1", "email", NO_STEP_UP)).toBe("meera.iyer@solsticeenergy.example");
+    expect(await revealLeadField("lead-1", "phone")).toBe("+91 98765 04821");
+    expect(await revealLeadField("lead-1", "email")).toBe("meera.iyer@solsticeenergy.example");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("refuses a lead's missing value the way the server does: a 404 that says what is not on file", async () => {
     const { revealLeadField, problemMessage, refusal } = await fixtureClient();
 
-    const noPhone = await refusal(revealLeadField("lead-2", "phone", NO_STEP_UP));
+    const noPhone = await refusal(revealLeadField("lead-2", "phone"));
     expect(noPhone.status).toBe(404);
     expect(problemMessage(noPhone)).toBe("No phone number is on file for this lead");
 
-    const noEmail = await refusal(revealLeadField("lead-4", "email", NO_STEP_UP));
+    const noEmail = await refusal(revealLeadField("lead-4", "email"));
     expect(noEmail.status).toBe(404);
     expect(problemMessage(noEmail)).toBe("No email address is on file for this lead");
 
-    const missing = await refusal(revealLeadField("lead-nowhere", "phone", NO_STEP_UP));
+    const missing = await refusal(revealLeadField("lead-nowhere", "phone"));
     expect(missing.status).toBe(404);
     expect(problemMessage(missing)).toBe("That lead is not part of this organization");
   });
@@ -137,23 +136,23 @@ describe("fixture mode: revealing a sealed value needs no step-up and no gateway
     const { createLead, revealLeadField } = await fixtureClient();
     const lead = await createLead({ full_name: "Typed Lead", email: "typed@example.com", phone: "+919000012345" });
 
-    expect(await revealLeadField(lead.id, "phone", NO_STEP_UP)).toBe("+919000012345");
-    expect(await revealLeadField(lead.id, "email", NO_STEP_UP)).toBe("typed@example.com");
+    expect(await revealLeadField(lead.id, "phone")).toBe("+919000012345");
+    expect(await revealLeadField(lead.id, "email")).toBe("typed@example.com");
   });
 
   it("reveals a contact's number as a plausible one that fits its mask, and null for a contact with none", async () => {
     const { revealContactPhone, createContact, refusal } = await fixtureClient();
 
-    expect(await revealContactPhone("con-1", NO_STEP_UP)).toBe("+91 98765 43210");
+    expect(await revealContactPhone("con-1")).toBe("+91 98765 43210");
     const bare = await createContact({
       full_name: "No Number",
       email: "no.number@northwind.co",
       company_id: "comp-1",
       owner_id: "own-1",
     });
-    expect(await revealContactPhone(bare.id, NO_STEP_UP)).toBeNull();
+    expect(await revealContactPhone(bare.id)).toBeNull();
 
-    const missing = await refusal(revealContactPhone("con-nowhere", NO_STEP_UP));
+    const missing = await refusal(revealContactPhone("con-nowhere"));
     expect(missing.status).toBe(404);
   });
 });

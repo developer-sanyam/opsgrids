@@ -313,56 +313,37 @@ class TestRevealAuthorization:
                 assert response.status_code == 403, field
                 _assert_no_plaintext(response)
 
-    async def test_the_permission_without_the_step_up_is_forbidden(
-        self, client, org_id, data
+    async def test_the_permission_alone_reveals_with_no_step_up(
+        self, client, org_id, data, admin_session
     ) -> None:
-        """An ordinary session that has not stepped up must not open the phone book, whatever
-        its scope."""
-        for amr in ([], ["pwd"]):
-            principal = principal_for(org_id, [f"{REVEAL}:ORG"], subject_ref=None, amr=amr)
-            with as_principal(principal):
-                response = await client.post(
-                    _reveal_path(data["lead_a_id"]), json={"field": "phone"}
-                )
-            assert response.status_code == 403, amr
-            assert response.json()["detail"] == "Additional authentication required: otp, stepup"
-            _assert_no_plaintext(response)
-
-    async def test_a_session_that_gave_a_code_at_sign_in_is_not_a_step_up(
-        self, client, org_id, data, admin_session, redis
-    ) -> None:
-        """ADR-0023, second review round. Every session opened after an authenticator is set up
-        gave a code at sign-in and so carries `otp` on every token for up to seven days. That is
-        not a code proved for *this* reveal: the route also requires the marker only
-        `POST /auth/mfa/step-up` mints, so a stolen session token opens nothing."""
-        for amr, missing in (
-            (LOGIN_OTP, "stepup"),
-            (["otp"], "stepup"),
-            (["pwd", "stepup"], "otp"),
-        ):
+        """Owner decision 2026-10-15 (ADR-0023 addendum): holding `read_sensitive` is enough. No
+        `amr`, a password-only session, a sign-in code and a step-up token all reveal, and each
+        reveal writes its own audit row."""
+        shapes = ([], ["pwd"], LOGIN_OTP, STEPPED_UP)
+        for amr in shapes:
             principal = principal_for(org_id, [f"{REVEAL}:ORG"], subject_ref=None, amr=amr)
             with as_principal(principal):
                 for field in ("phone", "email"):
                     response = await client.post(
                         _reveal_path(data["lead_a_id"]), json={"field": field}
                     )
-                    assert response.status_code == 403, (amr, field)
-                    assert response.json()["detail"] == (
-                        f"Additional authentication required: {missing}"
-                    )
-                    _assert_no_plaintext(response)
-        # Refused before anything was spent or read.
-        assert redis.store == {}
-        assert await _sensitive_read_count(admin_session, org_id) == 0
+                    assert response.status_code == 200, (amr, field)
+        assert await _sensitive_read_count(admin_session, org_id) == len(shapes) * 2
 
-    async def test_a_step_up_token_is_accepted(self, client, org_id, data) -> None:
-        for amr in (STEPPED_UP, ["pwd", "otp", "stepup"]):
-            principal = principal_for(org_id, [f"{REVEAL}:ORG"], subject_ref=None, amr=amr)
+    async def test_a_step_up_token_does_not_stand_in_for_the_permission(
+        self, client, org_id, data, admin_session, redis
+    ) -> None:
+        for amr in ([], STEPPED_UP):
+            principal = principal_for(org_id, ["crm.lead.lead.read:ORG"], subject_ref=None, amr=amr)
             with as_principal(principal):
                 response = await client.post(
                     _reveal_path(data["lead_a_id"]), json={"field": "phone"}
                 )
-            assert response.status_code == 200, amr
+            assert response.status_code == 403, amr
+            _assert_no_plaintext(response)
+        # Refused before anything was spent or read.
+        assert redis.store == {}
+        assert await _sensitive_read_count(admin_session, org_id) == 0
 
     async def test_without_the_product_entitlement_is_payment_required(
         self, client, org_id, data
@@ -378,9 +359,9 @@ class TestRevealAuthorization:
     async def test_a_bad_body_from_an_unauthorised_caller_is_still_forbidden(
         self, client, org_id, data
     ) -> None:
-        """The permission and step-up are decided before the body is looked at, so a caller
-        who may not reveal learns nothing about what the route accepts."""
-        principal = principal_for(org_id, [f"{REVEAL}:ORG"], subject_ref=None)  # no step-up
+        """The permission is decided before the body is looked at, so a caller who may not
+        reveal learns nothing about what the route accepts."""
+        principal = principal_for(org_id, ["crm.lead.lead.read:ORG"], subject_ref=None)
         with as_principal(principal):
             response = await client.post(_reveal_path(data["lead_a_id"]), json={"field": "nope"})
         assert response.status_code == 403
@@ -513,7 +494,7 @@ class TestRevealAuthorization:
     ) -> None:
         refused = [
             principal_for(org_id, [], subject_ref=data["owner_a"], amr=STEPPED_UP),
-            principal_for(org_id, [f"{REVEAL}:ORG"], subject_ref=data["owner_a"]),
+            principal_for(org_id, ["crm.lead.lead.read:ORG"], subject_ref=data["owner_a"]),
             principal_for(org_id, [f"{REVEAL}:OWN"], subject_ref=data["owner_b"], amr=STEPPED_UP),
         ]
         for principal in refused:

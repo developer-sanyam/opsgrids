@@ -26,7 +26,6 @@ export interface RevealNotice {
 const CANNOT_REACH = "Couldn't reveal this right now. Try again.";
 
 const OUT_OF_SCOPE = /^out of scope/i;
-const SECOND_FACTOR_REQUIRED = /^additional authentication required/i;
 const NOTHING_ON_FILE = /\bon file\b/i;
 
 function detailOf(error: ApiError): string {
@@ -36,14 +35,6 @@ function detailOf(error: ApiError): string {
 /** A sentence from the server, finished the way ours are. */
 function withPeriod(sentence: string): string {
   return /[.!?]$/.test(sentence) ? sentence : `${sentence}.`;
-}
-
-/**
- * The server wants a second factor that the token it was sent does not carry. Sending the same
- * token again would be refused the same way, so the caller drops it and asks for a new code.
- */
-export function needsFreshCode(error: unknown): boolean {
-  return error instanceof ApiError && error.status === 403 && SECOND_FACTOR_REQUIRED.test(detailOf(error));
 }
 
 /** The contact came back with no sealed number: not a failure, just nothing to show. */
@@ -57,9 +48,6 @@ export function revealFailure(error: unknown, subject: RevealSubject): RevealNot
   }
   const detail = detailOf(error);
   switch (error.status) {
-    case 401:
-      // The step-up token lapsed between the code and the call.
-      return { tone: "error", text: "That one-time code has expired. Select Reveal to enter a new one." };
     case 402:
       return { tone: "error", text: "Revealing details isn't part of your plan." };
     case 403:
@@ -67,12 +55,6 @@ export function revealFailure(error: unknown, subject: RevealSubject): RevealNot
         return {
           tone: "error",
           text: `This ${subject} is not assigned to you, so you cannot reveal its details.`,
-        };
-      }
-      if (SECOND_FACTOR_REQUIRED.test(detail)) {
-        return {
-          tone: "error",
-          text: "A one-time code is needed to reveal this. Select Reveal to enter one.",
         };
       }
       return {

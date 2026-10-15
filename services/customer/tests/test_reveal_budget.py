@@ -188,11 +188,25 @@ class TestAuditRowCarriesTheSession:
 
 
 class TestRevealBudget:
-    def test_the_defaults_are_thirty_per_ten_minutes_and_two_hundred_a_day(self) -> None:
+    def test_the_defaults_are_sixty_per_ten_minutes_and_six_hundred_a_day(self) -> None:
         cfg = settings()
-        assert cfg.reveal_burst_limit == 30
+        assert cfg.reveal_burst_limit == 60
         assert cfg.reveal_burst_window_seconds == 600
-        assert cfg.reveal_daily_limit == 200
+        assert cfg.reveal_daily_limit == 600
+
+    async def test_a_calling_session_passes_and_a_bulk_burst_is_stopped(
+        self, client, session, org_id, data
+    ) -> None:
+        """Owner decision 2026-10-15: a rep reveals again and again on a call. With the default
+        limits a burst of 30 reveals in ten minutes passes (twice over, headroom for contact and
+        lead sharing the counters), and the 61st is refused: a scrape is not a calling session."""
+        await _seal_a_number(session, org_id, data)
+        with as_principal(_revealer(org_id)):
+            for i in range(60):
+                ok = await client.post(_path(data["contact_a_id"]))
+                assert ok.status_code == 200, i
+            bulk = await client.post(_path(data["contact_a_id"]))
+        assert bulk.status_code == 429
 
     async def test_the_burst_budget_refuses_the_reveal_after_it_with_a_429(
         self, client, session, org_id, data, admin_session, monkeypatch
@@ -324,12 +338,10 @@ class TestRevealBudget:
     async def test_a_caller_who_may_not_reveal_spends_nothing(
         self, client, org_id, data, redis: FakeRedis
     ) -> None:
-        """The budget follows the permission and the step-up, so an unauthorised caller neither
-        spends anything nor reaches Redis at all."""
-        no_permission = principal_for(org_id, [], amr=STEPPED_UP)
-        no_step_up = principal_for(org_id, [f"{SENSITIVE}:ORG"])
-        for principal in (no_permission, no_step_up):
-            with as_principal(principal):
+        """The budget follows the permission, so an unauthorised caller neither spends anything
+        nor reaches Redis at all (a step-up token does not stand in for the permission)."""
+        for amr in (STEPPED_UP, []):
+            with as_principal(principal_for(org_id, [], amr=amr)):
                 response = await client.post(_path(data["contact_a_id"]))
             assert response.status_code == 403
         assert redis.store == {}
@@ -628,15 +640,6 @@ class TestRefusedRevealsAreLogged:
         self._assert_line(line, org_id=org_id, principal=principal, reason="missing_permission")
         assert line["contact_id"] == str(data["contact_a_id"])
         assert line["request_id"] == response.headers["x-request-id"]
-
-    async def test_a_caller_who_has_not_stepped_up(self, client, org_id, data) -> None:
-        principal = principal_for(org_id, [f"{SENSITIVE}:ORG"])
-        response, lines, _ = await self._refused(client, principal, _path(data["contact_a_id"]))
-
-        assert response.status_code == 403
-        (line,) = lines
-        self._assert_line(line, org_id=org_id, principal=principal, reason="step_up_required")
-        assert line["contact_id"] == str(data["contact_a_id"])
 
     async def test_a_contact_outside_the_callers_scope(self, client, org_id, data) -> None:
         principal = _revealer(org_id, scope="OWN", subject_ref=data["subject_b"])

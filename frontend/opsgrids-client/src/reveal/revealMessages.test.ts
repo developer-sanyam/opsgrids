@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 
 import { ApiError } from "../http";
-import { needsFreshCode, nothingOnFile, revealFailure } from "./revealMessages";
+import { nothingOnFile, revealFailure } from "./revealMessages";
 
 function refusal(status: number, detail: string | undefined): ApiError {
   return new ApiError(status, detail ?? `Request failed with ${status}`, {
@@ -38,22 +38,9 @@ describe("revealFailure", () => {
     ).toBe("You don't have permission to reveal this lead's details. Ask an administrator for access.");
   });
 
-  it("says a missing second factor is a code to enter, not a fault", () => {
-    expect(revealFailure(refusal(403, "Additional authentication required: otp, stepup"), "contact")).toEqual({
-      tone: "error",
-      text: "A one-time code is needed to reveal this. Select Reveal to enter one.",
-    });
-  });
-
   it("says a plan that does not include it", () => {
     expect(revealFailure(refusal(402, "Payment required"), "lead").text).toBe(
       "Revealing details isn't part of your plan.",
-    );
-  });
-
-  it("says a lapsed step-up token is a code to enter again", () => {
-    expect(revealFailure(refusal(401, "Token has expired"), "lead").text).toBe(
-      "That one-time code has expired. Select Reveal to enter a new one.",
     );
   });
 
@@ -87,16 +74,6 @@ describe("revealFailure", () => {
       tone: "error",
       text: "Couldn't reveal this right now. Try again.",
     });
-  });
-});
-
-describe("needsFreshCode", () => {
-  it("is true only for the 403 that asks for a second factor", () => {
-    expect(needsFreshCode(refusal(403, "Additional authentication required: otp, stepup"))).toBe(true);
-    expect(needsFreshCode(refusal(403, "Out of scope for this resource"))).toBe(false);
-    expect(needsFreshCode(refusal(401, "Additional authentication required: otp, stepup"))).toBe(false);
-    expect(needsFreshCode(refusal(403, undefined))).toBe(false);
-    expect(needsFreshCode(new Error("Additional authentication required"))).toBe(false);
   });
 });
 

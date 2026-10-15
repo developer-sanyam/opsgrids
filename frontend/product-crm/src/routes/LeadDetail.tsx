@@ -12,15 +12,12 @@ import {
   problemMessage,
   useAsync,
   useCan,
-  useMfaEnrolled,
   useMutation,
-  useStepUp,
 } from "@opsgrids/client";
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
   BuildingIcon,
-  StepUpDialog,
   useToast,
 } from "@opsgrids/ui";
 import {
@@ -43,31 +40,12 @@ function Fact({ label, children }: { label: string; children: React.ReactNode })
   );
 }
 
-/** What the masked-fields footnote says, in the one order that applies: no grant, no second
- * factor, or the ordinary reminder. Never disables the Reveal button on either reason — the
- * button is absent instead (`RevealableField`'s own rule) — this only explains why. */
-function RevealNotice({
-  hasPermission,
-  mfaEnabled,
-  securityHref,
-}: {
-  hasPermission: boolean;
-  mfaEnabled: boolean;
-  securityHref: string;
-}) {
+/** What the masked-fields footnote says: no grant, or the ordinary reminder. Never disables the
+ * Reveal button — the button is absent instead (`RevealableField`'s own rule) — this only
+ * explains why. */
+function RevealNotice({ hasPermission }: { hasPermission: boolean }) {
   if (!hasPermission) return <>Ask an administrator if you need the real values.</>;
-  if (!mfaEnabled) {
-    return (
-      <>
-        Set up two-factor authentication on the{" "}
-        <a href={securityHref} target="_blank" rel="noreferrer" className="underline">
-          Security page
-        </a>{" "}
-        to reveal masked details.
-      </>
-    );
-  }
-  return <>A reveal needs a one-time code and is recorded.</>;
+  return <>Revealing one is recorded.</>;
 }
 
 /** Plain status edits — everything except `converted`, which only `:convert` can reach. */
@@ -100,14 +78,10 @@ export function LeadDetailPage() {
   const directory = useDirectory();
   const { owners } = directory;
   const hasRevealPermission = useCan("crm.lead.lead.read_sensitive", "OWN");
-  const mfaEnabled = useMfaEnrolled();
   // The permission is presentation-only (the server refuses the call regardless, per
-  // `RevealableField`'s own doc comment); this is the other half — a reveal cannot succeed
-  // without a second factor either, so offering the button to someone who has not set one up
-  // just sends them into a dialog no code can get them out of. Both gate the same way: an
-  // absent control, not a disabled one.
-  const canRevealDetails = hasRevealPermission && mfaEnabled;
-  const stepUp = useStepUp();
+  // `RevealableField`'s own doc comment): an absent control, not a disabled one. No second
+  // factor is involved (ADR-0023 addendum, 2026-10-15).
+  const canRevealDetails = hasRevealPermission;
   const [confirmingConvert, setConfirmingConvert] = useState(false);
 
   const setStatus = useMutation((status: LeadStatus) => updateLead(id, { status }), {
@@ -250,28 +224,22 @@ export function LeadDetailPage() {
                         masked={l.email}
                         subject="lead"
                         canReveal={canRevealDetails}
-                        stepUp={stepUp}
                         resetKey={l.id}
-                        load={(headers) => revealLeadField(l.id, "email", headers)}
+                        load={() => revealLeadField(l.id, "email")}
                       />
                       <RevealField
                         kind="phone"
                         masked={l.phone}
                         subject="lead"
                         canReveal={canRevealDetails}
-                        stepUp={stepUp}
                         resetKey={l.id}
-                        load={(headers) => revealLeadField(l.id, "phone", headers)}
+                        load={() => revealLeadField(l.id, "phone")}
                       />
                     </div>
                     {l.email !== null || l.phone !== null ? (
                       <p className="text-xs text-faint">
                         Email and phone are masked.{" "}
-                        <RevealNotice
-                          hasPermission={hasRevealPermission}
-                          mfaEnabled={mfaEnabled}
-                          securityHref={stepUp.dialogProps.securityHref}
-                        />
+                        <RevealNotice hasPermission={hasRevealPermission} />
                         {converted && l.converted_contact_id
                           ? " This lead has been converted; the contact created from it is under Contacts."
                           : ""}
@@ -299,7 +267,6 @@ export function LeadDetailPage() {
           })()
         : null}
 
-      <StepUpDialog {...stepUp.dialogProps} />
     </div>
   );
 }

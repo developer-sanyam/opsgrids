@@ -55,14 +55,20 @@ class Settings(ServiceSettings):
 
     #: How many real phone numbers / emails one user may reveal in one organization
     #: (`services.enforce_reveal_budget`): `reveal_burst_limit` per `reveal_burst_window_seconds`
-    #: and `reveal_daily_limit` per UTC day. One step-up token lives about three minutes, so
-    #: without this a single stepped-up session could open every contact the gateway's own 300
+    #: and `reveal_daily_limit` per UTC day. With no step-up in front of a reveal (ADR-0023
+    #: addendum), without this a single session could open every contact the gateway's own 300
     #: requests a minute allowed. The budget is shared with lead-service's lead reveal (same
     #: Redis keys): it bounds how much PII one person can read, not how often one route is
     #: called. Raise it only with a reason.
-    reveal_burst_limit: int = 30
+    #: Sized for a rep working a call list (owner decision 2026-10-15, ADR-0023 addendum): about 200
+    #: records a day, each with a phone and possibly an email, in bursts of ~30 records in ten
+    #: minutes, with headroom for contact and lead reveals sharing the counters. It still stops a
+    #: scrape: 60 per ten minutes and 600 per day is nowhere near a bulk export, and every reveal
+    #: writes an audit row. The Redis key names are unchanged; only these limits moved (they are
+    #: script arguments, not part of the key).
+    reveal_burst_limit: int = 60
     reveal_burst_window_seconds: int = 600
-    reveal_daily_limit: int = 200
+    reveal_daily_limit: int = 600
 
 
 def parse_cleanup_mode(v: object) -> CleanupMode:

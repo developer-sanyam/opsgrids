@@ -163,13 +163,24 @@ class TestUnmaskAuthorization:
             )
         assert response.status_code == 403
 
-    async def test_unmask_requires_the_step_up(self, client, org_id, sealed) -> None:
-        """The permission is held, but the caller has not presented a second factor. `amr` gates
-        the dangerous action; without `otp` it is refused."""
+    async def test_unmask_needs_no_step_up(self, client, org_id, sealed) -> None:
+        """Owner decision 2026-10-15 (ADR-0023 addendum): the permission is held and that is
+        enough; no second factor is asked for."""
         target = sealed["target"]
         principal = principal_for(
             org_id, target, ["hrms.people.employee.read_sensitive:ORG"], amr=[]
         )
+        with as_principal(principal):
+            response = await client.post(
+                f"/api/v1/employees/{target.id}/pii/unmask", json=self._body("bank_account")
+            )
+        assert response.status_code == 200
+
+    async def test_unmask_without_the_permission_is_403_even_with_otp(
+        self, client, org_id, sealed
+    ) -> None:
+        target = sealed["target"]
+        principal = principal_for(org_id, target, ["hrms.people.employee.read:ORG"], amr=["otp"])
         with as_principal(principal):
             response = await client.post(
                 f"/api/v1/employees/{target.id}/pii/unmask", json=self._body("bank_account")
