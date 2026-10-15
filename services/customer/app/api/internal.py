@@ -40,6 +40,7 @@ appear as though it were.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, status
@@ -48,6 +49,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import selectors, services
 from app.config import settings
 from app.schemas import (
+    ContactExportItem,
+    ContactExportOut,
     ContactResolveIn,
     ContactResolveOut,
     ContactSummaryOut,
@@ -239,6 +242,84 @@ async def resolve_contact(
     # phone number, so a log full of them is a log that correlates customers across lines.
     log.info("customer.resolve.done", matched=contact is not None)
     return ContactResolveOut(contact_id=str(contact.id) if contact else None)
+
+
+#: C53's page ceilings: `ids` is a comma list (a query string carries no name or e-mail, only
+#: opaque ids), and a keyset page is bounded like every list.
+_EXPORT_MAX_IDS = 100
+_EXPORT_MAX_LIMIT = 500
+
+
+@router.get(
+    "/organizations/{organization_id}/contacts:export",
+    response_model=ContactExportOut,
+    status_code=status.HTTP_200_OK,
+    summary="CRM contacts for Engage's projection (name, e-mail, phone, status, company)",
+)
+async def export_contacts(
+    organization_id: uuid.UUID,
+    session: SessionDep,
+    request: Request,
+    ids: str | None = None,
+    after_updated_at: datetime | None = None,
+    after_id: uuid.UUID | None = None,
+    limit: int = 200,
+) -> ContactExportOut:
+    """The read behind notification's `project_crm_contact` and the owner-run backfill.
+
+    Notification only (`_require_caller`), for a token whose `org` claim names this path's
+    organization. Soft-deleted contacts are returned with `deleted_at` set so the projection can
+    remove its copy; an id that is gone altogether is simply absent, which the caller reads the
+    same way. The number is opened (and the read audited) only for live rows.
+    """
+    _require_caller(request, "notification")
+    _require_org_claim(request, organization_id)
+    if not 1 <= limit <= _EXPORT_MAX_LIMIT:
+        raise ValidationProblem(f"limit must be between 1 and {_EXPORT_MAX_LIMIT}")
+    wanted: list[uuid.UUID] | None = None
+    if ids is not None:
+        try:
+            wanted = [uuid.UUID(part) for part in ids.split(",")]
+        except ValueError:
+            raise ValidationProblem("ids must be a comma-separated list of UUIDs") from None
+        if len(wanted) > _EXPORT_MAX_IDS:
+            raise ValidationProblem(f"ids is limited to {_EXPORT_MAX_IDS}")
+    if (after_updated_at is None) != (after_id is None):
+        raise ValidationProblem("after_updated_at and after_id go together")
+    after = (after_updated_at, after_id) if after_updated_at and after_id else None
+
+    async with session.begin():
+        await _bind(session, organization_id, request)
+        rows = await selectors.export_contacts(
+            session, organization_id, ids=wanted, after=after, limit=limit
+        )
+        phones = await services.open_contacts_for_export(
+            session,
+            organization_id=organization_id,
+            contacts=rows,
+            service=getattr(request.state, "service_caller", "unknown-service"),
+        )
+
+    items = [
+        ContactExportItem(
+            contact_id=str(c.id),
+            company_id=str(c.company_id),
+            full_name=c.full_name,
+            email=c.email,
+            phone=phones.get(c.id),
+            status=c.status,
+            updated_at=c.updated_at,
+            deleted_at=c.deleted_at,
+        )
+        for c in rows
+    ]
+    last = rows[-1] if wanted is None and len(rows) == limit else None
+    log.info("customer.contacts_export.done", count=len(items))
+    return ContactExportOut(
+        items=items,
+        next_after_updated_at=last.updated_at if last else None,
+        next_after_id=str(last.id) if last else None,
+    )
 
 
 @router.get(

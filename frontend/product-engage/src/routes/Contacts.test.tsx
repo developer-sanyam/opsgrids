@@ -281,6 +281,27 @@ describe("permission gating", () => {
   });
 });
 
+describe("a contact copied from the CRM", () => {
+  const FROM_CRM: ContactOut = {
+    ...MASKED,
+    email: "",
+    phone: "+91 ••••• ••3446",
+    origin: "crm",
+    crm_contact_id: "7e1d4c2b-5a9f-4d3e-8b6c-1f2a3b4c5d6e",
+  };
+
+  it("shows the number for a phone-only contact and offers no edit or delete", async () => {
+    vi.spyOn(client, "listContacts").mockResolvedValue(page([FROM_CRM]));
+    renderPage();
+
+    await screen.findByText("Priya Raghavan");
+    expect(screen.getByText("+91 ••••• ••3446")).toBeTruthy();
+    expect(screen.getByText("From the CRM")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Edit/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Delete/ })).toBeNull();
+  });
+});
+
 describe("deleting a contact", () => {
   it("removes the row once the service confirms, and says so", async () => {
     vi.spyOn(client, "listContacts")

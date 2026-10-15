@@ -44,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import a1_services, domain, selectors, services, w1_services, w1_setup
 from app.config import settings
 from app.contacts import ContactResolver, make_contact_resolver
+from app.crm_contacts import CrmContactFetcher, make_crm_contact_fetcher
 from app.models import ProcessedEvent
 from app.storefront_optin import StorefrontOptInFetcher, make_storefront_opt_in_fetcher
 from app.targets import TargetResolver, make_resolver
@@ -308,6 +309,54 @@ async def record_storefront_opt_in(
     log.info("storefront_opt_in.recorded", found=details is not None)
 
 
+#: The CRM contact events that trigger the Engage projection (ids only on the bus).
+CRM_CONTACT_EVENTS = (
+    "crm.book.contact.created",
+    "crm.book.contact.updated",
+    "crm.book.contact.deleted",
+)
+
+
+async def project_crm_contact(envelope: dict[str, Any], fetch: CrmContactFetcher | None) -> str:
+    """Copy one CRM contact into Engage's contact book, once (ADR-0038 D-15).
+
+    The marker is `uuid5(event_id, "crm-contact-projection")`, not the raw event id: `.created`
+    is also folded by the rule engine under that id, and sharing it would make one handler skip
+    the other. Claim, call, record: the marker is read in one short transaction, customer is asked
+    (C53) with **no transaction open**, then the upsert and the marker commit together. Customer
+    unreachable raises `CrmUnavailable`, so the broker redelivers once and then dead-letters; the
+    owner-run backfill (`tools/sync_engage_contacts.py`) reconciles after that.
+    """
+    event_id = uuid.UUID(str(envelope["event_id"]))
+    organization_id = uuid.UUID(str(envelope["organization_id"]))
+    payload = envelope.get("payload") or {}
+    if str(payload.get("organization_id", organization_id)) != str(organization_id):
+        log.error("crm_projection.envelope_payload_org_mismatch")
+        return "mismatch"
+    crm_contact_id = uuid.UUID(str(payload["contact_id"]))
+    if fetch is None:
+        log.error("crm_projection.no_fetcher_configured")
+        return "unconfigured"
+    marker = uuid.uuid5(event_id, "crm-contact-projection")
+
+    async with _session_scope(organization_id) as session:
+        if await already_processed(session, ProcessedEvent, marker):
+            return "redelivered"
+    state = await fetch(str(organization_id), str(crm_contact_id))
+    async with _session_scope(organization_id) as session:
+        if await already_processed(session, ProcessedEvent, marker):
+            return "redelivered"
+        outcome = await services.project_crm_contact(
+            session,
+            organization_id=organization_id,
+            crm_contact_id=crm_contact_id,
+            state=state,
+        )
+        mark_processed(session, ProcessedEvent, marker, str(envelope["event_type"]))
+    log.info("crm_projection.done", outcome=outcome)
+    return outcome
+
+
 async def wake_automation_run(
     envelope: dict[str, Any], resolve_target: TargetResolver | None = None
 ) -> str:
@@ -373,6 +422,7 @@ def register(
     resolve_target: TargetResolver | None = None,
     resolve_contact: ContactResolver | None = None,
     fetch_storefront_opt_in: StorefrontOptInFetcher | None = None,
+    fetch_crm_contact: CrmContactFetcher | None = None,
 ) -> None:
     """Bind every subscribable routing key to the one fold.
 
@@ -421,6 +471,14 @@ def register(
         await record_storefront_opt_in(envelope, fetch_opt_in)
 
     consumer.on(EVT_STOREFRONT_WHATSAPP_OPTED_IN)(on_storefront_opt_in)
+
+    fetch_crm = fetch_crm_contact or make_crm_contact_fetcher(settings())
+
+    async def on_crm_contact(envelope: dict[str, Any]) -> None:
+        await project_crm_contact(envelope, fetch_crm)
+
+    for event_type in CRM_CONTACT_EVENTS:
+        consumer.on(event_type)(on_crm_contact)
 
 
 async def main() -> None:

@@ -349,6 +349,9 @@ def _contact_out(row: Contact) -> ContactOut:
         email=row.email_masked,
         name=row.name,
         attributes=row.attributes,
+        origin=row.origin,
+        crm_contact_id=str(row.crm_contact_id) if row.crm_contact_id else None,
+        phone=row.phone_masked,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -1183,7 +1186,7 @@ async def list_consent_events(
         contact = await selectors.get_contact(session, ctx.organization_id, contact_id)
         if contact is None:
             raise NotFoundProblem("No such contact")
-        if channel in (None, "email"):
+        if channel in (None, "email") and contact.email_index is not None:
             # A contact is an email subject: their history is every email event for that
             # address, whether or not it was recorded against this contact id.
             subject_index = contact.email_index
@@ -1192,6 +1195,7 @@ async def list_consent_events(
             # A number is linked to a contact by an event naming both; its history is every
             # event about that number, a STOP that named no contact included.
             linked_contact_id = contact_id
+            channel = channel or "whatsapp"
     stmt = selectors.consent_events_stmt(
         ctx,
         channel=channel,
@@ -1423,6 +1427,7 @@ def _segment_out(row: Segment) -> SegmentOut:
         list_id=str(row.list_id) if row.list_id else None,
         created_within_days=row.created_within_days,
         active_within_days=row.active_within_days,
+        crm_status=row.crm_status,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )

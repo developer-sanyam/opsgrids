@@ -248,6 +248,12 @@ export interface ContactOut {
   email: string;
   name: string;
   attributes: Record<string, unknown>;
+  /** manual | import | signup | crm. A `crm` row is a copy managed in the CRM: the service
+   *  answers PATCH and DELETE with 409 `managed_in_crm`, so the UI offers neither. */
+  origin?: string;
+  crm_contact_id?: string | null;
+  /** The number's mask; null when the contact has none. `email` is "" for a phone-only contact. */
+  phone?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -532,7 +538,11 @@ export interface SegmentIn {
   list_id?: string | null;
   created_within_days?: number | null;
   active_within_days?: number | null;
+  /** Only contacts copied from the CRM whose CRM status is this. */
+  crm_status?: CrmStatus | null;
 }
+
+export type CrmStatus = "lead" | "qualified" | "customer" | "dormant";
 
 export interface SegmentOut {
   id: string;
@@ -540,6 +550,7 @@ export interface SegmentOut {
   list_id: string | null;
   created_within_days: number | null;
   active_within_days: number | null;
+  crm_status?: CrmStatus | null;
   created_at: string;
   updated_at: string;
 }
