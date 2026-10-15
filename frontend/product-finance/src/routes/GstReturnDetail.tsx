@@ -5,7 +5,7 @@ import { fileReturn, generateReturn, getReturn, getReturnDiff } from "@/api/clie
 import type { Gstr3bSections, GstReturn, TaxHeadAmounts } from "@/api/types";
 import { formatDateTime } from "@/lib/format";
 import { formatMoney } from "@/lib/money";
-import { Can, problemMessage, useAsync, useMutation } from "@opsgrids/client";
+import { Can, problemMessage, useAsync, useMemberNames, useMutation } from "@opsgrids/client";
 import {
   Button,
   Card,
@@ -230,6 +230,7 @@ function FileReturnDialog({
 
 export function GstReturnDetailPage() {
   const { id = "" } = useParams();
+  const memberName = useMemberNames();
   const toast = useToast();
   const loader = useCallback(() => getReturn(id), [id]);
   const detail = useAsync(loader, [id]);
@@ -369,7 +370,7 @@ export function GstReturnDetailPage() {
                   content: (
                     <span>
                       Moved to <span className="font-semibold capitalize">{t.to_status}</span> by{" "}
-                      {t.transitioned_by}
+                      {memberName(t.transitioned_by)}
                       {t.arn ? <span className="money"> · ARN {t.arn}</span> : null}
                     </span>
                   ),

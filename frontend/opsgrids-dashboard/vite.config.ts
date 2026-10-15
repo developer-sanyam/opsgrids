@@ -3,6 +3,7 @@ import { fileURLToPath, URL } from "node:url";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
+import { assetsInlineLimit } from "@opsgrids/config/vite";
 
 /**
  * One entry point, one output. The dashboard is served by Caddy on `app.opsgrids.com` from
@@ -28,6 +29,7 @@ export default defineConfig({
     },
   },
   build: {
+    assetsInlineLimit,
     outDir: "dist",
     sourcemap: false,
   },

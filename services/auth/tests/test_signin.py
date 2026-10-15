@@ -897,6 +897,36 @@ class TestPasswords:
             session, cfg=cfg, directory=FakeDirectory([]), email="nobody@example.com"
         )
 
+    async def test_a_brand_new_account_gets_the_welcome_not_the_reset_notice(
+        self, session, cfg, directory, redis
+    ) -> None:
+        """A sign-up has no password and has never signed in: its first mail is a welcome that
+        names the organization, on a link that tells the page to greet rather than warn."""
+        from app.models import OutboxEvent
+
+        async with session.begin():
+            await services.request_password_reset(
+                session, cfg=cfg, directory=directory, email="sam@example.com"
+            )
+        rows = (await session.execute(select(OutboxEvent))).scalars().all()
+        assert [r.event_type for r in rows] == [services.EVT_PASSWORD_SETUP_REQUESTED]
+        payload = rows[0].payload
+        assert payload["organization_name"]
+        assert payload["reset_url"].endswith("&welcome=1")
+
+    async def test_an_account_that_has_a_password_gets_the_ordinary_reset(
+        self, session, cfg, directory, registered, redis
+    ) -> None:
+        from app.models import OutboxEvent
+
+        async with session.begin():
+            await services.request_password_reset(
+                session, cfg=cfg, directory=directory, email="sam@example.com"
+            )
+        rows = (await session.execute(select(OutboxEvent))).scalars().all()
+        assert [r.event_type for r in rows] == [services.EVT_PASSWORD_RESET_REQUESTED]
+        assert "welcome" not in rows[0].payload["reset_url"]
+
     async def test_resets_for_one_account_are_capped_silently(
         self, session, cfg, directory, registered, redis
     ) -> None:

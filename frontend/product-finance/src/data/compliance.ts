@@ -122,8 +122,8 @@ export function filingView(state: EInvoiceState | undefined): FilingView | null 
     case "filed":
       return {
         key: "filed",
-        label: "Filed",
-        detail: "Filed. The invoice carries the IRN and signed QR the filing returned.",
+        label: "Filed (simulated)",
+        detail: "Filed with the simulator. The invoice carries the IRN and signed QR the filing returned.",
         needsPerson: false,
       };
     case "cancelled":
@@ -182,7 +182,7 @@ export function filingView(state: EInvoiceState | undefined): FilingView | null 
 export function filingRowLabel(filing: Pick<EInvoiceFiling, "status" | "ack_date">): string {
   switch (filing.status) {
     case "filed":
-      return "Registered";
+      return "Registered (simulated)";
     case "cancelled":
       return "Withdrawn";
     case "cancelling":

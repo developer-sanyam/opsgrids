@@ -2711,15 +2711,6 @@ class CashflowRow:
     outflow_minor: int
 
 
-@dataclass(frozen=True, slots=True)
-class LedgerRow:
-    code: str
-    name: str
-    type: str
-    debit_minor: int
-    credit_minor: int
-
-
 #: Bank + cash on hand across accounts — a booked figure no invoice can imply.
 CASH_BALANCE_MINOR: int = _paise(18_640_000)
 
@@ -2741,17 +2732,5 @@ CASHFLOW: list[CashflowRow] = [
     CashflowRow("Aug", _paise(5_860_000), _paise(4_530_000)),
 ]
 
-#: P&L / trial-balance accounts, FY-to-date. Debits and credits are booked figures.
-LEDGER_PERIOD_LABEL: str = "FY 2026–27 · to date"  # noqa: RUF001 - display string, SPA fixture
-LEDGER_ACCOUNTS: list[LedgerRow] = [
-    LedgerRow("4000", "Sales — Goods", "revenue", 0, _paise(48_200_000)),
-    LedgerRow("4100", "Sales — Services", "revenue", 0, _paise(9_640_000)),
-    LedgerRow("4200", "Freight recovered", "revenue", 0, _paise(1_820_000)),
-    LedgerRow("4900", "Sales returns & credit notes", "contra_revenue", _paise(1_240_000), 0),
-    LedgerRow("5000", "Cost of goods sold", "expense", _paise(31_500_000), 0),
-    LedgerRow("5100", "Salaries & wages", "expense", _paise(8_900_000), 0),
-    LedgerRow("5200", "Rent & utilities", "expense", _paise(2_150_000), 0),
-    LedgerRow("5300", "Logistics & freight", "expense", _paise(3_420_000), 0),
-    LedgerRow("5400", "Marketing & sales", "expense", _paise(1_760_000), 0),
-    LedgerRow("5500", "Depreciation", "expense", _paise(980_000), 0),
-]
+#: The label a ledger report carries while there is no general ledger to report on.
+LEDGER_PERIOD_LABEL: str = "Not available yet"

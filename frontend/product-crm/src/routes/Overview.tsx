@@ -8,6 +8,8 @@ import { scopeFor, useAsync, useCan, usePermissions } from "@opsgrids/client";
 import type { Scope } from "@opsgrids/client";
 import { useDirectory } from "@/data/directoryContext";
 import { needsAttention } from "@/data/derive";
+import { announceDealsChanged } from "@/data/dealsChanged";
+import { isOpen } from "@/data/stages";
 import { getMySubjectRef } from "@/lib/subject";
 import { nowIso } from "@/lib/format";
 import {
@@ -184,6 +186,7 @@ export function OverviewPage() {
   const currentMonth = nowIso().slice(0, 7);
   const currency = summary.status === "success" ? summary.data.currency : "INR";
 
+  const openDealCount = useMemo(() => items.filter((d) => isOpen(d.stage)).length, [items]);
   const attention = useMemo(() => needsAttention(items, today).slice(0, 6), [items, today]);
   const wonThisMonth = useMemo(() => {
     const rows = items.filter((d) => d.stage === "closed_won" && d.close_date.slice(0, 7) === currentMonth);
@@ -355,7 +358,7 @@ export function OverviewPage() {
           {deals.status === "error" ? (
             <ErrorState message={deals.error.message} onRetry={deals.reload} />
           ) : null}
-          {deals.status === "success" ? <NeedsAttention items={attention} /> : null}
+          {deals.status === "success" ? <NeedsAttention items={attention} openDealCount={openDealCount} /> : null}
         </Card>
 
         <Card className="flex flex-col gap-5 p-6">
@@ -397,6 +400,7 @@ export function OverviewPage() {
             toast.success(`${deal.name} created.`);
             deals.reload();
             summary.reload();
+            announceDealsChanged();
           }}
         />
       ) : null}

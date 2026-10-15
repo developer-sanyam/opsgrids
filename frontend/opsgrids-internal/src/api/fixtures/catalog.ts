@@ -43,7 +43,7 @@ export interface FixturePlanVersion {
 }
 
 export const PRODUCTS: FixtureProduct[] = [
-  { product_key: "hrms", name: "OpsGrids HR", description: "People, attendance and payroll." },
+  { product_key: "hrms", name: "OpsGrids HR", description: "People, attendance and leave." },
   { product_key: "crm", name: "OpsGrids CRM", description: "Sales pipeline, deals and activities." },
   { product_key: "auctions", name: "OpsGrids Auctions", description: "B2B forward, reverse and Dutch auctions." },
   { product_key: "procure", name: "OpsGrids Procure", description: "Procure-to-pay: requisition to purchase order." },

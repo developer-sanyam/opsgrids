@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 
-import { ApiError, problemMessage, problemSlug, useAuth, useMutation } from "@opsgrids/client";
+import { ApiError, MIN_PASSWORD_LENGTH, problemMessage, problemSlug, useAuth, useMutation } from "@opsgrids/client";
 import { Button, Card, InlineAlert, TextField, useToast } from "@opsgrids/ui";
 
 import { changePassword, completeSessionAndReload, switchOrganization } from "@/api/auth";
@@ -39,6 +39,7 @@ function PasswordSection() {
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
   const [confirmError, setConfirmError] = useState<string | undefined>(undefined);
+  const [tooShort, setTooShort] = useState(false);
   const currentRef = useRef<HTMLInputElement>(null);
 
   const save = useMutation<void, void>(() => changePassword(current, next), {
@@ -58,6 +59,11 @@ function PasswordSection() {
 
   function submit() {
     setConfirmError(undefined);
+    setTooShort(false);
+    if (next.length < MIN_PASSWORD_LENGTH) {
+      setTooShort(true);
+      return;
+    }
     if (next !== confirm) {
       setConfirmError("Doesn't match the new password.");
       return;
@@ -97,8 +103,8 @@ function PasswordSection() {
             setNext(e.target.value);
             save.reset();
           }}
-          helper="At least 8 characters."
-          error={save.fieldErrors.new_password}
+          helper={`At least ${MIN_PASSWORD_LENGTH} characters.`}
+          error={tooShort ? `Use at least ${MIN_PASSWORD_LENGTH} characters.` : save.fieldErrors.new_password}
         />
         <TextField
           label="Confirm new password"

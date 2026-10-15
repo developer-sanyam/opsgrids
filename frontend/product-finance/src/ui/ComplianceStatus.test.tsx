@@ -11,6 +11,11 @@ describe("the GST portal is simulated", () => {
     expect(screen.queryByRole("button")).toBeNull();
   });
 
+  it("labels a filing as simulated, never a bare Filed", () => {
+    const view = filingView({ required: true, status: "filed", attempts: 1 });
+    expect(view?.label).toBe("Filed (simulated)");
+  });
+
   it("a filed document claims no registration with the portal", () => {
     const view = filingView({ required: true, status: "filed", attempts: 1 });
     expect(view?.detail).not.toMatch(/portal/i);

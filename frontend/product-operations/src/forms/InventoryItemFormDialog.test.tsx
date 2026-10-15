@@ -183,6 +183,10 @@ describe("InventoryItemFormDialog", () => {
     await user.type(screen.getByLabelText("Unit of measure"), "m");
     await user.type(screen.getByLabelText("Unit value"), "250");
     await user.click(screen.getByRole("button", { name: "Continue" }));
+    // Textile facts are not on every item: they appear only when asked for.
+    expect(screen.queryByRole("heading", { name: "Textile attributes" })).toBeNull();
+    expect(screen.queryByLabelText(/GSM/)).toBeNull();
+    await user.click(await screen.findByRole("button", { name: "Add textile attributes" }));
     await screen.findByRole("heading", { name: "Textile attributes" });
   }
 
@@ -245,6 +249,26 @@ describe("InventoryItemFormDialog", () => {
     expect(await screen.findByText("GSM is a whole number, like 150.")).toBeDefined();
     expect(createInventoryItem).not.toHaveBeenCalled();
     expect(onSaved).not.toHaveBeenCalled();
+  });
+
+  it("creates a non-textile item without ever showing fabric fields", async () => {
+    const user = userEvent.setup();
+    createInventoryItem.mockResolvedValue(CREATED);
+    const { onSaved } = renderDialog();
+    await user.type(screen.getByLabelText(/SKU/), "BOLT-100");
+    await user.type(screen.getByLabelText("Name"), "Hex bolt");
+    await user.selectOptions(screen.getByLabelText("Category"), "raw_materials");
+    await waitFor(() => expect(listWarehouses).toHaveBeenCalled());
+    await user.selectOptions(await screen.findByLabelText("Warehouse"), "Bengaluru DC");
+    await user.type(screen.getByLabelText("Unit of measure"), "pcs");
+    await user.type(screen.getByLabelText("Unit value"), "5");
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    expect(await screen.findByRole("button", { name: "Add textile attributes" })).toBeDefined();
+    expect(screen.queryByLabelText(/GSM/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Create item" }));
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(CREATED));
+    expect(setItemAttribute).not.toHaveBeenCalled();
   });
 
   it("still finishes when an attribute fails: the item exists, so nothing is created twice", async () => {

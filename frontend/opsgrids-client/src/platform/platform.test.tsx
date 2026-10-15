@@ -239,7 +239,7 @@ describe("useAdminLinks", () => {
     expect(screen.queryByText("Audit Logs")).toBeNull();
   });
 
-  it("shows all three when every underlying permission is held", () => {
+  it("shows Users and Settings, and never an Audit Logs link, when every permission is held", () => {
     render(
       <Wrapper
         user={meWith()}
@@ -255,10 +255,10 @@ describe("useAdminLinks", () => {
     );
     expect(screen.getByText("Users")).toBeTruthy();
     expect(screen.getByText("Settings")).toBeTruthy();
-    expect(screen.getByText("Audit Logs")).toBeTruthy();
+    expect(screen.queryByText("Audit Logs")).toBeNull();
   });
 
-  it("shows nothing when the caller holds none of the three", () => {
+  it("shows nothing when the caller holds neither", () => {
     render(
       <Wrapper user={meWith()} grants={[]} entitlements={[]}>
         <AdminProbe />

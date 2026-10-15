@@ -479,6 +479,44 @@ class TestPaymentRules:
             today=today,
         )
 
+    async def test_a_cash_payment_needs_no_reference_and_is_numbered_by_the_service(
+        self, session, org_id
+    ) -> None:
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            await _register(session, ctx)
+            customer = await _customer(session, ctx)
+            invoice = await self._open_invoice(session, ctx, customer.id, "INV-PAY-CASH-1")
+            payment = await services.record_payment(
+                session,
+                ctx,
+                PaymentCreate(
+                    customer_id=customer.id,
+                    received_date=date(2026, 1, 20),
+                    method="cash",
+                    allocations=[
+                        PaymentAllocationCreate(
+                            invoice_id=invoice.id, amount_minor=invoice.total_minor
+                        )
+                    ],
+                ),
+                today=date(2026, 1, 20),
+            )
+        assert payment.reference.startswith("CASH-")
+
+    def test_a_non_cash_payment_still_requires_a_reference(self) -> None:
+        with pytest.raises(ValueError, match="reference is required"):
+            PaymentCreate(
+                customer_id="00000000-0000-0000-0000-000000000001",
+                received_date=date(2026, 1, 20),
+                method="upi",
+                allocations=[
+                    PaymentAllocationCreate(
+                        invoice_id="00000000-0000-0000-0000-000000000002", amount_minor=1
+                    )
+                ],
+            )
+
     async def test_over_allocation_is_refused(self, session, org_id) -> None:
         ctx = admin_ctx(org_id)
         async with session.begin():

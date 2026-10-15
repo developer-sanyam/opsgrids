@@ -52,7 +52,6 @@ const BASIC_FIELDS = new Set([
   "employee_no",
   "full_name",
   "designation",
-  "job_title",
   "department_id",
   "location_code",
   "employment_type",
@@ -116,7 +115,6 @@ export function EmployeeForm({ employee, onClose, onSaved }: EmployeeFormProps) 
   const [employeeNo, setEmployeeNo] = useState(employee?.employee_no ?? "");
   const [fullName, setFullName] = useState(employee?.full_name ?? "");
   const [designation, setDesignation] = useState(employee?.designation ?? "");
-  const [jobTitle, setJobTitle] = useState(employee?.job_title ?? "");
   const [departmentId, setDepartmentId] = useState(employee?.department_id ?? "");
   const [locationCode, setLocationCode] = useState(employee?.location_code ?? "");
   const [employmentType, setEmploymentType] = useState<EmploymentType>(employee?.employment_type ?? "full_time");
@@ -210,7 +208,6 @@ export function EmployeeForm({ employee, onClose, onSaved }: EmployeeFormProps) 
         employee_no: employeeNo.trim(),
         full_name: fullName.trim(),
         designation: designation.trim() || null,
-        job_title: jobTitle.trim() || null,
         department_id: departmentId || null,
         location_code: locationCode || null,
         employment_type: employmentType,
@@ -229,7 +226,6 @@ export function EmployeeForm({ employee, onClose, onSaved }: EmployeeFormProps) 
     const body: EmployeePatch = {};
     if (fullName.trim() !== employee.full_name) body.full_name = fullName.trim();
     if ((designation.trim() || null) !== employee.designation) body.designation = designation.trim() || null;
-    if ((jobTitle.trim() || null) !== employee.job_title) body.job_title = jobTitle.trim() || null;
     if ((departmentId || null) !== employee.department_id) body.department_id = departmentId || null;
     if ((locationCode || null) !== employee.location_code) body.location_code = locationCode || null;
     if (employmentType !== employee.employment_type) body.employment_type = employmentType;
@@ -284,7 +280,6 @@ export function EmployeeForm({ employee, onClose, onSaved }: EmployeeFormProps) 
     employeeNo !== (employee?.employee_no ?? "") ||
     fullName !== (employee?.full_name ?? "") ||
     designation !== (employee?.designation ?? "") ||
-    jobTitle !== (employee?.job_title ?? "") ||
     departmentId !== (employee?.department_id ?? "") ||
     locationCode !== (employee?.location_code ?? "") ||
     employmentType !== (employee?.employment_type ?? "full_time") ||
@@ -342,13 +337,6 @@ export function EmployeeForm({ employee, onClose, onSaved }: EmployeeFormProps) 
           onChange={(e) => setDesignation(e.target.value)}
           optional
           error={save.fieldErrors.designation}
-        />
-        <TextField
-          label="Job title"
-          value={jobTitle}
-          onChange={(e) => setJobTitle(e.target.value)}
-          optional
-          error={save.fieldErrors.job_title}
         />
         <Select
           label="Department"

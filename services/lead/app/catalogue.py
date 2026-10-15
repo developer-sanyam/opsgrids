@@ -100,7 +100,7 @@ CRM_LEADS_ROLE_TEMPLATES: list[RoleTemplate] = [
     ),
     RoleTemplate(
         code="CRM_LEAD_REP",
-        name="Sales representative",
+        name="Sales representative (leads)",
         product=PRODUCT,
         description=(
             "Every person with a CRM seat. Reads the whole intake list — sales works from one "

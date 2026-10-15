@@ -645,6 +645,19 @@ describe("Security: changing the password", () => {
     expect(newField()).toHaveProperty("value", "");
   });
 
+  it("refuses a new password shorter than the server minimum without calling the server", async () => {
+    const user = userEvent.setup();
+    routes[CHANGE] = () => new Response(null, { status: 204 });
+    renderPage(me());
+    expect(screen.getByText("At least 8 characters.")).toBeTruthy();
+    await fill(user, PASSWORD, "short-7");
+
+    await user.click(save());
+
+    expect(describedBy(newField())).toContain("Use at least 8 characters.");
+    expect(callsTo(CHANGE)).toHaveLength(0);
+  });
+
   it("puts a wrong current password under its own field, empties it and focuses it, without signing anybody out", async () => {
     const user = userEvent.setup();
     const unauthorized = vi.fn();

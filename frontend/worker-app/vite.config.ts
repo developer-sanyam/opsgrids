@@ -4,6 +4,8 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 
+import { assetsInlineLimit } from "@opsgrids/config/vite";
+
 // One Vite app per surface (ADR-0001; the worker PWA's own boundary is ADR-0024 §7). Dev on 4440,
 // clear of every other app's port (product-support is the highest at 4430).
 export default defineConfig({
@@ -24,5 +26,8 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
+  },
+  build: {
+    assetsInlineLimit,
   },
 });

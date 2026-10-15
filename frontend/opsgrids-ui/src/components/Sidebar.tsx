@@ -47,7 +47,7 @@ interface SidebarProps {
    *  `@opsgrids/client`) — real `<a href>`s, never a route. Omitted (or empty) hides the group,
    *  for the staff console, which has none. */
   modules?: ModuleLink[] | undefined;
-  /** Users / Settings / Audit Logs (`useAdminLinks`), shown only when the caller holds the grant
+  /** Users / Settings (`useAdminLinks`), shown only when the caller holds the grant
    *  each one needs. Omitted hides the group entirely rather than showing it empty. */
   adminLinks?: ModuleLink[] | undefined;
   user: SidebarUser;

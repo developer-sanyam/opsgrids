@@ -9,6 +9,9 @@ describe("finance money formatting is exponent-aware", () => {
     expect(formatAmount(123456750)).toBe("12,34,567.50");
     expect(formatMoneyWhole(123456750)).toBe("₹12,34,568");
     expect(formatMoneyCompact(123456700)).toBe("₹12.35L");
+    expect(formatMoneyCompact(9676000)).toBe("₹96,760");
+    expect(formatMoneyCompact(5840000000)).toBe("₹5.84Cr");
+    expect(formatMoneyCompact(-123456700)).toBe("-₹12.35L");
     expect(formatMoneySigned(-450000)).toBe("−₹4,500.00");
   });
 

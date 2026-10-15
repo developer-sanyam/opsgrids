@@ -53,7 +53,7 @@ const STATUS_TONE: Record<InvoiceStatus, ChartTone> = {
 type SeriesKey = "revenue" | "received" | "outstanding";
 
 const SERIES_OPTIONS: { value: SeriesKey; label: string }[] = [
-  { value: "revenue", label: "Revenue" },
+  { value: "revenue", label: "Billed incl. GST" },
   { value: "received", label: "Received" },
   { value: "outstanding", label: "Outstanding" },
 ];
@@ -327,7 +327,7 @@ export function OverviewPage() {
           <>
             <div style={{ "--i": 0 } as CSSProperties}>
               <KpiCard
-                label="Revenue this period"
+                label="Billed this period (incl. GST)"
                 value={formatMoneyCompact(history?.revenue_current_minor ?? revenueKpi?.value_minor ?? 0)}
                 deltaPct={history?.revenue_delta_pct ?? undefined}
                 caption={trendCaption(history?.revenue_delta_pct ?? null, previousMonthLabel, "This month")}
@@ -380,8 +380,8 @@ export function OverviewPage() {
       <section aria-label="Revenue and receivables" className="grid grid-cols-1 gap-5 xl:grid-cols-3">
         <Card className="flex flex-col gap-5 p-6 xl:col-span-2">
           <SectionHeader
-            title="Revenue by month"
-            subtitle="Real revenue, receipts and receivables — the last 12 months"
+            title="Billed by month (incl. GST)"
+            subtitle="Amounts billed (including GST), receipts and receivables — the last 12 months"
             action={
               overview.status === "success" && months.length > 0 ? (
                 <Select
@@ -398,13 +398,13 @@ export function OverviewPage() {
           {overview.status === "success" ? (
             months.length > 0 ? (
               <LineChart
-                label={`${SERIES_OPTIONS.find((o) => o.value === seriesKey)?.label ?? "Revenue"} by month`}
+                label={`${SERIES_OPTIONS.find((o) => o.value === seriesKey)?.label ?? "Billed incl. GST"} by month`}
                 categories={narrow ? compactMonthLabels(months) : months.map((p) => p.label)}
                 categoryStride={narrow ? 3 : undefined}
                 series={[
                   {
                     key: seriesKey,
-                    label: SERIES_OPTIONS.find((o) => o.value === seriesKey)?.label ?? "Revenue",
+                    label: SERIES_OPTIONS.find((o) => o.value === seriesKey)?.label ?? "Billed incl. GST",
                     values: months.map((p) => seriesValue(p, seriesKey)),
                   },
                 ]}

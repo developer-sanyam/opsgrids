@@ -4,6 +4,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { getInvoice, issueInvoice, listCustomers, MAX_PAGE_SIZE } from "@/api/client";
 import type { Invoice, InvoiceLineCreate, InvoiceIssueIn, SupplyType } from "@/api/types";
 import { GST_STATE_OPTIONS } from "@/data/gstStates";
+import { addDays, DEFAULT_PAYMENT_TERMS_DAYS } from "@/lib/format";
 import { formatMoney, minorToInput, parseMinor, parseQuantity } from "@/lib/money";
 import { ApiError, fieldError, problemMessage, useAsync, useMutation } from "@opsgrids/client";
 import {
@@ -123,8 +124,15 @@ function IssueForm({
   const isCreditNote = correcting !== null;
   const [customerId, setCustomerId] = useState(correcting?.customer_id ?? "");
   const today = new Date().toISOString().slice(0, 10);
-  const [issuedDate, setIssuedDate] = useState(isCreditNote ? today : today);
-  const [dueDate, setDueDate] = useState(isCreditNote ? today : today);
+  const [issuedDate, setIssuedDate] = useState(today);
+  // Offered as issue date + 30 days (a credit note settles nothing, so it is due at once) until
+  // the person picks a date of their own; after that the issue date no longer moves it.
+  const [pickedDueDate, setPickedDueDate] = useState<string | null>(null);
+  const defaultDueDate =
+    isCreditNote || !/^\d{4}-\d{2}-\d{2}$/.test(issuedDate)
+      ? issuedDate
+      : addDays(issuedDate, DEFAULT_PAYMENT_TERMS_DAYS);
+  const dueDate = pickedDueDate ?? defaultDueDate;
   const [taxRatePct, setTaxRatePct] = useState(String(correcting?.tax_rate_pct ?? 18));
   const [supplyType, setSupplyType] = useState<SupplyType | "">(correcting?.supply_type ?? "");
   const [placeOfSupply, setPlaceOfSupply] = useState(correcting?.place_of_supply ?? "");
@@ -322,7 +330,7 @@ function IssueForm({
               label="Due date"
               type="date"
               value={dueDate}
-              onChange={(e) => setDueDate(e.target.value)}
+              onChange={(e) => setPickedDueDate(e.target.value)}
               required
               error={dateError ?? fieldError(issueProblem, "due_date")}
             />

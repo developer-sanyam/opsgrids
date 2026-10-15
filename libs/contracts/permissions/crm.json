@@ -227,7 +227,7 @@
       ],
       "is_admin": false,
       "is_default": true,
-      "name": "Sales representative"
+      "name": "Sales representative (companies and contacts)"
     },
     {
       "code": "CRM_PIPELINE_ADMIN",
@@ -283,7 +283,7 @@
       ],
       "is_admin": false,
       "is_default": true,
-      "name": "Sales representative"
+      "name": "Sales representative (pipeline)"
     },
     {
       "code": "CRM_LEADS_ADMIN",
@@ -335,7 +335,7 @@
       ],
       "is_admin": false,
       "is_default": true,
-      "name": "Sales representative"
+      "name": "Sales representative (leads)"
     }
   ],
   "sources": [

@@ -117,7 +117,7 @@ function InvoiceBody({ invoice, onReload }: { invoice: Invoice; onReload: () => 
           <div className="flex flex-col gap-2">
             <div className="flex items-center gap-2.5">
               <h1 className="display text-2xl font-extrabold tnum">{invoice.number}</h1>
-              <InvoiceStatusPill status={invoice.status} />
+              <InvoiceStatusPill status={invoice.status} amountPaidMinor={invoice.amount_paid_minor} />
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <Tag className={isCreditNote ? "bg-accent-soft text-accent-ink" : ""}>

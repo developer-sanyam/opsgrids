@@ -80,7 +80,6 @@ from app.schemas import (
     ItcBalanceOut,
     ItcHeadBalanceOut,
     ItcLedgerEntryOut,
-    LedgerAccount,
     LedgerReport,
     MonthlyRevenuePoint,
     OverviewKpi,
@@ -1700,22 +1699,14 @@ async def get_overview(
 
 
 def get_ledger(*, today: date | None = None) -> LedgerReport:
-    """The trial-balance report. Representative booked figures (see `app.domain`) pending a GL —
-    `sample=True` on every response; there is no ledger table behind this yet."""
+    """The trial-balance report. There is no general ledger behind it yet, so it carries no
+    accounts: `sample=True` and an empty list, never invented figures presented as an
+    organization's books."""
     return LedgerReport(
         period_label=domain.LEDGER_PERIOD_LABEL,
         as_of=_today(today),
         sample=True,
-        accounts=[
-            LedgerAccount(
-                code=row.code,
-                name=row.name,
-                type=row.type,
-                debit_minor=row.debit_minor,
-                credit_minor=row.credit_minor,
-            )
-            for row in domain.LEDGER_ACCOUNTS
-        ],
+        accounts=[],
     )
 
 

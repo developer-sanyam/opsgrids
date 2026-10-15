@@ -27,14 +27,28 @@ const REASON_META: Record<
  * The Overview "needs attention" list: open deals that are overdue, closing within ten days, or
  * have gone quiet — each a link to the deal, with a reason chip and the value. Most urgent first.
  */
-export function NeedsAttention({ items }: { items: AttentionItem[] }) {
+export function NeedsAttention({
+  items,
+  openDealCount,
+}: {
+  items: AttentionItem[];
+  /** How many open deals there are at all: with none, "nothing needs a nudge" would be a claim
+   *  about a pipeline that does not exist yet. */
+  openDealCount: number;
+}) {
   const { companies } = useDirectory();
   if (items.length === 0) {
-    return (
+    return openDealCount === 0 ? (
+      <EmptyState
+        icon={<CheckSquareIcon className="size-6" />}
+        title="No open deals yet"
+        description="Add your first deal. Deals that are overdue, closing this week or going stale will be listed here."
+      />
+    ) : (
       <EmptyState
         icon={<CheckSquareIcon className="size-6" />}
         title="Nothing needs a nudge"
-        description="No open deals are overdue, closing this week, or going stale. The pipeline is healthy."
+        description="None of your open deals are overdue, closing this week or going stale."
       />
     );
   }

@@ -45,3 +45,12 @@ export function daysBetween(aIso: string, bIso: string): number {
 export function today(clock: () => Date = () => new Date()): string {
   return clock().toISOString().slice(0, 10);
 }
+
+/** `YYYY-MM-DD` plus a whole number of days, on the calendar (no timezone drift). */
+export function addDays(iso: string, days: number): string {
+  const moved = new Date(Date.parse(`${iso}T00:00:00Z`) + days * 86_400_000);
+  return moved.toISOString().slice(0, 10);
+}
+
+/** Net 30 days: the due date offered until someone chooses one. */
+export const DEFAULT_PAYMENT_TERMS_DAYS = 30;

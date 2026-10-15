@@ -4,6 +4,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { deleteDeal, listDeals } from "@/api/client";
 import type { Company, Deal, DealStage } from "@/api/types";
 import { dealsByStage } from "@/data/derive";
+import { announceDealsChanged } from "@/data/dealsChanged";
 import { useDirectory } from "@/data/directoryContext";
 import { dealImport } from "@/data/importExport/deals";
 import type { DealFilters } from "@/data/importExport/deals";
@@ -158,13 +159,18 @@ export function DealsPage() {
   );
   // New rows show without a refresh: the board or the list reloads.
   const { reload: reloadDeals } = deals;
-  const dx = useImportExport(dealImport, { filters: importFilters, onImported: reloadDeals });
+  const onImported = useCallback(() => {
+    reloadDeals();
+    announceDealsChanged();
+  }, [reloadDeals]);
+  const dx = useImportExport(dealImport, { filters: importFilters, onImported });
 
   const remove = useMutation((deal: Deal) => deleteDeal(deal.id), {
     onSuccess: (_result, deal) => {
       setDeleting(null);
       toast.success(`${deal.name} deleted.`);
       deals.reload();
+      announceDealsChanged();
     },
   });
 
@@ -338,6 +344,7 @@ export function DealsPage() {
               total={deals.data.total}
               size={deals.data.size}
               noun="deals"
+              singularNoun="deal"
               onPageChange={setPage}
               onSizeChange={(n) => {
                 setSize(n);
@@ -360,6 +367,7 @@ export function DealsPage() {
             setCreating(false);
             toast.success(`${deal.name} created.`);
             deals.reload();
+            announceDealsChanged();
           }}
         />
       ) : null}

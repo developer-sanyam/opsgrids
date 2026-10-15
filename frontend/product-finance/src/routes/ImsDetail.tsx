@@ -20,7 +20,7 @@ import {
 import { readErrorMessage } from "@/lib/errors";
 import { formatDate, formatDateTime } from "@/lib/format";
 import { formatAmount, formatMoney } from "@/lib/money";
-import { Can, useAsync, useAuth } from "@opsgrids/client";
+import { Can, useAsync, useAuth, useMemberNames } from "@opsgrids/client";
 import {
   Avatar,
   Button,
@@ -172,14 +172,15 @@ function EvidenceTable({ left, right }: { left: EvidenceSide; right: EvidenceSid
 
 /** One recorded decision, with what was suggested at the time and whether it was followed. */
 function DecisionRow({ decision }: { decision: ImsDecision }) {
+  const memberName = useMemberNames();
   const followed =
     decision.suggested_action !== null && decision.suggested_action === decision.action;
   return (
     <li className="flex gap-3 border-b border-line/70 py-3 last:border-0">
-      <Avatar name={decision.decided_by} size="md" />
+      <Avatar name={memberName(decision.decided_by)} size="md" />
       <div className="flex min-w-0 flex-col gap-0.5">
         <div className="flex flex-wrap items-baseline gap-x-2">
-          <span className="text-sm font-bold text-ink">{decision.decided_by}</span>
+          <span className="text-sm font-bold text-ink">{memberName(decision.decided_by)}</span>
           <span className="text-sm text-ink-soft">{actionPastTense(decision.action)}</span>
           <time className="text-xs text-muted tnum" dateTime={decision.decided_at}>
             {formatDateTime(decision.decided_at)}

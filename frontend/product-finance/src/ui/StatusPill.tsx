@@ -1,23 +1,21 @@
 import type { InvoiceStatus, PaymentMethod } from "@/api/types";
 import { StatusBadge } from "@opsgrids/ui";
 
-/**
- * Invoice lifecycle. Every `InvoiceStatus` word ("paid", "sent", "overdue", "draft", "void") is
- * registered in `@opsgrids/ui`'s status registry, so this is a thin wrapper — no local tones.
- */
-const INVOICE_LABEL: Record<InvoiceStatus, string> = {
-  paid: "Paid",
-  sent: "Sent",
-  overdue: "Overdue",
-  draft: "Draft",
-  void: "Void",
-};
+import { invoiceStatusLabel } from "./invoiceStatusLabel";
 
-export function InvoiceStatusPill({ status }: { status: InvoiceStatus }) {
+/** Invoice lifecycle on the shared badge; every status word is in `@opsgrids/ui`'s registry, so no local tones. */
+export function InvoiceStatusPill({
+  status,
+  amountPaidMinor,
+}: {
+  status: InvoiceStatus;
+  /** Money settled so far; lets an open document say it is partly paid. */
+  amountPaidMinor?: number;
+}) {
   return (
     <StatusBadge
       status={status}
-      label={INVOICE_LABEL[status]}
+      label={invoiceStatusLabel(status, amountPaidMinor)}
       className={status === "void" ? "line-through" : undefined}
     />
   );

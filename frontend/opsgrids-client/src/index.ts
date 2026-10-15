@@ -127,6 +127,7 @@ export { useOrgProfile } from "./platform/useOrgProfile";
 export type { OrgProfile } from "./platform/useOrgProfile";
 export { useAdminLinks } from "./platform/useAdminLinks";
 export type { AdminLink, AdminLinkKey } from "./platform/useAdminLinks";
+export { useMemberNames, UNKNOWN_MEMBER_NAME } from "./platform/useMemberNames";
 export { useGlobalSearch } from "./platform/useGlobalSearch";
 export type {
   GlobalSearchGroup,
@@ -158,6 +159,7 @@ export { paginateFixture, settle } from "./fixtures";
 export type { FixturePage, PaginateFixtureOptions } from "./fixtures";
 export { buildQuery } from "./query";
 export type { BuildQueryOptions, QueryValue } from "./query";
+export { MIN_PASSWORD_LENGTH } from "./passwordPolicy";
 export { useAsync } from "./useAsync";
 export type { AsyncControls, AsyncState } from "./useAsync";
 export { useMutation } from "./useMutation";

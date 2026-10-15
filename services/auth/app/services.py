@@ -87,6 +87,9 @@ EVT_SIGNED_IN = "core.session.signed_in"
 EVT_SIGNED_OUT = "core.session.signed_out"
 EVT_PASSWORD_CHANGED = "core.user.password_changed"  # pragma: allowlist secret
 EVT_PASSWORD_RESET_REQUESTED = "core.user.password_reset_requested"  # pragma: allowlist secret
+#: The same link for a person who has never had a password (a brand-new sign-up): a welcome that
+#: names the organization, not a "someone asked for a reset" notice they never asked for.
+EVT_PASSWORD_SETUP_REQUESTED = "core.user.password_setup_requested"  # pragma: allowlist secret
 EVT_TOKEN_REUSE = "core.session.token_reuse_detected"
 EVT_MFA_ENROLLED = "core.user.mfa_enrolled"
 
@@ -1423,24 +1426,39 @@ async def request_password_reset(
             requested_ip=client_ip(request),
         )
     )
+    # Someone who has never held a password and never signed in is setting their first one — a
+    # new sign-up. They get the welcome mail (naming their organization) and a link that tells
+    # the page to greet them rather than talk about sessions being signed out. An SSO-only
+    # account has signed in, so it is not mistaken for one.
+    credential = await session.get(Credential, user.user_id)
+    first_time = credential is None or (
+        credential.password_hash is None and credential.last_login_at is None
+    )
+    memberships = user.active_memberships()
+    welcome = first_time and bool(memberships)
+    reset_url = f"{cfg.app_base_url.rstrip('/')}/reset-password?token={raw}"
+    payload: dict[str, object] = {
+        "user_id": str(user.user_id),
+        "email": user.email,
+        "token": raw,
+        # Ready to paste into a template. The dashboard owns the route; this service owns
+        # the token; the platform's base URL is the one configured value that joins them,
+        # so notification's template never has to know a hostname (ADR-0013 §3).
+        "reset_url": f"{reset_url}&welcome=1" if welcome else reset_url,
+    }
+    if welcome:
+        payload["full_name"] = user.full_name
+        payload["organization_name"] = memberships[0].organization_name
     # The email goes out through notify-service, from the outbox — so a crash between
     # writing the token and sending the mail cannot lose the reset.
     publish_event(
         session,
         OutboxEvent,
         organization_id=uuid.UUID(int=0),
-        event_type=EVT_PASSWORD_RESET_REQUESTED,
+        event_type=EVT_PASSWORD_SETUP_REQUESTED if welcome else EVT_PASSWORD_RESET_REQUESTED,
         aggregate_type="credential",
         aggregate_id=user.user_id,
-        payload={
-            "user_id": str(user.user_id),
-            "email": user.email,
-            "token": raw,
-            # Ready to paste into a template. The dashboard owns the route; this service owns
-            # the token; the platform's base URL is the one configured value that joins them,
-            # so notification's template never has to know a hostname (ADR-0013 §3).
-            "reset_url": f"{cfg.app_base_url.rstrip('/')}/reset-password?token={raw}",
-        },
+        payload=payload,
     )
     await session.commit()
 

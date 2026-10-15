@@ -9,6 +9,7 @@ import {
   Button,
   Card,
   ErrorState,
+  formatCalendarDate,
   InlineAlert,
   MapPinIcon,
   PageHeader,
@@ -501,14 +502,14 @@ export function EmployeeDetailPage() {
             <span className="text-xs font-semibold uppercase tracking-wide text-faint">
               Date of joining
             </span>
-            <span className="tnum text-ink">{employee.date_of_joining ?? "—"}</span>
+            <span className="tnum text-ink">{formatCalendarDate(employee.date_of_joining)}</span>
           </div>
           {employee.status === "exited" ? (
             <div className="flex flex-col gap-1">
               <span className="text-xs font-semibold uppercase tracking-wide text-faint">
                 Date of exit
               </span>
-              <span className="tnum text-ink">{employee.date_of_exit ?? "—"}</span>
+              <span className="tnum text-ink">{formatCalendarDate(employee.date_of_exit)}</span>
             </div>
           ) : null}
           <div className="flex flex-col gap-1">

@@ -7,7 +7,6 @@ import {
   HomeIcon,
   ReceiptIcon,
   SettingsIcon,
-  ShieldIcon,
   UsersIcon,
 } from "../icons";
 import type { ModuleLink, NavGroup } from "./Sidebar";
@@ -42,7 +41,6 @@ const MODULES: ModuleLink[] = [
 
 const ADMIN: ModuleLink[] = [
   { key: "users", label: "Users", href: "/admin/members", icon: UsersIcon },
-  { key: "audit-logs", label: "Audit Logs", href: "/admin/audit", icon: ShieldIcon },
 ];
 
 const meta = {
