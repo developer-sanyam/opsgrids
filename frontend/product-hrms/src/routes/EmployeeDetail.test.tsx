@@ -9,6 +9,8 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
+import { ApiError, PermissionProvider } from "@opsgrids/client";
+
 import type { ApprovalChainOut, ChainRungOut, EmployeeOut } from "@/api/types";
 import { EmployeeDetailPage } from "./EmployeeDetail";
 
@@ -145,5 +147,59 @@ describe("EmployeeDetail — approval chain collapse (§4.F)", () => {
     await waitFor(() => expect(screen.getByText("Manager 1")).toBeDefined());
     expect(screen.getByText("Manager 8")).toBeDefined();
     expect(screen.queryByText(/Show all/)).toBeNull();
+  });
+});
+
+function renderWithGrants(grants: string[]) {
+  return render(
+    <PermissionProvider grants={grants}>
+      <MemoryRouter initialEntries={["/employees/emp-ananya"]}>
+        <Routes>
+          <Route path="/employees/:employeeId" element={<EmployeeDetailPage />} />
+        </Routes>
+      </MemoryRouter>
+    </PermissionProvider>,
+  );
+}
+
+describe("EmployeeDetail — a role without approvals", () => {
+  beforeEach(() => {
+    getEmployee.mockReset();
+    getChain.mockReset();
+    listEmployeeReports.mockReset();
+    unmaskEmployeePii.mockReset();
+    getEmployee.mockResolvedValue(EMPLOYEE);
+    listEmployeeReports.mockResolvedValue([]);
+  });
+
+  it("leaves the approval chain out, with no permission error, when the server answers 403", async () => {
+    getChain.mockRejectedValue(
+      new ApiError(403, "Missing permission: core.approval.request.read", {
+        title: "Forbidden",
+        status: 403,
+        detail: "Missing permission: core.approval.request.read",
+      }),
+    );
+    renderPage();
+
+    await screen.findByRole("heading", { name: /Ananya Iyer/ });
+    await waitFor(() => expect(getChain).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText("Approval chain")).toBeNull());
+    expect(screen.queryByText(/Missing permission/)).toBeNull();
+    expect(screen.queryByText(/core\.approval/)).toBeNull();
+  });
+
+  it("does not even ask for the chain when the grants say the role has no approvals", async () => {
+    renderWithGrants(["hrms.people.employee.read:ORG"]);
+
+    await screen.findByRole("heading", { name: /Ananya Iyer/ });
+    expect(screen.queryByText("Approval chain")).toBeNull();
+    expect(getChain).not.toHaveBeenCalled();
+  });
+
+  it("shows the chain to a role that has approvals", async () => {
+    getChain.mockResolvedValue(LONG_CHAIN);
+    renderWithGrants(["core.approval.request.read:ORG"]);
+    expect(await screen.findByText("Approval chain")).toBeDefined();
   });
 });

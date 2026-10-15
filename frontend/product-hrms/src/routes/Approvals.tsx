@@ -27,6 +27,7 @@ import {
 import type { Column } from "@opsgrids/ui";
 
 import { listInbox } from "@/api/approvals";
+import { APPROVALS_NOT_INCLUDED_MESSAGE, APPROVALS_NOT_INCLUDED_TITLE } from "@/lib/approvalAccess";
 import type { InboxItemOut } from "@/api/types";
 import {
   dueCellCopy,
@@ -282,8 +283,8 @@ function ApprovalsInbox() {
   if (state.status === "error" && state.error instanceof ApiError && state.error.status === 403) {
     return (
       <ErrorState
-        title="Approvals aren't switched on here yet"
-        message="Your role doesn't include approvals. An owner can check with OpsGrids support."
+        title={APPROVALS_NOT_INCLUDED_TITLE}
+        message={APPROVALS_NOT_INCLUDED_MESSAGE}
         tone="neutral"
       />
     );

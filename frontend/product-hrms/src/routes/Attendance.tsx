@@ -36,6 +36,7 @@ import { AttendancePill } from "@/ui/StatusPill";
 import { CheckInDialog } from "@/ui/CheckInDialog";
 import { CorrectAttendanceDialog } from "@/ui/CorrectAttendanceDialog";
 import { CorrectionCell } from "@/ui/CorrectionCell";
+import { LinkMyLoginCard } from "@/ui/LinkMyLoginCard";
 import { RequestCorrectionDialog } from "@/ui/RequestCorrectionDialog";
 
 /** The real clock, not a frozen fixture date — injectable so a test can pin it. */
@@ -342,11 +343,10 @@ function AttendanceTable() {
       />
 
       {punchStatus.kind === "no-employee" ? (
-        <Card className="p-4">
-          <p className="text-sm text-muted">
-            Your account has no employee record linked, so you can't punch attendance here.
-          </p>
-        </Card>
+        <LinkMyLoginCard
+          title="No employee record is linked to your account"
+          onLinked={() => setRefreshKey((k) => k + 1)}
+        />
       ) : null}
 
       {/* Week strip */}

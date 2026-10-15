@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+import { usePermissionStatus } from "@opsgrids/client";
+
 import { listInbox } from "@/api/approvals";
 
 /**
@@ -10,8 +12,15 @@ import { listInbox } from "@/api/approvals";
  */
 export function useInboxCount(): string | undefined {
   const [total, setTotal] = useState<number | null>(null);
+  // A role with no approvals gets a 403 on every page load; known-denied, don't ask. (Unknown --
+  // grants still loading -- asks, and a failure still just hides the count.)
+  const access = usePermissionStatus("core.approval.request.read", "OWN");
 
   useEffect(() => {
+    if (access === "denied") {
+      setTotal(null);
+      return undefined;
+    }
     let active = true;
     listInbox({ page: 1, size: 1 })
       .then((page) => {
@@ -23,7 +32,7 @@ export function useInboxCount(): string | undefined {
     return () => {
       active = false;
     };
-  }, []);
+  }, [access]);
 
   return total === null ? undefined : String(total);
 }

@@ -83,7 +83,8 @@ export interface EmployeeOut {
 /** `POST /employees` — `EmployeeIn`. `status` is never accepted: a new record always starts on
  *  probation. `membership_id` must never be sent — account owns that link (ADR-0008 §3). */
 export interface EmployeeIn {
-  employee_no: string;
+  /** Optional: omitted, the service generates the next free `EMP####`. */
+  employee_no?: string;
   full_name: string;
   designation?: string | null;
   job_title?: string | null;

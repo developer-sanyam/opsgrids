@@ -18,10 +18,11 @@ import {
 } from "@opsgrids/ui";
 import type { Column } from "@opsgrids/ui";
 
-import { usePermission } from "@opsgrids/client";
+import { ApiError, usePermission } from "@opsgrids/client";
 
 import { listMyRequests, listRequests } from "@/api/approvals";
 import type { RequestListItemOut } from "@/api/types";
+import { APPROVALS_NOT_INCLUDED_MESSAGE, APPROVALS_NOT_INCLUDED_TITLE } from "@/lib/approvalAccess";
 import { myRequestStatusCopy, requestTypeCopy, summaryLine } from "@/lib/approvalCopy";
 import { useZoneLookup } from "@/lib/zone";
 import { PersonRefInline } from "@/ui/PersonRef";
@@ -198,7 +199,15 @@ function MyRequestsList() {
 
       {state.status === "error" ? (
         <Card className="p-6">
-          <ErrorState message={state.error.message} onRetry={() => void load(1, false, scope)} />
+          {state.error instanceof ApiError && state.error.status === 403 ? (
+            <ErrorState
+              title={APPROVALS_NOT_INCLUDED_TITLE}
+              message={APPROVALS_NOT_INCLUDED_MESSAGE}
+              tone="neutral"
+            />
+          ) : (
+            <ErrorState message={state.error.message} onRetry={() => void load(1, false, scope)} />
+          )}
         </Card>
       ) : null}
 

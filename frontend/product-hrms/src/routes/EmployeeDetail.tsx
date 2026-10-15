@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { ApiError, useCan, useRevealedField } from "@opsgrids/client";
+import { ApiError, useCan, usePermissionStatus, useRevealedField } from "@opsgrids/client";
 import {
   ArrowLeftIcon,
   Avatar,
@@ -22,6 +22,7 @@ import {
 
 import { getEmployee, listEmployeeReports, unmaskEmployeePii } from "@/api/client";
 import { getChain } from "@/api/approvals";
+import { LinkedMemberCard } from "@/ui/LinkedMemberCard";
 import { getOrgUnitNameById } from "@/api/orgUnits";
 import type {
   ApprovalChainOut,
@@ -49,6 +50,10 @@ type EmployeeState =
 
 type ChainState =
   | { kind: "loading" }
+  /** The caller's role does not include approvals. Not an error to show: an employee page is
+   *  about the employee, and a section the reader cannot use is left out rather than explained
+   *  with a permission code. */
+  | { kind: "unavailable" }
   | { kind: "error"; message: string }
   | { kind: "ready"; chain: ApprovalChainOut };
 
@@ -89,21 +94,33 @@ function ChainRung({ rung }: { rung: ChainRungOut }) {
 }
 
 function ApprovalChainSection({ employeeId, firstName }: { employeeId: string; firstName: string }) {
+  // Known-denied: never even ask (each ask is a 403 in the server log). Unknown (grants still
+  // loading) asks, and a 403 below is handled the same way.
+  const approvalsAccess = usePermissionStatus("core.approval.request.read", "OWN");
   const [state, setState] = useState<ChainState>({ kind: "loading" });
   const [expanded, setExpanded] = useState(false);
   const chainContainerRef = useRef<HTMLDivElement>(null);
 
+  const denied = approvalsAccess === "denied";
   const load = useCallback(() => {
+    if (denied) {
+      setState({ kind: "unavailable" });
+      return;
+    }
     setState({ kind: "loading" });
     getChain(employeeId)
       .then((chain) => setState({ kind: "ready", chain }))
       .catch((err: unknown) =>
-        setState({
-          kind: "error",
-          message: err instanceof Error ? err.message : "Something went wrong",
-        }),
+        setState(
+          err instanceof ApiError && err.status === 403
+            ? { kind: "unavailable" }
+            : {
+                kind: "error",
+                message: err instanceof Error ? err.message : "Something went wrong",
+              },
+        ),
       );
-  }, [employeeId]);
+  }, [employeeId, denied]);
 
   useEffect(() => {
     load();
@@ -125,6 +142,8 @@ function ApprovalChainSection({ employeeId, firstName }: { employeeId: string; f
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expanded]);
+
+  if (denied || state.kind === "unavailable") return null;
 
   return (
     <Card className="p-6">
@@ -541,6 +560,7 @@ export function EmployeeDetailPage() {
 
       <PiiSection employee={employee} />
       <ReportsSection employeeId={employee.id} />
+      <LinkedMemberCard employee={employee} />
       <ApprovalChainSection employeeId={employee.id} firstName={firstName} />
 
       {editing ? (
