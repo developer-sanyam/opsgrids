@@ -97,3 +97,19 @@ describe("useOrgProfile", () => {
     expect(normalisePhone("9000000031")).toBeNull();
   });
 });
+
+describe("dateInZone", () => {
+  it("is the organization's calendar date, not the UTC one, after IST midnight", async () => {
+    const { dateInZone } = await import("./useOrgProfile");
+    // 00:40 IST on 16 Oct is 19:10 UTC on 15 Oct.
+    const instant = new Date("2026-10-15T19:10:00Z");
+    expect(instant.toISOString().slice(0, 10)).toBe("2026-10-15");
+    expect(dateInZone(instant, "Asia/Kolkata")).toBe("2026-10-16");
+  });
+
+  it("falls back to the local date for an unknown zone", async () => {
+    const { dateInZone } = await import("./useOrgProfile");
+    const instant = new Date("2026-10-15T12:00:00Z");
+    expect(dateInZone(instant, "Not/AZone")).toBe(dateInZone(instant));
+  });
+});

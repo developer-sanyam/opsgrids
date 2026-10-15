@@ -953,23 +953,19 @@ async def read_demand(
 
 @router.get(
     "/storefront/theme",
-    response_model=ThemeDocOut,
+    response_model=ThemeDocOut | None,
     summary="The store's theme document — tokens, pages, sections",
     dependencies=[Entitled],
 )
-async def read_theme(session: SessionDep, ctx: StoreRead) -> ThemeDocOut:
+async def read_theme(session: SessionDep, ctx: StoreRead) -> ThemeDocOut | None:
     """`storefront.store.settings.read`, floored at ORG. Reused rather than a new code — ADR-0011
     §3's own note: anyone who can publish the store can edit its theme.
 
-    **404 with a clear detail is the "no theme adopted" state** — the front end maps this to
-    "pick a theme" rather than treating it as an error.
+    **`null` (200) is the "no theme adopted" state** — the front end maps this to "pick a
+    theme". It was a 404, which logged a console error on every load until a theme was picked.
     """
     doc = await selectors.get_theme_document(session, ctx)
-    if doc is None:
-        raise NotFoundProblem(
-            "This store has no theme yet. Pick a theme in the gallery to get started."
-        )
-    return ThemeDocOut.model_validate(doc)
+    return None if doc is None else ThemeDocOut.model_validate(doc)
 
 
 @router.put(

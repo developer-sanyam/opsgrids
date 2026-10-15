@@ -8,7 +8,9 @@
  * which one a screen should ask for, exactly as it does for every other read.
  */
 
+import { orgToday } from "@opsgrids/client";
+
 /** Today, as an ISO calendar date (`yyyy-mm-dd`), read from the real clock. */
 export function today(): string {
-  return new Date().toISOString().slice(0, 10);
+  return orgToday();
 }

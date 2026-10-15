@@ -4,7 +4,7 @@ import { daysBetween, today } from "./format";
 
 describe("today", () => {
   it("reads the real clock by default", () => {
-    const real = new Date().toISOString().slice(0, 10);
+    const real = new Date().toLocaleDateString("en-CA"); // local date, not UTC
     expect(today()).toBe(real);
   });
 

@@ -4,7 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 
 import { getOverview, listAgents, listTickets } from "@/api/client";
 import type { Agent, Overview, Ticket } from "@/api/types";
-import { Can, useAsync, useAuth } from "@opsgrids/client";
+import { Can, orgToday, useAsync, useAuth } from "@opsgrids/client";
 import { agentById, needsAttentionList } from "@/data/derive";
 import { now as clockNow } from "@/lib/clock";
 import { formatDate, formatMinutes } from "@/lib/format";
@@ -77,7 +77,7 @@ function OverviewHeader({
       <div className="flex flex-wrap items-center gap-2">
         <span className="hidden h-11 items-center gap-2 rounded-full bg-surface px-4 text-sm font-semibold text-ink-soft shadow-card sm:inline-flex">
           <CalendarIcon className="size-4 text-muted" />
-          <span className="tnum">Last 7 days · to {formatDate(clockNow().toISOString())}</span>
+          <span className="tnum">Last 7 days · to {formatDate(orgToday(clockNow()))}</span>
         </span>
 
         <Can permission="support.desk.ticket.write" scope="ORG">

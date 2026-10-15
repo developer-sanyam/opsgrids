@@ -69,7 +69,7 @@ import type {
   Page,
   ProjectTask,
 } from "@/api/types";
-import { formatDate, formatMoneyCompact, formatMoneyKpi, formatMoneyWhole } from "@/lib/money";
+import { formatDate, formatMoneyKpi, formatMoneyWhole } from "@/lib/money";
 import { resolveAccess } from "@/ui/home/access";
 import type { AccessState } from "@/ui/home/access";
 import { EmployeeWorkspace } from "@/ui/home/EmployeeWorkspace";
@@ -498,7 +498,7 @@ export function HomePage() {
             <KpiSlot
               access={customersAccess}
               state={customersCount.status === "success" ? "ready" : customersCount.status}
-              label="Total Customers"
+              label="CRM customers"
               product="CRM"
               capability="customers"
               canActivate={canActivateProducts}
@@ -508,7 +508,7 @@ export function HomePage() {
               {customersCount.status === "success" && customersCount.data ? (
                 <MetricCard
                   size="compact"
-                  label="Customers"
+                  label="CRM customers"
                   value={COUNT.format(customersCount.data.total)}
                   icon={<UsersIcon className="size-4" />}
                   tone="accent"
@@ -583,7 +583,7 @@ export function HomePage() {
                 // Compact ("₹13.2L"), not the grouped figure the phone hero shows: a default-sized
                 // card in this four-across row doesn't have the hero's full width to spare, and the
                 // visual harness's own containment check caught the grouped form clipping here.
-                value={history ? formatMoneyCompact(history.revenue_current_minor, history.currency) : "0"}
+                value={history ? formatMoneyKpi(history.revenue_current_minor, history.currency) : "0"}
                 trend={history?.revenue_delta_pct != null ? { value: history.revenue_delta_pct, period: "vs last month" } : undefined}
                 caption={history?.revenue_delta_pct != null ? undefined : "This month"}
                 icon={<TrendingUpIcon className="size-5" />}
@@ -616,7 +616,7 @@ export function HomePage() {
           <KpiSlot
             access={customersAccess}
             state={customersCount.status === "success" ? "ready" : customersCount.status}
-            label="Total Customers"
+            label="CRM customers"
             product="CRM"
             capability="customers"
             canActivate={canActivateProducts}
@@ -625,7 +625,7 @@ export function HomePage() {
           >
             {customersCount.status === "success" && customersCount.data ? (
               <MetricCard
-                label="Total Customers"
+                label="CRM customers"
                 value={COUNT.format(customersCount.data.total)}
                 caption={customersCaption}
                 icon={<UsersIcon className="size-5" />}

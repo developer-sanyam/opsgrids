@@ -14,7 +14,7 @@ import { SupplierSetupPrompt } from "@/invoice/SupplierSetupPrompt";
 import { FORTY_PERCENT_FROM } from "@/invoice/vocabulary";
 import { addDays, DEFAULT_PAYMENT_TERMS_DAYS } from "@/lib/format";
 import { formatMoney, minorToInput, parseMinor, parseQuantity } from "@/lib/money";
-import { ApiError, fieldError, problemMessage, useAsync, useCan, useEntitlement, useMutation } from "@opsgrids/client";
+import { ApiError, fieldError, orgToday, problemMessage, useAsync, useCan, useEntitlement, useMutation } from "@opsgrids/client";
 import {
   Button,
   Card,
@@ -183,7 +183,7 @@ function IssueForm({
 }) {
   const isCreditNote = correcting !== null;
   const [customerId, setCustomerId] = useState(correcting?.customer_id ?? "");
-  const today = new Date().toISOString().slice(0, 10);
+  const today = orgToday();
   const [issuedDate, setIssuedDate] = useState(today);
   // Offered as issue date + 30 days (a credit note settles nothing, so it is due at once) until
   // the person picks a date of their own; after that the issue date no longer moves it.

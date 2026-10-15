@@ -5,7 +5,7 @@ import type { AttendanceRecord, AttendanceStatus } from "@/api/types";
 import { departmentLabel } from "@/data/departments";
 import { getMyEmployeeId } from "@/lib/subject";
 import { useZoneLookup } from "@/lib/zone";
-import { ApiError, problemMessage, useAsync, useCan } from "@opsgrids/client";
+import { ApiError, orgToday, problemMessage, useAsync, useCan } from "@opsgrids/client";
 import {
   Announcer,
   Button,
@@ -41,7 +41,7 @@ import { RequestCorrectionDialog } from "@/ui/RequestCorrectionDialog";
 
 /** The real clock, not a frozen fixture date — injectable so a test can pin it. */
 function todayISO(): string {
-  return new Date().toISOString().slice(0, 10);
+  return orgToday();
 }
 
 function toISO(d: Date): string {

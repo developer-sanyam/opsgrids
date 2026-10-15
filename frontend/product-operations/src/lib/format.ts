@@ -8,21 +8,9 @@ import {
   formatCalendarDate as formatDate,
   formatInstant,
   formatMoney as formatMajorMoney,
-  toMajor,
 } from "@opsgrids/ui";
 
 export { formatDate };
-
-const SYMBOLS: Record<string, string> = {
-  INR: "₹",
-  USD: "$",
-  EUR: "€",
-  GBP: "£",
-};
-
-function symbolFor(currency: string): string {
-  return SYMBOLS[currency] ?? `${currency} `;
-}
 
 /**
  * Full money: `1245000000` paise -> "₹1,24,50,000". Indian digit grouping via `en-IN`, no minor
@@ -39,19 +27,9 @@ export function formatMoneyPrecise(minor: number, currency = "INR"): string {
   return formatMajorMoney(minor, currency, { precise: true });
 }
 
-/**
- * Compact money for a headline KPI: "₹1.25 Cr", "₹4.2 L", "₹9.8K". Deterministic Indian scale
- * (crore / lakh / thousand) rather than locale-dependent compact notation.
- */
+/** Compact money for a headline KPI: crore and lakh for INR ("₹1.3 Cr", "₹4.2 L"), whole rupees below. */
 export function formatMoneyCompact(minor: number, currency = "INR"): string {
-  const major = toMajor(minor, currency);
-  const sym = symbolFor(currency);
-  const abs = Math.abs(major);
-  const sign = major < 0 ? "-" : "";
-  if (abs >= 1e7) return `${sign}${sym}${(abs / 1e7).toFixed(2)} Cr`;
-  if (abs >= 1e5) return `${sign}${sym}${(abs / 1e5).toFixed(2)} L`;
-  if (abs >= 1e3) return `${sign}${sym}${(abs / 1e3).toFixed(1)}K`;
-  return `${sign}${sym}${abs.toFixed(0)}`;
+  return formatMajorMoney(minor, currency, { compact: true });
 }
 
 /** A grouped integer: 12500 -> "12,500". */
