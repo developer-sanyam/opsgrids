@@ -80,6 +80,11 @@ Recorded outside an ADR:
   the same counter row continues. GST bands add 1.5 % and 40 % (40 % only from 2025-09-22); 12/28 %
   stay lawful. The issue screen refuses to start until `GET /finance/settings/supplier` is `ready`.
   No new permission codes.
+- **Finance customer import (2026-10-15, `feat/finance-customer-import`).** ADR-0022 import/export on
+  Finance → Customers. Customers gain a phone (sealed `phone_enc` + `phone_masked`; a bare Indian
+  mobile is stored +91 server-side for every org). A live customer's GSTIN may not be repeated (409
+  "already exists", which the import reports as skipped). No opening balance: Finance has no GL. No
+  Tally mapping: the engine reads `.xlsx` with headers in row 1, which Tally's export does not have.
 - **Marketing site.** The owner chose a "Liquid Glass" look with real product screenshots. It lives in
   the separate marketing repository, not here; this entry records the decision, not the code.
 

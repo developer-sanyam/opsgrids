@@ -430,6 +430,25 @@ async def get_customer(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def live_customer_with_gstin(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    gstin: str,
+    *,
+    excluding: uuid.UUID | None = None,
+) -> Customer | None:
+    """The live customer already holding this GSTIN, if any — the natural key a second customer
+    must not repeat. `excluding` leaves out the customer being edited."""
+    stmt = select(Customer).where(
+        Customer.organization_id == org_id,
+        Customer.gstin == gstin,
+        Customer.deleted_at.is_(None),
+    )
+    if excluding is not None:
+        stmt = stmt.where(Customer.id != excluding)
+    return (await session.execute(stmt.limit(1))).scalars().first()
+
+
 async def get_customer_by_crm_contact(
     session: AsyncSession, org_id: uuid.UUID, crm_contact_id: uuid.UUID
 ) -> Customer | None:

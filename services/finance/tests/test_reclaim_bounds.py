@@ -68,7 +68,11 @@ async def _invoice(org_id: uuid.UUID, number: str, *, registered: bool) -> Invoi
             await services.set_gst_registration(
                 s, ctx, GstRegistrationUpsert(gstin=SELLER, legal_name="Seller Pvt Ltd")
             )
-        customer = await services.create_customer(
+        # One buyer per organization: a GSTIN names one party, so a second invoice for the same
+        # buyer reuses the customer instead of trying to add it again (which is refused).
+        customer = await selectors.live_customer_with_gstin(
+            s, org_id, BUYER_SAME_STATE
+        ) or await services.create_customer(
             s,
             ctx,
             CustomerCreate(

@@ -129,6 +129,44 @@ describe("CustomerFormDialog", () => {
     expect(await screen.findByText("You do not have finance.billing.customer.write.")).toBeDefined();
   });
 
+  it("sends a typed phone, the billing address and the state code; a blank phone is not sent", async () => {
+    createCustomerMock.mockReset();
+    createCustomerMock.mockResolvedValue({ id: "c-new" });
+    const user = userEvent.setup();
+    render(<CustomerFormDialog customer={null} onClose={noop} onSaved={noop} />);
+
+    await user.type(screen.getByLabelText("Name"), "Konkan Traders");
+    await user.type(screen.getByLabelText(/^Phone/), "98765 43210");
+    await user.type(screen.getByLabelText(/^Billing address/), "12 FC Road");
+    await user.type(screen.getByLabelText(/^PIN code/), "411004");
+    await user.selectOptions(screen.getByLabelText(/^State/), "27");
+    await user.click(screen.getByRole("button", { name: /create customer/i }));
+
+    await waitFor(() => expect(createCustomerMock).toHaveBeenCalled());
+    const [payload] = createCustomerMock.mock.calls[0] as [Record<string, unknown>];
+    expect(payload).toMatchObject({
+      phone: "98765 43210",
+      address_line1: "12 FC Road",
+      pincode: "411004",
+      state_code: "27",
+      state: "Maharashtra",
+    });
+  });
+
+  it("refuses a state that is not the GSTIN's before sending", async () => {
+    createCustomerMock.mockReset();
+    const user = userEvent.setup();
+    render(<CustomerFormDialog customer={null} onClose={noop} onSaved={noop} />);
+
+    await user.type(screen.getByLabelText("Name"), "Konkan Traders");
+    await user.type(screen.getByLabelText(/^GSTIN/), "27AAECO9012H1ZG");
+    await user.selectOptions(screen.getByLabelText(/^State/), "29");
+    await user.click(screen.getByRole("button", { name: /create customer/i }));
+
+    expect(await screen.findByText(/This GSTIN is registered in Maharashtra/)).toBeDefined();
+    expect(createCustomerMock).not.toHaveBeenCalled();
+  });
+
   it("preserves what was typed after a failed submit", async () => {
     createCustomerMock.mockRejectedValue(
       new ApiError(500, "Server error", { status: 500, title: "Server error" }),
