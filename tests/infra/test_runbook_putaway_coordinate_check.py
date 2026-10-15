@@ -22,13 +22,13 @@ back, or a check the operator learns to ignore, which is the same as having none
 from __future__ import annotations
 
 import json
-import os
 import re
 import textwrap
 import uuid
 from pathlib import Path
 
 import pytest
+from _helpers import real_database_dsn
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUNBOOK = REPO_ROOT / "infrastructure" / "edge" / "RUNBOOK.md"
@@ -106,7 +106,7 @@ def test_the_page_says_why_site_coordinates_are_not_a_hit() -> None:
 
 
 # --------------------------------------------------------------------------- real Postgres (opt-in)
-REAL_DSN = os.environ.get("OPSGRIDS_RUNBOOK_TEST_DATABASE_URL")
+REAL_DSN = real_database_dsn("OPSGRIDS_RUNBOOK_TEST_DATABASE_URL")
 
 
 @pytest.mark.skipif(

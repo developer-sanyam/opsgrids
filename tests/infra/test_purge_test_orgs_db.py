@@ -4,7 +4,7 @@ The offline tests (`test_purge_test_orgs.py`) pin the rules that need no databas
 tool does what it says to a real schema: thirty-odd service schemas, a few hundred tables, real
 foreign keys, row-level security and the append-only triggers.
 
-**Opt-in**, like the put-away purge's real-database test: set
+**Opt-in** (`make test-infra-db` does all of the following and CI runs it), like the put-away purge's real-database test: set
 `OPSGRIDS_PURGE_ORGS_TEST_DATABASE_URL` to a **migrated, throwaway** database and the
 migration/owner role, for example
 
@@ -25,19 +25,19 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import uuid
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from _helpers import real_database_dsn
 from _purge_orgs_world import World, add_membership, build_world, purge, remove_globals
 from sqlalchemy import event, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
-REAL_DSN = os.environ.get("OPSGRIDS_PURGE_ORGS_TEST_DATABASE_URL")
+REAL_DSN = real_database_dsn("OPSGRIDS_PURGE_ORGS_TEST_DATABASE_URL")
 
 pytestmark = pytest.mark.skipif(
     not REAL_DSN,

@@ -220,6 +220,12 @@ class Seeder:
         """Insert one row, in a savepoint. Returns the values later rows may point at; raises
         `Skip` for a table that cannot be seeded."""
         overrides = dict(overrides or {})
+        for name, value in list(overrides.items()):
+            if isinstance(value, Fresh):
+                made = await self.insert(
+                    value.table, org=org, overrides=value.overrides, register_as=None
+                )
+                overrides[name] = made[value.column]
         tag = uuid.uuid4().hex
         values: dict[str, str] = {}
         params: dict[str, Any] = {}
@@ -307,6 +313,17 @@ def _not_in(seeder: Seeder, table: tuple[str, str], column: str, *excluded: str)
     return next(v for v in allowed if v not in excluded)
 
 
+@dataclass(frozen=True)
+class Fresh:
+    """An override meaning "a second, new row of `table`, and its `column`": for a CHECK that
+    needs two different parents (`from_warehouse_id <> to_warehouse_id`), where the registry
+    holds only one row per table and organisation."""
+
+    table: Any
+    column: str = "id"
+    overrides: dict[str, Any] | None = None
+
+
 #: Tables whose own CHECK constraints relate columns to each other in ways a type-driven value
 #: cannot satisfy by accident. Each entry is the smallest override that makes one valid row; the
 #: tests do not depend on what the row means, only on there being one to delete.
@@ -338,6 +355,46 @@ FIXUPS: dict[tuple[str, str], Callable[[Seeder], dict[str, Any]]] = {
     ("operations", "item_attributes"): lambda s: {"value_type": "boolean", "value_boolean": False},
     ("operations", "inventory_reservations"): lambda s: {"quantity_milli": 10},
     ("operations", "pick_task_lines"): lambda s: {"quantity_milli": 10},
+    # CHECKs added after this seeder was written, each the smallest override that satisfies it.
+    ("operations", "stock_transfers"): lambda s: {
+        "to_warehouse_id": Fresh(Table("operations", "warehouses"))
+    },
+    ("operations", "walk_edges"): lambda s: {
+        "to_node_id": Fresh(Table("operations", "walk_nodes"), overrides={"location_id": None})
+    },
+    ("operations", "purchase_requisitions"): lambda s: {
+        "status": "DRAFT",
+        "converted_po_id": None,
+    },
+    ("operations", "production_materials"): lambda s: {
+        "consumed_milli": 0,
+        "returned_milli": 0,
+        "wasted_milli": 0,
+    },
+    ("operations", "job_work_materials"): lambda s: {
+        "received_milli": 0,
+        "rejected_milli": 0,
+        "shortage_milli": 0,
+    },
+    ("operations", "production_picks"): lambda s: {
+        "consumed_milli": 0,
+        "returned_milli": 0,
+        "wasted_milli": 0,
+    },
+    ("operations", "stock_transfer_lines"): lambda s: {
+        "received_milli": 0,
+        "shortage_milli": 0,
+        "pending_shortage_milli": 0,
+    },
+    ("operations", "mrp_demands"): lambda s: {"reserved_milli": 0},
+    ("operations", "goods_receipts"): lambda s: {"status": "POSTED"},
+    ("operations", "challans"): lambda s: {"kind": "DELIVERY"},
+    ("notification", "campaigns"): lambda s: {
+        "channel": "whatsapp",
+        "audience": "all_sendable",
+        "list_id": None,
+        "segment_id": None,
+    },
     ("subscription", "dunning_cycles"): lambda s: {
         "opened_at": datetime.now(UTC),
         "grace_ends_at": datetime.now(UTC) + timedelta(days=1),

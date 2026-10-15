@@ -24,13 +24,13 @@ inserts is rolled back.
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import uuid
 from pathlib import Path
 
 import pytest
+from _helpers import real_database_dsn
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SPEC = REPO_ROOT / "docs" / "superpowers" / "specs" / "2026-10-05-warehouse-map-putaway-design.md"
@@ -308,7 +308,7 @@ def test_the_proof_failure_is_a_rollback_trigger_the_operator_can_find() -> None
 
 
 # --------------------------------------------------------------------- real Postgres (opt-in)
-REAL_DSN = os.environ.get("OPSGRIDS_RUNBOOK_TEST_DATABASE_URL")
+REAL_DSN = real_database_dsn("OPSGRIDS_RUNBOOK_TEST_DATABASE_URL")
 
 
 @pytest.mark.skipif(

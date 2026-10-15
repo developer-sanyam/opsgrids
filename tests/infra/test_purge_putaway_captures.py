@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import re
 import sys
 import uuid
@@ -32,7 +31,7 @@ from types import ModuleType
 from typing import Any
 
 import pytest
-from _helpers import DisposableEngine
+from _helpers import DisposableEngine, real_database_dsn
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOL = REPO_ROOT / "tools" / "purge_putaway_captures.py"
@@ -356,7 +355,7 @@ def test_the_tool_connects_as_the_admin_role_and_nothing_else() -> None:
 
 
 # --------------------------------------------------------------------------- real Postgres (opt-in)
-REAL_DSN = os.environ.get("OPSGRIDS_PURGE_TEST_DATABASE_URL")
+REAL_DSN = real_database_dsn("OPSGRIDS_PURGE_TEST_DATABASE_URL")
 
 
 @pytest.mark.skipif(

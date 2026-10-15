@@ -532,6 +532,23 @@ jobs:
               uv run alembic upgrade head)
           done
 
+      - name: Purge-tool and runbook database tests
+        # Four tests/infra modules run the destructive purge tools (organisations, put-away GPS
+        # captures) and the put-away runbook queries against a real, fully migrated Postgres.
+        # They skip in the tooling job, which has no database, so this is where they run.
+        # `make test-infra-db` is the same target a laptop uses: it creates the throwaway
+        # `opsgrids_tooling` database (never `opsgrids`; tests/infra/_helpers.py refuses it),
+        # migrates every service into it, and runs the four modules. Run from the runner, so it
+        # is told to use psql here rather than the compose container, and where init-db.sql is.
+        if: ${{ !cancelled() && matrix.shard == 1 }}
+        env:
+          PGPASSWORD: opsgrids
+        run: |
+          make test-infra-db JOBS=2 \
+            TOOLING_DB_HOST=localhost TOOLING_DB_PORT=5432 \
+            TOOLING_DB_PSQL="psql -h localhost -U opsgrids -d opsgrids" \
+            TOOLING_DB_INIT=tools/dev-bootstrap/init-db.sql
+
       - name: Library tests
         # Here rather than in the static job because they are not pure: `libs`' tenancy
         # tests open a real session and assert on the transaction-local GUC, so they need

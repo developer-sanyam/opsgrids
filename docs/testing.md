@@ -24,7 +24,7 @@ Collected, not hand-maintained — regenerate them rather than edit them (2026-1
 |---|---|---|
 | Services (34, each in its own process) | 17,734 collected | `make test-services` |
 | `libs` (`platform-core` 928, plus `contracts`) | 954 collected | `make test-libs` |
-| Repository tooling (`tests/infra`) | 1,235 collected | `make test-infra` |
+| Repository tooling (`tests/infra`) | 1,242 collected (50 of them need a database, below) | `make test-infra`, `make test-infra-db` |
 | End-to-end journeys (`e2e/`) | 76 collected | `make e2e` |
 | Frontend (vitest) | 9,059 (18 packages; on Node 22.14, two timing-sensitive tests failed in the full parallel run and passed alone) | `make frontend-test` |
 
@@ -46,10 +46,39 @@ target that `make gate` runs; what changed is how the rows are spread over runne
 | `Backend — lint, boundaries, schemas` | `lint`, `hygiene`, `boundaries`, both shard-coverage checks, `openapi-check`, `shellcheck`, `hadolint` |
 | `Backend — types` | `mypy` over libs, every service, the tooling (the mypy cache is saved even when the job is red) |
 | `Backend — tooling tests` | `make test-infra` |
+| `Backend — tests 1/6` also | `make test-infra-db`: the 50 database-backed `tests/infra` tests, in their own `opsgrids_tooling` database (below) |
 | `Backend — migrations` | Round-trip and drift check for every service, two at a time |
 | `Backend — tests N/6` | Its share of the service suites (below); shard 1 also runs the library tests and the boot smoke |
 | `Contracts`, `Supply chain` | As before; supply-chain rows now each report even if an earlier one is red |
 | `Frontend — types, lint, boundaries`, `Frontend — tests and build N/4` | The workspace, four slices at once |
+
+### The database-backed `tests/infra` tests
+
+Four modules in `tests/infra` run the destructive tools and the put-away runbook queries against a real, migrated
+Postgres: `test_purge_test_orgs_db.py` (47 tests; `tools/purge_test_orgs.py`), `test_purge_putaway_captures.py` (1),
+`test_putaway_docs.py` (1) and `test_runbook_putaway_coordinate_check.py` (1). Each skips unless its variable is set
+(`OPSGRIDS_PURGE_ORGS_TEST_DATABASE_URL`, `OPSGRIDS_PURGE_TEST_DATABASE_URL`, `OPSGRIDS_RUNBOOK_TEST_DATABASE_URL`), so
+plain `make test-infra` (no database) skips them and says so. Until 2026-10-15 nothing set the variables, so they never
+ran anywhere.
+
+```bash
+make infra                # the compose Postgres
+make test-infra-db        # create opsgrids_tooling, migrate every service into it, run the four modules
+make tooling-db           # just the idempotent database + grants (tools/dev-bootstrap/tooling-db.sql)
+```
+
+Any other local cluster: `make test-infra-db TOOLING_DB_HOST=127.0.0.1 TOOLING_DB_PORT=5446
+TOOLING_DB_PSQL="psql -h 127.0.0.1 -p 5446 -U opsgrids -d postgres" TOOLING_DB_INIT=tools/dev-bootstrap/init-db.sql`
+(the superuser must be able to create databases; a host-installed PostGIS is fine). CI runs the same target on shard 1
+of the backend tests job, against the job's Postgres service.
+
+The purge-orgs tests connect as the owner role `opsgrids_admin`; the other two seed rows with
+`SET session_replication_role`, which needs the superuser, so they get the superuser DSN. The database is a throwaway
+by construction: `tests/infra/_helpers.py::real_database_dsn` fails collection if a DSN names the shared `opsgrids`
+database or any host that is not loopback (`test_real_database_guard.py` pins that). Each test builds and removes its own
+random organisations, so a second run in the same database is safe; run one session per database at a time. When a
+migration adds a CHECK constraint a generic seeder cannot satisfy, `test_the_cast_has_a_row_in_nearly_every_table_the_tool_reaches`
+fails naming the tables; add a `FIXUPS` entry in `tests/infra/_purge_orgs_world.py`.
 
 ### The service tests are sharded by item
 
