@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import text
 
 from app import domain, selectors, services
+from app.models import Customer
 from app.schemas import CustomerCreate, CustomerUpdate
 from platform_core.errors import BusinessRuleProblem, ConflictProblem
 from tests.helpers import admin_ctx, principal_for
@@ -135,6 +136,28 @@ class TestDuplicateGstin:
                 await services.update_customer(
                     session, ctx, fetched, CustomerUpdate(gstin=gstin("27"))
                 )
+
+    async def test_editing_one_of_an_existing_duplicate_pair_still_works(
+        self, session, org_id
+    ) -> None:
+        """Production may already hold two live customers with one GSTIN (written before the
+        refusal existed). The edit form resends the unchanged GSTIN on every save, so an edit
+        that does not change the GSTIN must not be refused because of the other row."""
+        ctx = admin_ctx(org_id)
+        number = gstin("27")
+        async with session.begin():
+            first = Customer(organization_id=org_id, name="Twin A", gstin=number)
+            second = Customer(organization_id=org_id, name="Twin B", gstin=number)
+            session.add_all([first, second])
+            await session.flush()
+        first_id = first.id
+        async with session.begin():
+            fetched = await selectors.get_customer(session, org_id, first_id)
+            assert fetched is not None
+            updated = await services.update_customer(
+                session, ctx, fetched, CustomerUpdate(gstin=number, city="Pune")
+            )
+        assert updated.city == "Pune" and updated.gstin == number
 
     async def test_an_archived_customers_gstin_is_free_again(self, session, org_id) -> None:
         ctx = admin_ctx(org_id)

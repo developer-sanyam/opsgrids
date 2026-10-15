@@ -494,9 +494,13 @@ async def update_customer(
 
     if "gstin" in changes:
         changes["gstin"] = _checked_gstin(changes["gstin"], whose="The customer's")
-        await _refuse_duplicate_gstin(
-            session, ctx.organization_id, changes["gstin"], excluding=customer.id
-        )
+        # Only a GSTIN that actually changes is checked: the edit form resends the unchanged one
+        # on every save, and a duplicate pair written before this refusal existed must stay
+        # editable rather than turn every save into a 409.
+        if changes["gstin"] != customer.gstin:
+            await _refuse_duplicate_gstin(
+                session, ctx.organization_id, changes["gstin"], excluding=customer.id
+            )
     if "phone" in changes:
         _seal_phone(customer, changes.pop("phone"), ctx.organization_id)
     if "pincode" in changes:
