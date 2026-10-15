@@ -331,12 +331,13 @@ class TestOwnerSelfApproval:
                 session, org_id, request_id=request.id, caller_id=owner, has_org_decide=True
             )
         assert "no longer" not in exc.value.detail
+        assert exc.value.errors and exc.value.errors[0]["code"] == "self_approval_blocked"
 
     async def test_a_non_owner_org_holder_cannot_self_approve(
         self, session: AsyncSession, org_id: uuid.UUID
     ) -> None:
         hr, request = await self._own_unassigned(session, org_id)
-        with pytest.raises(ForbiddenProblem):
+        with pytest.raises(ForbiddenProblem) as exc:
             async with session.begin():
                 await services.decide_request(
                     session,
@@ -349,6 +350,7 @@ class TestOwnerSelfApproval:
                     is_owner=False,
                     self_approve=True,
                 )
+        assert exc.value.errors and exc.value.errors[0]["code"] == "self_approval_blocked"
 
     async def test_the_owner_cannot_self_approve_an_assigned_request_or_reject_it(
         self, session: AsyncSession, org_id: uuid.UUID
@@ -364,7 +366,7 @@ class TestOwnerSelfApproval:
             (assigned.id, owner, "approve"),
             (unassigned.id, unassigned.requester_employee_id, "reject"),
         ):
-            with pytest.raises(ForbiddenProblem):
+            with pytest.raises(ForbiddenProblem) as exc:
                 async with session.begin():
                     await services.decide_request(
                         session,
@@ -377,6 +379,7 @@ class TestOwnerSelfApproval:
                         is_owner=True,
                         self_approve=True,
                     )
+            assert exc.value.errors and exc.value.errors[0]["code"] == "self_approval_blocked"
 
 
 class TestNoSubjectRef:

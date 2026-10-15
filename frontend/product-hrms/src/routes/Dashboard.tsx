@@ -31,7 +31,8 @@ import { ArrowRightIcon, CalendarCheckIcon, CalendarIcon, CheckSquareIcon, PlusI
 
 /** The real clock — never a frozen fixture date. */
 function todayISO(): string {
-  return new Date().toISOString().slice(0, 10);
+  // The local calendar day, matching attendance's local-midnight rollover (not the UTC day).
+  return new Date().toLocaleDateString("en-CA");
 }
 
 /** A stable empty reference so the derived-data memos don't churn while loading. */

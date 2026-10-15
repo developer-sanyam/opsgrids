@@ -24,6 +24,7 @@ depends_on: str | Sequence[str] | None = None
 
 SCHEMA = "approval"
 CK = "decider_not_requester"  # the naming convention adds the ck_<table>_ prefix
+GUARD = "trg_approval_requests_decide_once"
 
 
 def upgrade() -> None:
@@ -33,6 +34,15 @@ def upgrade() -> None:
         schema=SCHEMA,
     )
     op.drop_constraint(CK, "approval_requests", schema=SCHEMA, type_="check")
+    # A no-op on first upgrade (the strict check allowed no such row). After a downgrade and
+    # re-upgrade it restores the flag, which is derivable: decider = requester only by
+    # self-approval. Decided rows are immutable, so the guard is paused for this one write.
+    op.execute(f"ALTER TABLE {SCHEMA}.approval_requests DISABLE TRIGGER {GUARD}")
+    op.execute(
+        f"UPDATE {SCHEMA}.approval_requests SET self_approved = true "
+        "WHERE decided_by_employee_id = requester_employee_id"
+    )
+    op.execute(f"ALTER TABLE {SCHEMA}.approval_requests ENABLE TRIGGER {GUARD}")
     op.create_check_constraint(
         CK,
         "approval_requests",
@@ -43,11 +53,13 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # The flag column goes but stays derivable (upgrade restores it). NOT VALID keeps any
+    # self-approved row already decided (an approval is history, never deleted) while the
+    # strict rule binds every new write; a plain re-add would fail on those rows.
     op.drop_constraint(CK, "approval_requests", schema=SCHEMA, type_="check")
-    op.create_check_constraint(
-        CK,
-        "approval_requests",
-        "decided_by_employee_id is null or decided_by_employee_id <> requester_employee_id",
-        schema=SCHEMA,
+    op.execute(
+        f"ALTER TABLE {SCHEMA}.approval_requests ADD CONSTRAINT ck_approval_requests_{CK} "
+        "CHECK (decided_by_employee_id is null or decided_by_employee_id <> requester_employee_id)"
+        " NOT VALID"
     )
     op.drop_column("approval_requests", "self_approved", schema=SCHEMA)
