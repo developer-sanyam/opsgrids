@@ -7,7 +7,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getAccessToken, setAccessToken, setUnauthorizedHandler } from "@opsgrids/client";
+import { setAccessToken, setUnauthorizedHandler } from "@opsgrids/client";
 
 import {
   createCompany,
@@ -454,8 +454,6 @@ describe("logActivity", () => {
 });
 
 describe("revealLeadField", () => {
-  const STEP_UP_HEADERS = { Authorization: "Bearer step-up-token" };
-
   afterEach(() => {
     setAccessToken(null);
     setUnauthorizedHandler(null);
@@ -463,7 +461,7 @@ describe("revealLeadField", () => {
 
   it("POSTs { field } to /leads/:id:reveal and returns the value", async () => {
     const fetchMock = stubFetch({ lead_id: "lead-1", field: "email", value: "meera@halcyontextiles.in" });
-    const value = await revealLeadField("lead-1", "email", STEP_UP_HEADERS);
+    const value = await revealLeadField("lead-1", "email");
     const { url, init } = requested(fetchMock);
     expect(url).toBe("/api/v1/leads/lead-1:reveal");
     expect(init.method).toBe("POST");
@@ -471,35 +469,17 @@ describe("revealLeadField", () => {
     expect(value).toBe("meera@halcyontextiles.in");
   });
 
-  it("presents the step-up token as the only credential, never the session token", async () => {
+  it("is an ordinary session-token call: no step-up token, no code (ADR-0023 addendum)", async () => {
     setAccessToken("session-token");
     const fetchMock = stubFetch({ lead_id: "lead-1", field: "phone", value: "+919876543210" });
-    await revealLeadField("lead-1", "phone", STEP_UP_HEADERS);
+    await revealLeadField("lead-1", "phone");
     const headers = requested(fetchMock).init.headers as Record<string, string>;
-    expect(headers.Authorization).toBe("Bearer step-up-token");
-    expect(JSON.stringify(headers)).not.toContain("session-token");
-  });
-
-  it("does not renew the session or sign the person out when the step-up token is refused with a 401", async () => {
-    setAccessToken("session-token");
-    const unauthorized = vi.fn();
-    setUnauthorizedHandler(unauthorized);
-    const fetchMock = stubFetch({ title: "Unauthorized", status: 401, detail: "Token has expired" }, 401);
-
-    await expect(revealLeadField("lead-1", "phone", STEP_UP_HEADERS)).rejects.toMatchObject({
-      name: "ApiError",
-      status: 401,
-    });
-
-    expect(unauthorized).not.toHaveBeenCalled();
-    expect(getAccessToken()).toBe("session-token");
-    // One call, and no attempt at /auth/refresh.
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(headers.Authorization).toBe("Bearer session-token");
   });
 
   it("keeps the server's sentence on the error for a refusal", async () => {
     stubFetch({ title: "Forbidden", status: 403, detail: "Out of scope for this resource" }, 403);
-    await expect(revealLeadField("lead-1", "phone", STEP_UP_HEADERS)).rejects.toMatchObject({
+    await expect(revealLeadField("lead-1", "phone")).rejects.toMatchObject({
       status: 403,
       message: "Out of scope for this resource",
     });
@@ -507,29 +487,26 @@ describe("revealLeadField", () => {
 });
 
 describe("revealContactPhone", () => {
-  const STEP_UP_HEADERS = { Authorization: "Bearer step-up-token" };
-
   afterEach(() => {
     setAccessToken(null);
   });
 
-  it("POSTs to /contacts/:id/phone:reveal with no body, the step-up token as the only credential, and returns the number", async () => {
+  it("POSTs to /contacts/:id/phone:reveal with no body, the session token as the credential, and returns the number", async () => {
     setAccessToken("session-token");
     const fetchMock = stubFetch({ contact_id: "cont-1", phone: "+919876543210" });
-    const phone = await revealContactPhone("cont-1", STEP_UP_HEADERS);
+    const phone = await revealContactPhone("cont-1");
     const { url, init } = requested(fetchMock);
     expect(url).toBe("/api/v1/contacts/cont-1/phone:reveal");
     expect(init.method).toBe("POST");
     expect(init.body).toBeUndefined();
     const headers = init.headers as Record<string, string>;
-    expect(headers.Authorization).toBe("Bearer step-up-token");
-    expect(JSON.stringify(headers)).not.toContain("session-token");
+    expect(headers.Authorization).toBe("Bearer session-token");
     expect(phone).toBe("+919876543210");
   });
 
   it("returns null when the contact has no sealed number", async () => {
     stubFetch({ contact_id: "cont-1", phone: null });
-    expect(await revealContactPhone("cont-1", STEP_UP_HEADERS)).toBeNull();
+    expect(await revealContactPhone("cont-1")).toBeNull();
   });
 });
 

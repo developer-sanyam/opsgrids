@@ -244,42 +244,29 @@ async def test_the_generic_contact_read_never_carries_the_raw_number(
 
 
 async def test_revealing_needs_the_dangerous_permission(client, org_id, data) -> None:
+    # Negative authz: a step-up token does not stand in for the permission.
     with as_principal(principal_for(org_id, [f"{READ}:ORG"], amr=STEPPED_UP)):
         response = await client.post(f"/api/v1/contacts/{data['contact_a_id']}/phone:reveal")
     assert response.status_code == 403
 
 
-async def test_revealing_needs_the_second_factor(client, org_id, data) -> None:
-    """The permission alone is not enough. An ordinary session that has not stepped up must
-    not open a customer's phone book."""
-    with as_principal(principal_for(org_id, [f"{SENSITIVE}:ORG"])):
-        response = await client.post(f"/api/v1/contacts/{data['contact_a_id']}/phone:reveal")
-    assert response.status_code == 403
-
-
-async def test_a_session_that_gave_a_code_at_sign_in_is_not_a_step_up(
+async def test_revealing_needs_no_second_factor(
     client, session, org_id, data, admin_session, redis
 ) -> None:
-    """ADR-0023, second review round. Every session opened after an authenticator is set up gave a
-    code at sign-in and so carries `otp` on every token for up to seven days. That is not a code
-    proved for *this* reveal: the route also requires the marker only `POST /auth/mfa/step-up`
-    mints, so a stolen session token opens nothing."""
+    """Owner decision 2026-10-15 (ADR-0023 addendum): a caller who holds `read_sensitive`
+    reveals with one tap. Every authentication shape passes: no `amr` at all, a password-only
+    session, a session that gave a code at sign-in, and a step-up token. Each reveal writes its
+    own audit row."""
     write = ctx_for(org_id, WRITE, Scope.ORG)
     async with session.begin():
         await services.set_contact_phone(session, write, data["contact_a"], RAW)
 
-    for amr, missing in (
-        (LOGIN_OTP, "stepup"),
-        (["otp"], "stepup"),
-        (["pwd", "stepup"], "otp"),
-    ):
+    shapes = ([], ["pwd"], LOGIN_OTP, STEPPED_UP)
+    for amr in shapes:
         with as_principal(principal_for(org_id, [f"{SENSITIVE}:ORG"], amr=amr)):
             response = await client.post(f"/api/v1/contacts/{data['contact_a_id']}/phone:reveal")
-        assert response.status_code == 403, amr
-        assert response.json()["detail"] == f"Additional authentication required: {missing}"
-        assert RAW not in response.text
-    # Refused before anything was spent or read.
-    assert redis.store == {}
+        assert response.status_code == 200, amr
+        assert response.json()["phone"] == RAW
     async with admin_session.begin():
         reads = (
             await admin_session.execute(
@@ -289,20 +276,7 @@ async def test_a_session_that_gave_a_code_at_sign_in_is_not_a_step_up(
                 )
             )
         ).scalar_one()
-    assert reads == 0
-
-
-async def test_revealing_works_with_the_permission_and_the_step_up(
-    client, session, org_id, data
-) -> None:
-    write = ctx_for(org_id, WRITE, Scope.ORG)
-    async with session.begin():
-        await services.set_contact_phone(session, write, data["contact_a"], RAW)
-
-    with as_principal(principal_for(org_id, [f"{SENSITIVE}:ORG"], amr=STEPPED_UP)):
-        response = await client.post(f"/api/v1/contacts/{data['contact_a_id']}/phone:reveal")
-    assert response.status_code == 200
-    assert response.json()["phone"] == RAW
+    assert reads == len(shapes)
 
 
 async def test_a_soft_deleted_contact_is_not_found(

@@ -1,15 +1,15 @@
 /**
- * Revealing an employee's sealed details goes through a one-time code: Reveal opens the step-up
- * dialog, and the token the code earns — not the session token — is the bearer of the unmask call
- * for exactly the field asked for. The value shows in place and hides again on Hide. The real
- * step-up, dialog and api client run; the gateway is a stub.
+ * Revealing an employee's sealed details is one tap (ADR-0023 addendum, 2026-10-15): Reveal calls
+ * the unmask endpoint for exactly the field asked for, with the ordinary session token, no code
+ * dialog. The value shows in place and stays for the session; a second look makes no second call.
+ * The real api client runs; the gateway is a stub.
  */
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { PermissionProvider, clearStepUpToken, setAccessToken } from "@opsgrids/client";
+import { PermissionProvider, clearRevealedValues, setAccessToken } from "@opsgrids/client";
 
 import type { EmployeeOut } from "@/api/types";
 import { EmployeeDetailPage } from "./EmployeeDetail";
@@ -60,9 +60,7 @@ vi.mock("@/api/approvals", () => ({
 }));
 
 const SESSION_TOKEN = "session-access-token";
-const STEP_UP_TOKEN = "step-up-access-token";
 const UNMASK = "POST /api/v1/employees/emp-ananya/pii/unmask";
-const STEP_UP = "POST /api/v1/auth/mfa/step-up";
 
 interface Call {
   key: string;
@@ -79,17 +77,8 @@ let calls: Call[];
 beforeEach(() => {
   calls = [];
   setAccessToken(SESSION_TOKEN);
-  clearStepUpToken();
+  clearRevealedValues();
   const routes: Record<string, () => Response> = {
-    [STEP_UP]: () =>
-      json({
-        status: "complete",
-        access_token: STEP_UP_TOKEN,
-        token_type: "Bearer",
-        expires_in: 180,
-        organization_id: "org-1",
-        membership_id: "mem-1",
-      }),
     [UNMASK]: () => json({ pan: "AAPPK1234Q" }),
   };
   vi.stubGlobal(
@@ -112,7 +101,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   setAccessToken(null);
-  clearStepUpToken();
+  clearRevealedValues();
 });
 
 function renderPage(grants: string[] = ["hrms.people.employee.read_sensitive:OWN"]) {
@@ -128,24 +117,35 @@ function renderPage(grants: string[] = ["hrms.people.employee.read_sensitive:OWN
 }
 
 describe("EmployeeDetail reveal", () => {
-  it("asks for a one-time code and unmasks one field with the step-up token as the bearer", async () => {
+  it("unmasks one field on one tap, with no code dialog and the session token as the bearer", async () => {
     const user = userEvent.setup();
     renderPage();
+    expect(calls).toHaveLength(0);
 
     await user.click(await screen.findByRole("button", { name: "Reveal PAN" }));
-    expect(screen.getByRole("dialog", { name: "Confirm it's you" })).toBeTruthy();
-    await user.type(screen.getByRole("textbox", { name: /6-digit code/ }), "123456");
 
     expect(await screen.findByText("AAPPK1234Q")).toBeTruthy();
+    expect(screen.queryByRole("dialog")).toBeNull();
     const unmask = calls.filter((call) => call.key === UNMASK);
     expect(unmask).toHaveLength(1);
-    expect(unmask[0]?.authorization).toBe(`Bearer ${STEP_UP_TOKEN}`);
+    expect(unmask[0]?.authorization).toBe(`Bearer ${SESSION_TOKEN}`);
     expect(unmask[0]?.body).toEqual({ fields: ["pan"] });
-    expect(screen.queryByText(/A second factor is required/)).toBeNull();
+    expect(calls.some((call) => call.key.includes("/auth/"))).toBe(false);
+    // It stays: no Hide control.
+    expect(screen.queryByRole("button", { name: "Hide PAN" })).toBeNull();
+  });
 
-    await user.click(screen.getByRole("button", { name: "Hide PAN" }));
-    await waitFor(() => expect(screen.queryByText("AAPPK1234Q")).toBeNull());
-    expect(screen.getByText("••••••234Q")).toBeTruthy();
+  it("shows the value again, with no second call, when the page is opened again in the same session", async () => {
+    const user = userEvent.setup();
+    const first = renderPage();
+    await user.click(await screen.findByRole("button", { name: "Reveal PAN" }));
+    await screen.findByText("AAPPK1234Q");
+    first.unmount();
+
+    renderPage();
+
+    expect(await screen.findByText("AAPPK1234Q")).toBeTruthy();
+    expect(calls.filter((call) => call.key === UNMASK)).toHaveLength(1);
   });
 
   it("offers no Reveal without the permission, and makes no call", async () => {

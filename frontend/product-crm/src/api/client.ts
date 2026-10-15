@@ -19,8 +19,7 @@
  * ship in a production build.
  */
 
-import { ApiError, apiRequest, paginateFixture, revealRequest, settle } from "@opsgrids/client";
-import type { RevealHeaders } from "@opsgrids/client";
+import { ApiError, apiRequest, paginateFixture, settle } from "@opsgrids/client";
 import {
   activityFromWire,
   companyFromWire,
@@ -638,16 +637,12 @@ function unmaskFixturePhone(mask: string): string | null {
 }
 
 /**
- * `POST /contacts/{id}/phone:reveal` — `crm.book.contact.read_sensitive` and a second factor. The
- * one call that returns the real number, audited server-side on every read; `null` when the
- * contact has no sealed number. `headers` carry the step-up token as the call's only credential
- * (`useStepUp().run` hands them over) — see `revealRequest`. Fixture mode reads no header: there
- * is no auth service to step up against.
+ * `POST /contacts/{id}/phone:reveal` — `crm.book.contact.read_sensitive`, no second factor
+ * (ADR-0023 addendum, 2026-10-15). The one call that returns the real number, audited
+ * server-side on every read; `null` when the contact has no sealed number. An ordinary
+ * session-token call.
  */
-export async function revealContactPhone(
-  id: string,
-  headers: RevealHeaders,
-): Promise<string | null> {
+export async function revealContactPhone(id: string): Promise<string | null> {
   if (USE_FIXTURES) {
     const contact = CONTACTS.find((c) => c.id === id);
     if (!contact) throw refusal(404, "Not found", "That contact is not part of this organization");
@@ -655,7 +650,7 @@ export async function revealContactPhone(
   }
   const row = await apiRequest<ContactPhoneRevealOut>(
     `/contacts/${encodeURIComponent(id)}/phone:reveal`,
-    { method: "POST", ...revealRequest(headers) },
+    { method: "POST" },
   );
   return row.phone;
 }
@@ -980,17 +975,12 @@ function fixtureLeadValue(lead: Lead, field: LeadRevealField): string | null {
 }
 
 /**
- * `POST /leads/{id}:reveal` — `crm.lead.lead.read_sensitive` and a second factor. Returns the real
- * phone number or email address of one lead, audited server-side on every read. A lead with
- * nothing sealed in that field is a 404 whose sentence says so. `headers` carry the step-up token
- * as the call's only credential (`useStepUp().run` hands them over) — see `revealRequest`.
- * Fixture mode reads no header: there is no auth service to step up against.
+ * `POST /leads/{id}:reveal` — `crm.lead.lead.read_sensitive`, no second factor (ADR-0023
+ * addendum, 2026-10-15). Returns the real phone number or email address of one lead, audited
+ * server-side on every read. A lead with nothing sealed in that field is a 404 whose sentence
+ * says so. An ordinary session-token call.
  */
-export async function revealLeadField(
-  id: string,
-  field: LeadRevealField,
-  headers: RevealHeaders,
-): Promise<string> {
+export async function revealLeadField(id: string, field: LeadRevealField): Promise<string> {
   if (USE_FIXTURES) {
     const lead = LEADS.find((l) => l.id === id);
     if (!lead) throw refusal(404, "Not found", "That lead is not part of this organization");
@@ -1005,7 +995,6 @@ export async function revealLeadField(
   const row = await apiRequest<LeadRevealOut>(`/leads/${encodeURIComponent(id)}:reveal`, {
     method: "POST",
     body,
-    ...revealRequest(headers),
   });
   return row.value;
 }

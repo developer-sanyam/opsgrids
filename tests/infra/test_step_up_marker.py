@@ -1,4 +1,4 @@
-"""The step-up marker is one string in three services, and it may be minted in exactly one place
+"""The step-up marker is minted in exactly one place and required by no reveal route
 (ADR-0023, second review round).
 
 `POST /auth/mfa/step-up` puts `otp` **and** a marker in the token's `amr`; lead- and
@@ -8,13 +8,12 @@ here as *source-level* rules — a test that drives the code can only show that 
 of are safe, while a rule over the source fails on the path somebody adds later:
 
 1. **Nothing but `step_up` can mint it.** The literal `"stepup"` appears in the codebase in exactly
-   three places (auth's definition and the two reveal guards'), and `STEP_UP_AMR` is referenced
-   only where it is meant to be: `step_up` (to add it to one token), `_session_amr` (to strip it),
-   and the two guards (to require it). Every route by which a token or a session's `amr` is built
+   one place (auth's definition), and `STEP_UP_AMR` is referenced
+   only where it is meant to be: `step_up` (to add it to one token) and `_session_amr` (to
+   strip it). Every route by which a token or a session's `amr` is built
    goes through `_session_amr`, so even a session row that somehow held the marker cannot mint it.
-2. **The three copies agree.** The value is duplicated rather than shared: a shared constant would
-   live in `platform-core` and redeploy every service. A rename that misses one turns every reveal
-   into a 403.
+2. **No reveal route requires it.** Since 2026-10-15 (ADR-0023 addendum) lead and customer ask for
+   the permission alone; the marker stays only because `POST /auth/mfa/step-up` still mints it.
 
 Read with `ast`: `import app` is ambiguous across services (each exposes a top-level `app`), so
 they cannot be imported into one process.
@@ -32,14 +31,16 @@ from _helpers import parse_python
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 AUTH = REPO_ROOT / "services/auth/app/services.py"
-GUARDS = {
+#: The routes that used to require the marker. Since 2026-10-15 (ADR-0023 addendum) none does: a
+#: reveal needs the permission alone. They are kept here so the test below can prove it stays so.
+FORMER_GUARDS = {
     "lead": REPO_ROOT / "services/lead/app/api/routes.py",
     "customer": REPO_ROOT / "services/customer/app/api/routes.py",
 }
 EXPECTED = "stepup"
 
-#: Where `"stepup"` may be written as a literal: the three definitions, nowhere else.
-LITERAL_HOMES = {AUTH, *GUARDS.values()}
+#: Where `"stepup"` may be written as a literal: the one definition, nowhere else.
+LITERAL_HOMES = {AUTH}
 
 #: The functions in auth-service allowed to *name* `STEP_UP_AMR`. `step_up` adds it to one token;
 #: `_session_amr` removes it from a session's record. Nothing else in the service may mention it.
@@ -104,42 +105,34 @@ def _enclosing_functions(tree: ast.Module) -> dict[int, str]:
     return owner
 
 
-# ------------------------------------------------------------------ the three copies agree
+# ------------------------------------------------------------------ nothing requires it any more
 
 
-def test_the_three_copies_of_the_marker_are_equal_and_are_the_documented_value() -> None:
-    values = {
-        "auth": _string_constant(AUTH, "STEP_UP_AMR"),
-        **{svc: _string_constant(path, "STEP_UP_AMR") for svc, path in GUARDS.items()},
-    }
-    assert values == {"auth": EXPECTED, "lead": EXPECTED, "customer": EXPECTED}
+def test_the_marker_is_defined_in_auth_and_the_documented_value() -> None:
+    assert _string_constant(AUTH, "STEP_UP_AMR") == EXPECTED
 
 
-@pytest.mark.parametrize("service", sorted(GUARDS))
-def test_the_reveal_guard_requires_otp_and_the_marker_together(service: str) -> None:
-    """`require(PERMISSION, amr={"otp", STEP_UP_AMR})`: the whole set, in one call. `require`
-    demands every member (`amr.issubset(...)`, pinned in auth's `test_step_up.py`), so this is what
-    makes a login-time `otp` token insufficient."""
+@pytest.mark.parametrize("service", sorted(FORMER_GUARDS))
+def test_no_reveal_route_requires_a_step_up(service: str) -> None:
+    """Owner decision 2026-10-15 (ADR-0023 addendum): "if the user has access they don't need to
+    ask for 2FA". The reveal routes are `require(PERMISSION)` with no `amr`. This pins it, so a
+    step-up cannot creep back onto a reveal without an ADR."""
+    tree = parse_python(FORMER_GUARDS[service])
     calls = [
         call
-        for call in _calls(parse_python(GUARDS[service]))
+        for call in _calls(tree)
         if _called_name(call) == "require" and any(k.arg == "amr" for k in call.keywords)
     ]
-    assert len(calls) == 1, f"{service}: expected exactly one guarded `require(..., amr=...)`"
-    [amr] = [k.value for k in calls[0].keywords if k.arg == "amr"]
-    assert isinstance(amr, ast.Set)
-    members = {
-        element.value if isinstance(element, ast.Constant) else f"<{ast.unparse(element)}>"
-        for element in amr.elts
-    }
-    assert members == {"otp", "<STEP_UP_AMR>"}, f"{service}: the reveal guard asks for {members}"
+    assert calls == [], f"{service}: a route asks for amr again"
+    names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    assert "STEP_UP_AMR" not in names
 
 
 # ------------------------------------------------------- only step_up can mint it: the rules
 
 
 def test_the_literal_appears_only_where_the_marker_is_defined() -> None:
-    """Any string equal to `stepup`, anywhere that ships, other than the three definitions. (Exact
+    """Any string equal to `stepup`, anywhere that ships, other than auth's definition. (Exact
     equality, so prose that mentions the word in a docstring or comment is not what is being
     scanned; a literal somebody types into an `amr` list is.)"""
     found: list[str] = []
@@ -165,8 +158,7 @@ def test_the_literal_appears_only_where_the_marker_is_defined() -> None:
 
 def test_the_constant_is_named_only_where_it_is_meant_to_be() -> None:
     """`STEP_UP_AMR` in auth-service: the definition, `step_up` and `_session_amr`, nothing else. In
-    the two guards: the definition and the module-level `require(...)`. In every other shipped
-    file: nowhere."""
+    every other shipped file: nowhere."""
     offenders: list[str] = []
     for path in SHIPPED_SOURCE:
         tree = parse_python(path)
@@ -181,9 +173,6 @@ def test_the_constant_is_named_only_where_it_is_meant_to_be() -> None:
                     continue  # the definition
                 if function in AUTH_FUNCTIONS_THAT_MAY_NAME_IT:
                     continue
-            elif path in GUARDS.values():
-                if function is None:
-                    continue  # the definition and the module-level `require(...)`
             offenders.append(f"{where} (in {function or 'module level'})")
     assert offenders == [], f"STEP_UP_AMR named where it may not be: {offenders}"
 

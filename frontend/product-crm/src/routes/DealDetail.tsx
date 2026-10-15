@@ -18,9 +18,7 @@ import {
   problemMessage,
   useAsync,
   useCan,
-  useMfaEnrolled,
   useMutation,
-  useStepUp,
 } from "@opsgrids/client";
 import {
   ActivityTimeline,
@@ -36,7 +34,7 @@ import {
   Skeleton,
   StagePill,
 } from "@/ui";
-import { formatMoney, ActivityIcon, ArrowLeftIcon, BuildingIcon, MailIcon, Menu, StepUpDialog, useToast } from "@opsgrids/ui";
+import { formatMoney, ActivityIcon, ArrowLeftIcon, BuildingIcon, MailIcon, Menu, useToast } from "@opsgrids/ui";
 import { DealFormDialog } from "@/forms/DealFormDialog";
 import { ActivityFormDialog } from "@/forms/ActivityFormDialog";
 
@@ -99,12 +97,9 @@ export function DealDetailPage() {
   const { owners, companies, contacts } = directory;
   const canLog = useCan("crm.pipeline.activity.write", "OWN");
   const hasRevealPermission = useCan("crm.book.contact.read_sensitive", "OWN");
-  const mfaEnabled = useMfaEnrolled();
-  // Both halves of whether a reveal can actually succeed: the permission (presentation-only —
-  // the server refuses regardless) and a second factor to complete the step-up with. Same rule
-  // as LeadDetail.tsx's RevealNotice: an absent button, not a disabled one, for either reason.
-  const canReveal = hasRevealPermission && mfaEnabled;
-  const stepUp = useStepUp();
+  // The permission is presentation-only (the server refuses regardless): an absent button, not a
+  // disabled one. No second factor is involved (ADR-0023 addendum, 2026-10-15).
+  const canReveal = hasRevealPermission;
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [logging, setLogging] = useState(false);
@@ -324,9 +319,8 @@ export function DealDetailPage() {
                             masked={primary.phone}
                             subject="contact"
                             canReveal={canReveal}
-                            stepUp={stepUp}
                             resetKey={primary.id}
-                            load={(headers) => revealContactPhone(primary.id, headers)}
+                            load={() => revealContactPhone(primary.id)}
                           />
                         </div>
                       ) : null}
@@ -382,7 +376,6 @@ export function DealDetailPage() {
           })()
         : null}
 
-      <StepUpDialog {...stepUp.dialogProps} />
     </div>
   );
 }

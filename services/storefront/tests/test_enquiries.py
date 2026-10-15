@@ -297,7 +297,7 @@ class TestUnmask:
         assert response.status_code == 200
         assert response.json()["email"] == "priya@shahtraders.example"
 
-    async def test_reveal_without_the_step_up_is_403(
+    async def test_reveal_needs_no_step_up(
         self, client, as_principal, admin_session, org_id: uuid.UUID, slug: str
     ) -> None:
         await seed_store(admin_session, org_id, slug, status="published")
@@ -311,7 +311,14 @@ class TestUnmask:
         with as_principal(no_otp):
             response = await client.post(f"{ENQUIRIES}/{enquiry_id}:reveal")
 
-        assert response.status_code == 403
+        assert response.status_code == 200
+        assert response.json()["email"] == "priya@shahtraders.example"
+
+        # Negative authz: a reader without the unmask permission is still refused.
+        reader = principal_for(org_id, ["storefront.sales.enquiry.read:ORG"])
+        with as_principal(reader):
+            refused = await client.post(f"{ENQUIRIES}/{enquiry_id}:reveal")
+        assert refused.status_code == 403
 
 
 class TestCrossTenantIsolation:

@@ -141,13 +141,13 @@ STOREFRONT = PermissionCatalogue(
             "ORG",
         ),
         # `is_dangerous` stays False like the rest of this catalogue's note above; what gates
-        # this route is the ORG floor, the `amr={"otp"}` step-up `require()` demands, and the
-        # audit row `services.unmask_enquiry_contact` writes on every call.
+        # this route is the ORG floor, the permission itself (no step-up, ADR-0023 addendum),
+        # and the audit row `services.unmask_enquiry_contact` writes on every call.
         PermissionSpec(
             "sales",
             "enquiry",
             "unmask",
-            "Reveal an enquiry's real email and phone number (audited, requires step-up)",
+            "Reveal an enquiry's real email and phone number (audited)",
             "ORG",
             "ORG",
         ),

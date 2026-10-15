@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { ApiError, revealRequest, useCan, useRevealedField, useStepUp } from "@opsgrids/client";
-import type { RevealHeaders, UseStepUpResult } from "@opsgrids/client";
+import { ApiError, useCan, useRevealedField } from "@opsgrids/client";
 import {
   ArrowLeftIcon,
   Avatar,
@@ -16,12 +15,11 @@ import {
   RevealableField,
   SectionHeader,
   Skeleton,
-  StepUpDialog,
   UsersIcon,
   useToast,
 } from "@opsgrids/ui";
 
-import { getEmployee, listEmployeeReports, unmaskEmployeePii, USE_FIXTURES } from "@/api/client";
+import { getEmployee, listEmployeeReports, unmaskEmployeePii } from "@/api/client";
 import { getChain } from "@/api/approvals";
 import { getOrgUnitNameById } from "@/api/orgUnits";
 import type {
@@ -229,31 +227,23 @@ const SENSITIVE_FIELDS: { key: SensitiveField; label: string; noun: string; kind
   { key: "bank_account", label: "Bank account", noun: "bank account", kind: "text" },
 ];
 
-/** What fixture mode hands the unmask call in place of a step-up token: fixtures read no header. */
-const NO_STEP_UP: RevealHeaders = { Authorization: "" };
-
-/** One sealed field: the shared reveal hook and field, unmasking only this field on a code. */
+/** One sealed field: the shared reveal hook and field, unmasking only this field on one tap. */
 function PiiField({
   employeeId,
   field,
   masked,
   canReveal,
-  stepUp,
 }: {
   employeeId: string;
   field: (typeof SENSITIVE_FIELDS)[number];
   masked: string;
   canReveal: boolean;
-  stepUp: UseStepUpResult;
 }) {
   const revealed = useRevealedField({
     resetKey: employeeId,
-    // Fixture mode has no auth service to step up against (shortcut: no fixture step-up exists).
-    stepUp: USE_FIXTURES ? { ...stepUp, run: (reveal) => reveal(NO_STEP_UP) } : stepUp,
     subject: "employee",
     noun: field.noun,
-    load: async (headers) =>
-      (await unmaskEmployeePii(employeeId, { fields: [field.key] }, revealRequest(headers)))[field.key] ?? null,
+    load: async () => (await unmaskEmployeePii(employeeId, { fields: [field.key] }))[field.key] ?? null,
   });
   return (
     <div className="flex flex-col gap-1 rounded-tile bg-ground px-3 py-2">
@@ -266,27 +256,25 @@ function PiiField({
           masked={masked}
           canReveal={canReveal}
           field={revealed}
-          stepUpIdle={stepUp.state === "idle"}
         />
       </dd>
     </div>
   );
 }
 
-/** The masked PII block. Each field reveals behind a one-time code (the unmask route needs
- *  `amr` `otp`, which a step-up token carries), shows in place for a short while and hides again;
- *  the value is never cached and never survives another record or leaving the page.
- *  `hrms.people.employee.read_sensitive` gates the buttons; the server decides. */
+/** The masked PII block. Each field reveals on one tap, with no one-time code (ADR-0023
+ *  addendum, 2026-10-15), and stays visible for the session; the value is held in memory only and
+ *  ends with the session. `hrms.people.employee.read_sensitive` gates the buttons; the server
+ *  decides and records every reveal. */
 function PiiSection({ employee }: { employee: EmployeeOut }) {
   const canReadSensitive = useCan("hrms.people.employee.read_sensitive", "OWN");
-  const stepUp = useStepUp();
 
   if (!employee.pii) return null;
   const pii = employee.pii;
 
   return (
     <Card className="p-6">
-      <SectionHeader title="Sensitive details" subtitle="Masked by default. Revealing one needs a one-time code and is recorded." />
+      <SectionHeader title="Sensitive details" subtitle="Masked by default. Revealing one is recorded." />
       <dl className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
         {SENSITIVE_FIELDS.map((field) => {
           const masked = pii[field.key];
@@ -298,7 +286,6 @@ function PiiSection({ employee }: { employee: EmployeeOut }) {
               field={field}
               masked={masked}
               canReveal={canReadSensitive}
-              stepUp={stepUp}
             />
           );
         })}
@@ -309,7 +296,6 @@ function PiiSection({ employee }: { employee: EmployeeOut }) {
           </div>
         ) : null}
       </dl>
-      <StepUpDialog {...stepUp.dialogProps} />
     </Card>
   );
 }

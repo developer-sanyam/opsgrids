@@ -39,23 +39,17 @@ export { StepUpError } from "./auth/stepUpError";
 export type { StepUpFailure } from "./auth/stepUpError";
 export type { StepUpToken } from "./auth/types";
 export {
-  DEFAULT_REVEAL_VISIBLE_SECONDS,
   StepUpCancelledError,
   clearStepUpToken,
   isStepUpCancelled,
   revealRequest,
   useMfaEnrolled,
-  useRevealedField,
   useStepUp,
   withStepUp,
 } from "./stepup";
 export type {
-  RevealedField,
-  RevealedFieldOptions,
   RevealHeaders,
-  RevealNotice,
   RevealRequestOptions,
-  RevealSubject,
   StepUpMfaState,
   StepUpPhase,
   StepUpPromptError,
@@ -63,6 +57,11 @@ export type {
   StepUpRunOptions,
   UseStepUpResult,
 } from "./stepup";
+
+// Reveal (masked value -> one tap -> the real value, sticky for the session). No step-up: holding
+// the permission is enough (ADR-0023 addendum, 2026-10-15).
+export { clearRevealedValues, useRevealedField } from "./reveal";
+export type { RevealedField, RevealedFieldOptions, RevealNotice, RevealSubject } from "./reveal";
 
 export { decodeAccessToken } from "./auth/token";
 export type { AccessClaims } from "./auth/token";

@@ -7,19 +7,16 @@ import { useDirectory } from "@/data/directoryContext";
 import { contactImport } from "@/data/importExport/contacts";
 import type { ContactFilters } from "@/data/importExport/contacts";
 import { companyName, ownerName } from "@/data/lookups";
-import { ArrowRightIcon, ChevronDown, cn, ImportExportButton, MailIcon, MobileDataCard, TABLET_QUERY, useMediaQuery, PlusIcon, StepUpDialog, useDebouncedValue, UsersIcon, useToast, ChipRow } from "@opsgrids/ui";
+import { ArrowRightIcon, ChevronDown, cn, ImportExportButton, MailIcon, MobileDataCard, TABLET_QUERY, useMediaQuery, PlusIcon, useDebouncedValue, UsersIcon, useToast, ChipRow } from "@opsgrids/ui";
 import { formatDate, formatRelative } from "@/lib/format";
 import { RevealField } from "@/reveal/RevealField";
-import type { UseStepUpResult } from "@opsgrids/client";
 import {
   Can,
   problemMessage,
   useAsync,
   useCan,
   useImportExport,
-  useMfaEnrolled,
   useMutation,
-  useStepUp,
 } from "@opsgrids/client";
 import {
   Avatar,
@@ -55,14 +52,12 @@ function ContactDetail({
   contact,
   canWrite,
   canReveal,
-  stepUp,
   onEdit,
   onDelete,
 }: {
   contact: Contact;
   canWrite: boolean;
   canReveal: boolean;
-  stepUp: UseStepUpResult;
   onEdit: () => void;
   onDelete: () => void;
 }) {
@@ -82,9 +77,8 @@ function ContactDetail({
           masked={contact.phone}
           subject="contact"
           canReveal={canReveal}
-          stepUp={stepUp}
           resetKey={contact.id}
-          load={(headers) => revealContactPhone(contact.id, headers)}
+          load={() => revealContactPhone(contact.id)}
         />
       </div>
       <div className="flex flex-col gap-2 text-sm sm:items-end">
@@ -130,12 +124,9 @@ export function ContactsPage() {
   const { owners, companies } = directory;
   const canWrite = useCan("crm.book.contact.write", "OWN");
   const hasRevealPermission = useCan("crm.book.contact.read_sensitive", "OWN");
-  const mfaEnabled = useMfaEnrolled();
-  // Both halves of whether a reveal can actually succeed: the permission (presentation-only —
-  // the server refuses regardless) and a second factor to complete the step-up with. Same rule
-  // as LeadDetail.tsx's RevealNotice: an absent button, not a disabled one, for either reason.
-  const canReveal = hasRevealPermission && mfaEnabled;
-  const stepUp = useStepUp();
+  // The permission is presentation-only (the server refuses regardless): an absent button, not a
+  // disabled one. No second factor is involved (ADR-0023 addendum, 2026-10-15).
+  const canReveal = hasRevealPermission;
 
   const loader = useCallback(
     () => listContacts({ search: debouncedSearch, status, page, size }),
@@ -300,7 +291,6 @@ export function ContactsPage() {
                           contact={contact}
                           canWrite={canWrite}
                           canReveal={canReveal}
-                          stepUp={stepUp}
                           onEdit={() => setEditing(contact)}
                           onDelete={() => setDeleting(contact)}
                         />
@@ -397,8 +387,7 @@ export function ContactsPage() {
                                   contact={contact}
                                   canWrite={canWrite}
                                   canReveal={canReveal}
-                                  stepUp={stepUp}
-                                  onEdit={() => setEditing(contact)}
+                                          onEdit={() => setEditing(contact)}
                                   onDelete={() => setDeleting(contact)}
                                 />
                               </td>
@@ -475,7 +464,6 @@ export function ContactsPage() {
         {...(remove.error ? { error: problemMessage(remove.error) } : {})}
       />
 
-      <StepUpDialog {...stepUp.dialogProps} />
     </div>
   );
 }

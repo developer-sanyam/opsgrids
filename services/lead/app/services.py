@@ -694,7 +694,7 @@ def log_reveal_refused(
     A log line, deliberately not an audit row. A refusal changes nothing, so it is not an
     `entity.sensitive_read` (that action means a value was opened), and an audit table a prober
     can grow one 403 at a time is a cost rather than a control. What a refusal *does* need is to
-    be visible — somebody walking lead ids, or a session without the step-up trying every field,
+    be visible — somebody walking lead ids, or a caller without the permission trying every field,
     is exactly the pattern worth grepping for.
 
     Never a value: the ids, the field's *name* and a reason code, nothing read from the lead.
@@ -724,7 +724,7 @@ async def enforce_reveal_budget(ctx: ScopeContext, *, request: Request | None = 
     would double it. **Keep the key prefix identical to customer-service's.**
 
     **Spent when a lead is about to be opened, not when a request arrives.** It runs after the
-    permission, the step-up and the entitlement have passed and after the lead has been shown to
+    permission and the entitlement have passed and after the lead has been shown to
     exist in this organization, to be in the caller's scope and to have a value on file — and
     before it is opened (`reveal_lead_field`). A request that was going to be refused spends
     nothing, so a stolen token cannot exhaust the real person's budget with invalid ids or leads
@@ -784,10 +784,10 @@ async def reveal_lead_field(
     *,
     request: Request | None = None,
 ) -> str:
-    """Reveal a lead's real phone number or email to a human — the audited, stepped-up path.
+    """Reveal a lead's real phone number or email to a human — the audited path (no step-up).
 
-    Reaching here means the caller held `crm.lead.lead.read_sensitive` and presented a step-up
-    token (`amr` with `otp` and the step-up marker). Everything else is decided here, in one
+    Reaching here means the caller held `crm.lead.lead.read_sensitive` (no step-up is required,
+    ADR-0023 addendum). Everything else is decided here, in one
     function, so no caller can reach the decrypt having skipped a check:
 
     1. The lead is fetched inside the caller's organization. An id that is not there — or is
@@ -857,9 +857,9 @@ async def reveal_lead_field(
     # directly. The row's own `request_id` comes from `X-Request-ID` when the client sent one,
     # so it is a correlation aid and not evidence of anything; `session_id` — the token's `sid`
     # claim, forwarded by the gateway — is what ties a reveal to the sign-in that authorised it,
-    # and `amr` — the token's authentication methods — says *how*: `["pwd", "otp", "stepup"]` for a
-    # code proved for this reveal, and the row could not otherwise tell that from a session that
-    # gave a code at sign-in. The field's *name* only, never its value.
+    # and `amr` — the token's authentication methods — says *how* the session signed in
+    # (`["pwd"]`, or `["pwd", "otp"]` when it gave a code). No step-up is needed to reveal.
+    # The field's *name* only, never its value.
     record_audit(
         session,
         AuditLog,

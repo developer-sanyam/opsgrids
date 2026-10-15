@@ -1,14 +1,8 @@
 import { useEffect, useRef } from "react";
 
-import { EyeIcon, EyeOffIcon, MailIcon, PhoneIcon } from "../icons";
+import { EyeIcon, MailIcon, PhoneIcon } from "../icons";
 import { cn } from "../lib/cn";
 import { Button } from "./Button";
-
-/**
- * How long a revealed value stays on screen, in seconds — the wording here. `@opsgrids/client`
- * exports the same number as `DEFAULT_REVEAL_VISIBLE_SECONDS` for the hook's timer.
- */
-export const REVEAL_VISIBLE_SECONDS = 30;
 
 /**
  * The state of one reveal, as `useRevealedField` in `@opsgrids/client` returns it. Structural:
@@ -18,9 +12,7 @@ export interface RevealedFieldView {
   value: string | null;
   notice: { tone: "neutral" | "error"; text: string } | null;
   pending: boolean;
-  justHidden: boolean;
   reveal: () => void;
-  hide: () => void;
 }
 
 const KINDS = {
@@ -37,11 +29,9 @@ interface RevealableFieldProps {
   noun?: string | undefined;
   /** The masked form the record carries. `null` or blank: nothing is sealed, so nothing to reveal. */
   masked: string | null;
-  /** Holds the reveal permission (and can step up). Presentation only: the server decides. */
+  /** Holds the reveal permission. Presentation only: the server decides. */
   canReveal: boolean;
   field: RevealedFieldView;
-  /** No one-time code is being asked for: a second reveal waits until it is. */
-  stepUpIdle: boolean;
 }
 
 /** A number reduced to what a dialler takes: digits, and the `+` of a country code. */
@@ -50,41 +40,41 @@ function telHref(value: string): string {
 }
 
 /**
- * A masked value with a Reveal that shows the real one in place for `REVEAL_VISIBLE_SECONDS`, or
- * until Hide. Presentational: `useRevealedField` (`@opsgrids/client`) owns the value, the timer
- * and the step-up; the screen renders its one `<StepUpDialog />`.
+ * A masked value with a Reveal that shows the real one in place, where it stays for the session.
+ * Presentational: `useRevealedField` (`@opsgrids/client`) owns the value and the call.
  *
- * **One button, two labels.** Reveal turns into Hide on the same element, so focus is never on a
- * control that vanishes; the name says which field ("Reveal phone number"), because two of these
- * side by side and "Reveal" twice is not a choice a screen-reader user can make.
+ * **One tap, no code, no auto-hide** (owner decision 2026-10-15, ADR-0023 addendum): a caller
+ * who holds the permission taps Reveal and the value appears and stays, as a `tel:` / `mailto:`
+ * link with a 44px target so a rep on a call can tap it to dial. The server records every reveal.
  *
- * **Focus finds its way back.** The button is disabled while a code is out, so the dialog cannot
- * return focus to it; when the reveal settles and focus has fallen to the page, it goes back on
- * the button. If the person has moved on, it is left alone.
+ * **Focus finds its way back.** The Reveal button goes away once the value shows, so when the
+ * reveal settles and focus has fallen to the page, it moves to the value's link. If the person
+ * has moved on, it is left alone.
  *
- * **One live region, under the row,** mounted before anything is said into it: the refusal, that
- * a value is showing and will hide, and that it has hidden. Never a toast.
+ * **One live region, under the row,** mounted before anything is said into it: the refusal, and
+ * that a value is showing. Never a toast.
  */
-export function RevealableField({ kind, label, noun, masked, canReveal, field, stepUpIdle }: RevealableFieldProps) {
+export function RevealableField({ kind, label, noun, masked, canReveal, field }: RevealableFieldProps) {
   const named = kind === "text" ? { noun: noun ?? label ?? "value", label: label ?? noun ?? "Value", Icon: null } : KINDS[kind];
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const linkRef = useRef<HTMLAnchorElement>(null);
   const revealing = useRef(false);
 
   const { pending } = field;
+  const revealedNow = field.value !== null;
   useEffect(() => {
     if (pending) {
       revealing.current = true;
       return;
     }
-    if (!revealing.current || !stepUpIdle) return;
+    if (!revealing.current) return;
     revealing.current = false;
-    if (document.activeElement === document.body) buttonRef.current?.focus();
-  }, [pending, stepUpIdle]);
+    if (document.activeElement === document.body) (linkRef.current ?? buttonRef.current)?.focus();
+  }, [pending, revealedNow]);
 
   const present = masked !== null && masked.trim() !== "";
   const offered = canReveal && present;
   const revealed = field.value !== null;
-  const action = revealed ? "Hide" : "Reveal";
   const Icon = named.Icon;
   const digits = kind === "phone" && "tnum";
 
@@ -96,8 +86,12 @@ export function RevealableField({ kind, label, noun, masked, canReveal, field, s
           <span className="sr-only">{named.label}: </span>
           {field.value !== null && kind !== "text" ? (
             <a
+              ref={linkRef}
               href={kind === "phone" ? telHref(field.value) : `mailto:${field.value}`}
-              className={cn("min-w-0 break-words transition-colors hover:text-accent", digits)}
+              className={cn(
+                "inline-flex min-h-11 min-w-0 items-center break-words transition-colors hover:text-accent",
+                digits,
+              )}
             >
               {field.value}
             </a>
@@ -112,19 +106,18 @@ export function RevealableField({ kind, label, noun, masked, canReveal, field, s
             </>
           )}
         </span>
-        {offered ? (
+        {offered && !revealed ? (
           <Button
             ref={buttonRef}
             size="sm"
             variant="ghost"
             className="min-w-24"
-            leadingIcon={revealed ? <EyeOffIcon className="size-4" /> : <EyeIcon className="size-4" />}
+            leadingIcon={<EyeIcon className="size-4" />}
             loading={field.pending}
-            disabled={!revealed && !stepUpIdle}
-            aria-label={`${action} ${named.noun}`}
-            onClick={revealed ? field.hide : field.reveal}
+            aria-label={`Reveal ${named.noun}`}
+            onClick={field.reveal}
           >
-            {action}
+            Reveal
           </Button>
         ) : null}
       </div>
@@ -135,13 +128,7 @@ export function RevealableField({ kind, label, noun, masked, canReveal, field, s
               {field.notice.text}
             </p>
           ) : null}
-          {revealed ? (
-            <p className="mt-1 text-xs text-muted">
-              <span className="sr-only">{named.label} revealed. </span>
-              Hides again in {REVEAL_VISIBLE_SECONDS} seconds.
-            </p>
-          ) : null}
-          {field.justHidden ? <p className="sr-only">{named.label} hidden.</p> : null}
+          {revealed ? <p className="sr-only">{named.label} revealed.</p> : null}
         </div>
       ) : null}
     </div>

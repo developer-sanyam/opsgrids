@@ -520,9 +520,10 @@ async def unmask_employee_pii(
 ) -> EmployeePiiUnmasked:
     """Decrypt the requested sensitive fields — the one place plaintext comes back.
 
-    Reaching here means the caller held `hrms.people.employee.read_sensitive` and stepped up
-    (`amr={"otp"}`), and the route re-applied their scope to this one employee. Unmasking is
-    itself an auditable read, so this writes an `entity.sensitive_read` row **in the caller's
+    Reaching here means the caller held `hrms.people.employee.read_sensitive` (no step-up
+    is required, ADR-0023 addendum), and the route re-applied their scope to this one employee.
+    Unmasking is itself an auditable read, so this writes an `entity.sensitive_read` row **in the
+    caller's
     transaction** — the first real caller of `record_sensitive_read`, closing the gap the backlog
     records. The audit names the fields asked for and never their values.
 

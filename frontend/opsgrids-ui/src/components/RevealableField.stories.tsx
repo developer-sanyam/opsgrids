@@ -4,12 +4,12 @@ import { fn } from "storybook/test";
 import { RevealableField } from "./RevealableField";
 import type { RevealedFieldView } from "./RevealableField";
 
-const MASKED: RevealedFieldView = { value: null, notice: null, pending: false, justHidden: false, reveal: fn(), hide: fn() };
+const MASKED: RevealedFieldView = { value: null, notice: null, pending: false, reveal: fn() };
 
 const meta = {
   title: "Forms/RevealableField",
   component: RevealableField,
-  args: { kind: "phone", masked: "•••••• 4821", canReveal: true, field: MASKED, stepUpIdle: true },
+  args: { kind: "phone", masked: "•••••• 4821", canReveal: true, field: MASKED },
   render: (args) => (
     <div className="max-w-sm">
       <RevealableField {...args} />

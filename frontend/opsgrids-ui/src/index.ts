@@ -105,7 +105,7 @@ export { RowActions } from "./components/RowActions";
 export type { RowAction } from "./components/RowActions";
 export { Customer360View } from "./components/Customer360View";
 export type { Customer360Money, Customer360ViewModel } from "./components/Customer360View";
-export { REVEAL_VISIBLE_SECONDS, RevealableField } from "./components/RevealableField";
+export { RevealableField } from "./components/RevealableField";
 export type { RevealedFieldView } from "./components/RevealableField";
 export { DetailList, PropertyRow } from "./components/DetailList";
 export type { DetailItem } from "./components/DetailList";

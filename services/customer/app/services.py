@@ -920,11 +920,11 @@ async def unmask_contact_phone(
     *,
     request: Request | None = None,
 ) -> str | None:
-    """Reveal a contact's real number to a human — the audited, stepped-up path.
+    """Reveal a contact's real number to a human — the audited path (permission, no step-up).
 
-    Reaching here means the caller held `crm.book.contact.read_sensitive` and presented a
-    step-up token (`amr` with `otp` and the step-up marker), and the route re-applied their scope
-    to this one contact. The unmask is
+    Reaching here means the caller held `crm.book.contact.read_sensitive` and and the
+    route re-applied their scope to this one contact (no step-up is required, ADR-0023 addendum).
+    The unmask is
     itself an auditable read, so an `entity.sensitive_read` row is written **in the caller's
     transaction**: a revealed value never exists without a record that it was revealed.
 
@@ -940,9 +940,9 @@ async def unmask_contact_phone(
     # directly. The row's own `request_id` comes from `X-Request-ID` when the client sent one,
     # so it is a correlation aid and not evidence of anything; `session_id` — the token's `sid`
     # claim, forwarded by the gateway — is what ties a reveal to the sign-in that authorised it,
-    # and `amr` — the token's authentication methods — says *how*: `["pwd", "otp", "stepup"]` for a
-    # code proved for this reveal, and the row could not otherwise tell that from a session that
-    # gave a code at sign-in. The field's *name* only, never its value.
+    # and `amr` — the token's authentication methods — says *how* the session signed in
+    # (`["pwd"]`, or `["pwd", "otp"]` when it gave a code), and, for the older step-up reveals,
+    # whether a code was proved for this one. The field's *name* only, never its value.
     record_audit(
         session,
         AuditLog,
@@ -973,7 +973,7 @@ def log_reveal_refused(
     A log line, deliberately not an audit row. A refusal changes nothing, so it is not an
     `entity.sensitive_read` (that action means a value was opened), and an audit table a prober
     can grow one 403 at a time is a cost rather than a control. What a refusal *does* need is to
-    be visible — somebody walking contact ids, or a session without the step-up trying every
+    be visible — somebody walking contact ids, or a caller without the permission trying every
     contact, is exactly the pattern worth grepping for.
 
     Never a value: the ids and a reason code, nothing read from the contact. `request_id`
@@ -1002,7 +1002,7 @@ async def enforce_reveal_budget(ctx: ScopeContext, *, request: Request | None = 
     would double it. **Keep the key prefix identical to lead-service's.**
 
     **Spent when a contact is about to be opened, not when a request arrives.** It runs after the
-    permission, the step-up and the entitlement have passed and after the contact has been shown
+    permission and the entitlement have passed and after the contact has been shown
     to exist in this organization and to be in the caller's scope — and before it is opened
     (`reveal_contact_phone`). A request that was going to be refused spends nothing, so a stolen
     token cannot exhaust the real person's budget with invalid ids or contacts they may not touch,

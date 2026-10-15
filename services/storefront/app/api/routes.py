@@ -113,11 +113,11 @@ EnquiryRead = Annotated[
 EnquiryWrite = Annotated[
     ScopeContext, Depends(require("storefront.sales.enquiry.write", minimum=Scope.ORG))
 ]
-#: Revealing a real email and phone number. The dangerous permission **and** a second factor —
-#: the same pairing `services/customer` requires to unmask a contact's phone.
+#: Revealing a real email and phone number. The dangerous permission alone, no step-up (ADR-0023
+#: addendum), as `services/customer` treats a contact's phone.
 EnquiryUnmask = Annotated[
     ScopeContext,
-    Depends(require("storefront.sales.enquiry.unmask", amr={"otp"}, minimum=Scope.ORG)),
+    Depends(require("storefront.sales.enquiry.unmask", minimum=Scope.ORG)),
 ]
 EnquiryDelete = Annotated[
     ScopeContext, Depends(require("storefront.sales.enquiry.delete", minimum=Scope.ORG))

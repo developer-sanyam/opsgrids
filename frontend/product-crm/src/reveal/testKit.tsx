@@ -1,13 +1,12 @@
 /**
  * Test-only harness for the screens that reveal a sealed value: a fake gateway that answers what
- * the auth service and the reveal endpoints would, the providers a screen needs, and the moves a
- * person makes on the step-up dialog. The real `useStepUp`, the real `StepUpDialog` and the real
- * api client run under it, so what a test sees is what crosses the wire and what is on screen.
+ * the reveal endpoints would and the providers a screen needs. The real api client runs under it,
+ * so what a test sees is what crosses the wire and what is on screen. There is no step-up: a
+ * permitted caller reveals with one tap (ADR-0023 addendum, 2026-10-15).
  */
 
 import type { ReactElement } from "react";
-import { render, screen } from "@testing-library/react";
-import type { UserEvent } from "@testing-library/user-event";
+import { render } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { vi } from "vitest";
 
@@ -18,11 +17,7 @@ import type { Directory } from "@/data/directoryContext";
 import { GoTo, LocationProbe } from "./testProbes";
 
 export const SESSION_TOKEN = "session-access-token";
-export const STEP_UP_TOKEN = "step-up-access-token";
 
-export const STEP_UP = "POST /api/v1/auth/mfa/step-up";
-export const ME = "GET /api/v1/auth/me";
-export const REFRESH = "POST /api/v1/auth/refresh";
 
 export interface Call {
   key: string;
@@ -42,18 +37,6 @@ export function json(body: unknown, status = 200): Response {
 /** An RFC 7807 answer the way the gateway writes one: `type` names the case, `detail` is the sentence. */
 export function problem(status: number, detail: string, slug = "problem"): Response {
   return json({ type: `https://errors.opsgrids.dev/${slug}`, title: detail, status, detail }, status);
-}
-
-/** What `/auth/mfa/step-up` answers when the code is good. */
-export function stepUpToken(accessToken: string = STEP_UP_TOKEN, expiresIn = 180): Response {
-  return json({
-    status: "complete",
-    access_token: accessToken,
-    token_type: "Bearer",
-    expires_in: expiresIn,
-    organization_id: "org-1",
-    membership_id: "mem-1",
-  });
 }
 
 export interface Gateway {
@@ -127,19 +110,6 @@ export function renderScreen(element: ReactElement, options: ScreenOptions) {
       </PermissionProvider>
     </MemoryRouter>,
   );
-}
-
-export function codeField(): HTMLElement {
-  return screen.getByRole("textbox", { name: /6-digit code/ });
-}
-
-/** Types a code into the dialog. The sixth digit submits it, as it does for a person. */
-export async function enterCode(user: UserEvent, code = "123456"): Promise<void> {
-  await user.type(codeField(), code);
-}
-
-export function stepUpDialog(): HTMLElement {
-  return screen.getByRole("dialog", { name: "Confirm it's you" });
 }
 
 /** Everything the page has written to web storage, as one string a test can look through. */

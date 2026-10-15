@@ -2460,10 +2460,10 @@ async def unmask_inbound_message(
     message_id: uuid.UUID,
     request: Request | None = None,
 ) -> str | None:
-    """Reveal one customer message's real body — the audited, stepped-up path.
+    """Reveal one customer message's real body — the audited path (permission, no step-up).
 
     Mirrors `customer.services.unmask_contact_phone`: reaching here means the caller held the
-    dangerous `engage.inbox.message.unmask` permission and stepped up (`amr={"otp"}`). An
+    dangerous `engage.inbox.message.unmask` permission (no step-up, ADR-0023 addendum). An
     `entity.sensitive_read` row is written in the caller's transaction whether or not anything
     was sealed — the auditable act is the attempt, not whether a body happened to be text.
     """
@@ -4629,10 +4629,10 @@ async def unmask_consent_subject(
     event_id: uuid.UUID,
     request: Request | None = None,
 ) -> str:
-    """Reveal the address one consent event is about — the audited, stepped-up path.
+    """Reveal the address one consent event is about — the audited path (permission, no step-up).
 
     Mirrors `unmask_inbound_message`: reaching here means the caller held the dangerous
-    `engage.inbox.message.unmask` permission and stepped up (`amr={"otp"}`). An
+    `engage.inbox.message.unmask` permission (no step-up, ADR-0023 addendum). An
     `entity.sensitive_read` row is written in the caller's transaction every time.
     """
     row = await selectors.get_consent_event(session, ctx.organization_id, event_id)

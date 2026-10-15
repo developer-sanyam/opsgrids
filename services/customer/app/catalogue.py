@@ -64,9 +64,10 @@ CRM_BOOK = PermissionCatalogue(
         # an administrative act, not something an individual rep's OWN scope covers.
         PermissionSpec("book", "owner", "write", "Add a rep to the directory", "ORG", "ORG"),
         # Reading a contact's real phone number, as opposed to the masked hint every other
-        # read returns. Classified dangerous and stepped up at the route (`amr={"otp"}`),
-        # exactly as employee-service treats `read_sensitive`: the ordinary CRM permission
-        # must not be a route to a customer's personal number, and every unmask writes an
+        # read returns. Classified dangerous and gated on the permission alone at the route
+        # (no step-up, ADR-0023 addendum), as employee-service treats `read_sensitive`: the
+        # ordinary CRM permission must not be a route to a customer's personal number, and every
+        # unmask writes an
         # `entity.sensitive_read` audit row naming the field but never its value.
         PermissionSpec(
             "book",

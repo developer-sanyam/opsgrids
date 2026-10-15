@@ -385,13 +385,18 @@ explicitly. The maximum is a ladder ceiling, not an allowed set, so a grant belo
 - `crm.book.owner.write` is floored at ORG on its route: an OWN grant is refused outright
   (`services/customer/app/api/routes.py:68`). Configuring the lead assignment rule is refused unless
   the caller's scope is ORG (`services/lead/app/services.py:181-182`).
-- The two `read_sensitive` codes open a sealed value only on a stepped-up request: the route demands
-  both the `otp` method and a step-up marker (`services/customer/app/api/routes.py:80`,
-  `services/lead/app/api/routes.py:78`), writes an `entity.sensitive_read` audit row naming the field
-  and never its value, and is bounded by a per-user reveal budget that customer and lead share
-  (`services/customer/app/config.py:34-43`). `is_dangerous` is metadata, not a control: what
-  constrains a reveal is the step-up, the scope applied to the one record, and the audit row
-  (ADR-0000 §5, note added 2026-09-17).
+- The two `read_sensitive` codes open a sealed value on the permission alone. There is **no
+  step-up and no one-time code** (owner decision 2026-10-15, ADR-0023 addendum): holding the code
+  is enough to reveal with one tap. The route (`services/customer/app/api/routes.py`,
+  `services/lead/app/api/routes.py`) is `require(<code>)` with no `amr`; it writes an
+  `entity.sensitive_read` audit row naming the field and never its value, every time, and is
+  bounded by a per-user reveal budget that customer and lead share
+  (`services/customer/app/config.py`): 60 per 10 minutes and 600 per day, sized for a rep working a
+  call list and still far from a bulk export. Masked stays the default: the value is fetched only
+  when the person taps Reveal. In the UI a revealed value stays visible for the session (no
+  auto-hide), is held in memory only and emptied on sign-out, and is a `tel:` / `mailto:` link.
+  `is_dangerous` is metadata, not a control: what constrains a reveal is the permission, the scope
+  applied to the one record, the budget and the audit row (ADR-0000 §5, note added 2026-09-17).
 - Every code is frozen: codes are customer data once tenants author roles, there is no rename
   mechanism, and the removal tool ADR-0007 specifies (`tools/revoke_permission.py`, open-questions
   register row 14) does not exist. A new code reaches live tenants admin-first through the
