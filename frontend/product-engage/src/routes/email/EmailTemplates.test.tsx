@@ -98,10 +98,10 @@ describe("populated", () => {
     expect(screen.getByText("New campaign: Welcome aboard / Glad you are here.")).toBeTruthy();
   });
 
-  it("hides Use template from someone who may not draft campaigns, and still offers Edit", async () => {
+  it("hides Use template from someone who may not draft campaigns, and offers View to a reader", async () => {
     vi.spyOn(email, "listEmailTemplates").mockResolvedValue(page([WELCOME]));
     renderPage([]);
-    await screen.findByRole("button", { name: "Edit template welcome_email" });
+    await screen.findByRole("button", { name: "View template welcome_email" });
     expect(screen.queryByRole("button", { name: /Use template/ })).toBeNull();
   });
 

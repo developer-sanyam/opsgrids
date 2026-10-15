@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { Can, useAsync } from "@opsgrids/client";
+import { Can, useAsync, useCan } from "@opsgrids/client";
 import { MailIcon } from "@opsgrids/ui";
 
 import { listEmailTemplates } from "@/api/email";
@@ -44,6 +44,8 @@ function CreateButton() {
 function TemplateTile({ template }: { template: EmailTemplateOut }) {
   const navigate = useNavigate();
   const count = template.placeholders.length;
+  // The editor opens read-only without template write, so call it what it is.
+  const verb = useCan(CREATE_PERMISSION, "ORG") ? "Edit" : "View";
   return (
     <li className="flex flex-col gap-4 rounded-tile border border-line p-4">
       <div className="flex min-w-0 flex-col gap-1">
@@ -75,10 +77,10 @@ function TemplateTile({ template }: { template: EmailTemplateOut }) {
         </Can>
         <Button
           variant="secondary"
-          aria-label={`Edit template ${template.id}`}
+          aria-label={`${verb} template ${template.id}`}
           onClick={() => navigate(`/email/templates/${encodeURIComponent(template.id)}`)}
         >
-          Edit
+          {verb}
         </Button>
       </div>
     </li>
