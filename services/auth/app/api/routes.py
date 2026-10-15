@@ -185,6 +185,23 @@ def _set_refresh_cookie(response: Response, cfg: Settings, token: str) -> None:
     )
 
 
+def _clear_refresh_cookie(response: Response, cfg: Settings) -> None:
+    """Expire the refresh cookie with exactly the scope `_set_refresh_cookie` gave it.
+
+    A browser keys a cookie by name, `Domain` and `Path`: a deletion that leaves out a
+    configured `refresh_cookie_domain` names a *different* (host-only) cookie and the real one
+    survives the sign-out.
+    """
+    response.delete_cookie(
+        cfg.refresh_cookie_name,
+        path="/api/v1/auth",
+        domain=cfg.refresh_cookie_domain,
+        secure=_secure_cookies(cfg),
+        httponly=True,
+        samesite="lax",
+    )
+
+
 #: Binds an SSO/OAuth `state` to the browser that started the flow (login CSRF): without it,
 #: an attacker's own `code`+`state` replayed in a victim's browser signs the victim in as the
 #: attacker. The binder rides in this cookie; only its SHA-256 sits next to the state.
@@ -419,7 +436,7 @@ async def logout(request: Request, session: SessionDep, pair: KeyDep) -> Respons
         async with session.begin():
             await services.logout(session, pair=pair, cfg=cfg, raw_token=raw)
     out = Response(status_code=status.HTTP_204_NO_CONTENT)
-    out.delete_cookie(cfg.refresh_cookie_name, path="/api/v1/auth")
+    _clear_refresh_cookie(out, cfg)
     return out
 
 
@@ -1204,7 +1221,7 @@ async def operator_logout(request: Request, session: SessionDep, pair: KeyDep) -
         async with session.begin():
             await services.logout(session, pair=pair, cfg=cfg, raw_token=raw)
     out = Response(status_code=status.HTTP_204_NO_CONTENT)
-    out.delete_cookie(cfg.refresh_cookie_name, path="/api/v1/auth")
+    _clear_refresh_cookie(out, cfg)
     return out
 
 

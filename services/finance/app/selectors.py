@@ -45,11 +45,13 @@ from app.models import (
     Payment,
     PaymentAllocation,
     PurchaseDocument,
+    SupplierProfile,
 )
 from app.models import WithholdingRate as WithholdingRateRow
 from app.schemas import (
     AgingBucket,
     B2csOut,
+    BankDetailsOut,
     CashflowPoint,
     CurrencyRevenueHistory,
     CustomerOut,
@@ -90,6 +92,9 @@ from app.schemas import (
     RateGroupOut,
     ReturnInvoiceOut,
     ReturnTotalsOut,
+    SupplierPrintOut,
+    SupplierProfileOut,
+    SupplierSettingsOut,
     TaxHeadAmountsOut,
     UtilisationLineOut,
     WithholdingDeductorRow,
@@ -361,6 +366,13 @@ def to_invoice_out(
         cgst_minor=invoice.cgst_minor,
         sgst_minor=invoice.sgst_minor,
         igst_minor=invoice.igst_minor,
+        round_off_minor=invoice.round_off_minor,
+        seller_legal_name=invoice.seller_legal_name,
+        seller_address=invoice.seller_address,
+        buyer_name=invoice.buyer_name,
+        buyer_address=invoice.buyer_address,
+        buyer_state_code=invoice.buyer_state_code,
+        ship_to_address=invoice.ship_to_address,
         einvoice=to_einvoice_state(invoice, latest_filing, attempts, at=at),
     )
 
@@ -416,6 +428,25 @@ async def get_customer(
     if for_update:
         stmt = stmt.with_for_update()
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def live_customer_with_gstin(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    gstin: str,
+    *,
+    excluding: uuid.UUID | None = None,
+) -> Customer | None:
+    """The live customer already holding this GSTIN, if any — the natural key a second customer
+    must not repeat. `excluding` leaves out the customer being edited."""
+    stmt = select(Customer).where(
+        Customer.organization_id == org_id,
+        Customer.gstin == gstin,
+        Customer.deleted_at.is_(None),
+    )
+    if excluding is not None:
+        stmt = stmt.where(Customer.id != excluding)
+    return (await session.execute(stmt.limit(1))).scalars().first()
 
 
 async def get_customer_by_crm_contact(
@@ -1031,6 +1062,101 @@ def to_gst_registration_out(registration: GstRegistration) -> GstRegistrationOut
         trade_name=registration.trade_name,
         registration_type=registration.registration_type,
         is_primary=registration.is_primary,
+        address_line1=registration.address_line1,
+        address_line2=registration.address_line2,
+        city=registration.city,
+        pincode=registration.pincode,
+    )
+
+
+# --------------------------------------------------------------------- supplier profile
+
+
+async def get_supplier_profile(
+    session: AsyncSession, org_id: uuid.UUID, *, for_update: bool = False
+) -> SupplierProfile | None:
+    """This organization's PAN and bank details, or None before any were entered.
+
+    `for_update=True` row-locks it, so two settings saves racing each other serialise rather than
+    the second silently overwriting fields the first changed."""
+    stmt = select(SupplierProfile).where(
+        SupplierProfile.organization_id == org_id,
+        SupplierProfile.deleted_at.is_(None),
+    )
+    if for_update:
+        stmt = stmt.with_for_update()
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+def to_bank_details(profile: SupplierProfile, *, account_number: str) -> BankDetailsOut:
+    """The bank block, with whichever form of the account number the caller is entitled to: the
+    mask everywhere except the printable invoice."""
+    return BankDetailsOut(
+        account_name=profile.bank_account_name,
+        account_number=account_number,
+        ifsc=profile.bank_ifsc,
+        bank_name=profile.bank_name,
+        branch=profile.bank_branch,
+        upi_id=profile.upi_id,
+    )
+
+
+def to_supplier_profile_out(profile: SupplierProfile | None) -> SupplierProfileOut:
+    if profile is None:
+        return SupplierProfileOut(
+            pan=None,
+            bank=BankDetailsOut(
+                account_name="", account_number="", ifsc="", bank_name="", branch="", upi_id=""
+            ),
+        )
+    return SupplierProfileOut(
+        pan=profile.pan,
+        bank=to_bank_details(profile, account_number=profile.bank_account_number_masked),
+    )
+
+
+def supplier_missing_for(registration: GstRegistration | None) -> list[str]:
+    """`domain.supplier_missing` over a registration row."""
+    if registration is None:
+        return domain.supplier_missing(has_registration=False)
+    return domain.supplier_missing(
+        has_registration=True,
+        legal_name=registration.legal_name,
+        address_line1=registration.address_line1,
+        city=registration.city,
+        pincode=registration.pincode,
+    )
+
+
+async def supplier_settings(session: AsyncSession, org_id: uuid.UUID) -> SupplierSettingsOut:
+    """Everything Finance settings shows about the supplier, account number masked."""
+    registration = await get_gst_registration(session, org_id)
+    profile = await get_supplier_profile(session, org_id)
+    missing = supplier_missing_for(registration)
+    return SupplierSettingsOut(
+        registration=to_gst_registration_out(registration) if registration else None,
+        profile=to_supplier_profile_out(profile),
+        ready=not missing,
+        missing=missing,
+    )
+
+
+def to_supplier_print(
+    registration: GstRegistration | None,
+    profile: SupplierProfile | None,
+    bank: BankDetailsOut | None,
+) -> SupplierPrintOut:
+    return SupplierPrintOut(
+        gstin=registration.gstin if registration else None,
+        legal_name=(registration.legal_name or None) if registration else None,
+        trade_name=(registration.trade_name or None) if registration else None,
+        state_code=registration.state_code if registration else None,
+        address_line1=registration.address_line1 if registration else "",
+        address_line2=registration.address_line2 if registration else "",
+        city=registration.city if registration else "",
+        pincode=registration.pincode if registration else "",
+        pan=profile.pan if profile else None,
+        bank=bank,
     )
 
 

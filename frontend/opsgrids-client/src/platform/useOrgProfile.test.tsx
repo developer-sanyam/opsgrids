@@ -64,4 +64,36 @@ describe("useOrgProfile", () => {
       status: "fallback",
     });
   });
+
+  // 2026-10-15 customer retest: a self-serve signup never sets `country`, so the organization read
+  // back with `country: null` and a bare ten-digit mobile was refused by every form and import.
+  it("reads a bare mobile as Indian for an organization with no country that runs in INR", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(respond({ timezone: "Asia/Kolkata", currency: "INR", locale: "en-IN", country: null }))),
+    );
+    const { loadOrgProfile } = await import("./useOrgProfile");
+    const { normalisePhone, getDefaultPhoneRegion } = await import("../phone");
+
+    const profile = await loadOrgProfile();
+
+    expect(profile.country).toBeNull();
+    expect(getDefaultPhoneRegion()).toBe("IN");
+    expect(normalisePhone("9000000031")).toBe("+919000000031");
+    expect(normalisePhone("90000 00031")).toBe("+919000000031");
+    expect(normalisePhone("09000000031")).toBe("+919000000031");
+  });
+
+  it("still guesses nothing for an organization with no country outside India", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(respond({ timezone: "Europe/London", currency: "GBP", locale: "en-GB", country: null }))),
+    );
+    const { loadOrgProfile } = await import("./useOrgProfile");
+    const { normalisePhone } = await import("../phone");
+
+    await loadOrgProfile();
+
+    expect(normalisePhone("9000000031")).toBeNull();
+  });
 });

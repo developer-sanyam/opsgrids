@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { getCustomer, getGstRegistration, getInvoice, listFilings } from "@/api/client";
+import { getCustomer, getGstRegistration, getInvoice, getPrintDetails, listFilings } from "@/api/client";
 import { buildTaxInvoice, documentFileTitle, isPrintable } from "@/invoice/taxInvoice";
 import { TaxInvoiceDocument } from "@/invoice/TaxInvoiceDocument";
 import { ApiError, problemMessage, useAsync } from "@opsgrids/client";
@@ -106,6 +106,19 @@ export function InvoicePrintPage() {
     }, [correctsId]),
     [correctsId],
   );
+  // The supplier block with the bank account whole. The server audits each read that returns an
+  // account number. A failure leaves the address to the invoice's own snapshot and the bank
+  // details off, rather than holding the whole document back.
+  const printDetails = useAsync(
+    useCallback(async () => {
+      try {
+        return await getPrintDetails(id);
+      } catch {
+        return null;
+      }
+    }, [id]),
+    [id],
+  );
   const filings = useAsync(
     useCallback(async () => {
       if (!wantsFilings) return null;
@@ -126,7 +139,8 @@ export function InvoicePrintPage() {
     customer.data !== null &&
     registration.status === "success" &&
     original.status === "success" &&
-    filings.status === "success";
+    filings.status === "success" &&
+    printDetails.status === "success";
 
   const built = useMemo(() => {
     if (
@@ -135,7 +149,8 @@ export function InvoicePrintPage() {
       customer.data === null ||
       registration.status !== "success" ||
       original.status !== "success" ||
-      filings.status !== "success"
+      filings.status !== "success" ||
+      printDetails.status !== "success"
     ) {
       return null;
     }
@@ -145,9 +160,10 @@ export function InvoicePrintPage() {
       registration: registration.data,
       original: original.data,
       filings: filings.data,
+      printDetails: printDetails.data,
       portalConnected: GST_PORTAL_CONNECTED,
     });
-  }, [invoice, customer, registration, original, filings]);
+  }, [invoice, customer, registration, original, filings, printDetails]);
 
   useDocumentTitle(built ? documentFileTitle(built.model.number, built.model.buyer.name) : null);
 
@@ -157,6 +173,7 @@ export function InvoicePrintPage() {
     registration.reload();
     original.reload();
     filings.reload();
+    printDetails.reload();
   };
 
   const printable = built !== null && isPrintable(built.gaps);
@@ -223,12 +240,6 @@ export function InvoicePrintPage() {
                 </InlineAlert>
               ))
             : null}
-          {built ? (
-            <InlineAlert tone="info" title="Not on this document yet" live="off">
-              Finance does not store your registered address, your bank details or a unit of
-              measure for each line, so none of them are printed.
-            </InlineAlert>
-          ) : null}
         </div>
 
         {failure ? (

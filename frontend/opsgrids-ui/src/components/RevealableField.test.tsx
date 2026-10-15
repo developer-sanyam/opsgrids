@@ -42,6 +42,25 @@ describe("RevealableField", () => {
     expect(link.className).toContain("min-h-11");
   });
 
+  it("offers WhatsApp for a revealed phone only: wa.me with its digits, a new tab, a name and a 44px target", () => {
+    const { rerender } = render(
+      <RevealableField kind="phone" masked="•••••• 4821" canReveal field={field()} />,
+    );
+    expect(screen.queryByRole("link", { name: /WhatsApp/ })).toBeNull();
+    rerender(<RevealableField kind="phone" masked="•••••• 4821" canReveal field={field({ value: "+91 98765 04821" })} />);
+    const chat = screen.getByRole("link", { name: "WhatsApp +91 98765 04821 (opens in a new tab)" });
+    expect(chat.getAttribute("href")).toBe("https://wa.me/919876504821");
+    expect(chat.getAttribute("target")).toBe("_blank");
+    expect(chat.getAttribute("rel")).toContain("noopener");
+    expect(chat.className).toContain("min-h-11");
+    expect(chat.className).toContain("min-w-11");
+  });
+
+  it("never offers WhatsApp for a revealed email", () => {
+    render(<RevealableField kind="email" masked="p•••@example.com" canReveal field={field({ value: "priya@example.com" })} />);
+    expect(screen.queryByRole("link", { name: /WhatsApp/ })).toBeNull();
+  });
+
   it("makes a revealed email a mailto: link with a 44px target", () => {
     render(<RevealableField kind="email" masked="p•••@example.com" canReveal field={field({ value: "priya@example.com" })} />);
     const link = screen.getByRole("link", { name: "priya@example.com" });

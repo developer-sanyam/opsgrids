@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 
 import { createCustomer, updateCustomer } from "@/api/client";
 import type { Customer, CustomerCreate, CustomerUpdate } from "@/api/types";
-import { INDIAN_STATE_OPTIONS } from "@/data/gstStates";
+import { GST_STATE_NAME, GST_STATE_OPTIONS, stateCodeForName } from "@/data/gstStates";
 import { ApiError, problemMessage, useMutation } from "@opsgrids/client";
 import { FormDialog, InlineAlert, Select, Switch, TextField, useFormDirty } from "@/ui";
 
@@ -30,18 +30,26 @@ export function CustomerFormDialog({ customer, onClose, onSaved }: CustomerFormD
   const [email, setEmail] = useState(customer?.email ?? "");
   const [gstin, setGstin] = useState(customer?.gstin ?? "");
   const [city, setCity] = useState(customer?.city ?? "");
-  const [state, setState] = useState(customer?.state ?? "");
+  const [stateCode, setStateCode] = useState(customer?.state_code ?? stateCodeForName(customer?.state ?? "") ?? "");
+  const [addressLine1, setAddressLine1] = useState(customer?.address_line1 ?? "");
+  const [addressLine2, setAddressLine2] = useState(customer?.address_line2 ?? "");
+  const [pincode, setPincode] = useState(customer?.pincode ?? "");
+  // Write-only: the stored number is a mask, so the field starts empty and blank keeps it.
+  const [phone, setPhone] = useState("");
   const [isTdsDeductor, setIsTdsDeductor] = useState(customer?.is_tds_deductor ?? false);
   const [deducts194q, setDeducts194q] = useState(customer?.deducts_tds_194q ?? false);
   const [tcsApplicable, setTcsApplicable] = useState(customer?.tcs_applicable ?? false);
 
-  const fields = { name, contactName, email, gstin, city, state, isTdsDeductor, deducts194q, tcsApplicable };
+  const fields = { name, contactName, email, gstin, city, stateCode, addressLine1, addressLine2, pincode, phone, isTdsDeductor, deducts194q, tcsApplicable };
   const [initial] = useState(fields);
   const dirty = useFormDirty(initial, fields);
 
   const [nameError, setNameError] = useState<string | undefined>(undefined);
   const [emailError, setEmailError] = useState<string | undefined>(undefined);
   const [gstinError, setGstinError] = useState<string | undefined>(undefined);
+  const [stateError, setStateError] = useState<string | undefined>(undefined);
+  const [pincodeError, setPincodeError] = useState<string | undefined>(undefined);
+  const [phoneError, setPhoneError] = useState<string | undefined>(undefined);
   const [mutualError, setMutualError] = useState<string | undefined>(undefined);
   const nameRef = useRef<HTMLInputElement>(null);
 
@@ -55,6 +63,9 @@ export function CustomerFormDialog({ customer, onClose, onSaved }: CustomerFormD
     setNameError(undefined);
     setEmailError(undefined);
     setGstinError(undefined);
+    setStateError(undefined);
+    setPincodeError(undefined);
+    setPhoneError(undefined);
     setMutualError(undefined);
 
     const trimmedName = name.trim();
@@ -73,6 +84,19 @@ export function CustomerFormDialog({ customer, onClose, onSaved }: CustomerFormD
       setGstinError("Enter a valid 15-character GSTIN, or leave it blank for an unregistered buyer.");
       return;
     }
+    if (trimmedGstin !== "" && stateCode !== "" && trimmedGstin.slice(0, 2) !== stateCode) {
+      setStateError(`This GSTIN is registered in ${GST_STATE_NAME[trimmedGstin.slice(0, 2)] ?? trimmedGstin.slice(0, 2)}. Choose that state.`);
+      return;
+    }
+    if (pincode.trim() !== "" && !/^[1-9]\d{5}$/.test(pincode.trim())) {
+      setPincodeError("A PIN code is six numerals and does not start with 0.");
+      return;
+    }
+    const trimmedPhone = phone.trim();
+    if (trimmedPhone !== "" && !/^\+?[0-9][0-9 ().-]{6,22}$/.test(trimmedPhone)) {
+      setPhoneError("Enter a 10-numeral mobile, or the number with its country code like +91 98765 43210.");
+      return;
+    }
     if (deducts194q && tcsApplicable) {
       setMutualError("A buyer is either liable under s.194Q or has TCS collected under s.206C(1H) — never both.");
       return;
@@ -84,7 +108,12 @@ export function CustomerFormDialog({ customer, onClose, onSaved }: CustomerFormD
       email: trimmedEmail,
       gstin: trimmedGstin === "" ? null : trimmedGstin,
       city: city.trim(),
-      state: state.trim(),
+      state: stateCode === "" ? (customer?.state ?? "") : (GST_STATE_NAME[stateCode] ?? ""),
+      state_code: stateCode === "" ? null : stateCode,
+      address_line1: addressLine1.trim(),
+      address_line2: addressLine2.trim(),
+      pincode: pincode.trim(),
+      ...(trimmedPhone !== "" ? { phone: trimmedPhone } : {}),
       is_tds_deductor: isTdsDeductor,
       deducts_tds_194q: deducts194q,
       tcs_applicable: tcsApplicable,
@@ -151,7 +180,38 @@ export function CustomerFormDialog({ customer, onClose, onSaved }: CustomerFormD
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <TextField
+        label="Phone"
+        type="tel"
+        value={phone}
+        onChange={(e) => setPhone(e.target.value)}
+        maxLength={24}
+        optional
+        helper={
+          customer?.phone
+            ? `On file: ${customer.phone}. Leave empty to keep it.`
+            : "A 10-numeral Indian mobile is saved with +91. Stored encrypted and shown masked."
+        }
+        error={phoneError ?? save.fieldErrors.phone}
+      />
+      <TextField
+        label="Billing address"
+        value={addressLine1}
+        onChange={(e) => setAddressLine1(e.target.value)}
+        maxLength={200}
+        optional
+        helper="Printed on the tax invoice. Required there for an unregistered buyer billed ₹50,000 or more."
+        error={save.fieldErrors.address_line1}
+      />
+      <TextField
+        label="Address line 2"
+        value={addressLine2}
+        onChange={(e) => setAddressLine2(e.target.value)}
+        maxLength={200}
+        optional
+        error={save.fieldErrors.address_line2}
+      />
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <TextField
           label="City"
           value={city}
@@ -159,13 +219,23 @@ export function CustomerFormDialog({ customer, onClose, onSaved }: CustomerFormD
           optional
           error={save.fieldErrors.city}
         />
+        <TextField
+          label="PIN code"
+          value={pincode}
+          inputMode="numeric"
+          maxLength={6}
+          onChange={(e) => setPincode(e.target.value.replace(/\D/g, ""))}
+          optional
+          error={pincodeError ?? save.fieldErrors.pincode}
+        />
         <Select
           label="State"
-          value={state}
-          onChange={(e) => setState(e.target.value)}
+          value={stateCode}
+          onChange={(e) => setStateCode(e.target.value)}
           placeholder="Choose a state"
-          options={[...INDIAN_STATE_OPTIONS]}
-          error={save.fieldErrors.state}
+          options={[...GST_STATE_OPTIONS]}
+          helper="Decides the place of supply when the buyer has no GSTIN."
+          error={stateError ?? save.fieldErrors.state_code ?? save.fieldErrors.state}
         />
       </div>
 

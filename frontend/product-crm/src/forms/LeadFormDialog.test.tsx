@@ -124,4 +124,61 @@ describe("LeadFormDialog", () => {
     expect(await screen.findByText(/a lead with that email already exists/i)).toBeTruthy();
     expect((screen.getByLabelText(/full name/i) as HTMLInputElement).value).toBe("Meera Iyer");
   });
+
+  // 2026-10-15 customer retest: "Auto-assign" left the lead Unassigned in a one-person organization,
+  // and an unassigned lead cannot be converted.
+  it("on auto-assign, puts the signed-in login on the roster and names them as the fallback owner", async () => {
+    vi.spyOn(client, "createLead").mockResolvedValue(CREATED);
+    const ensureMyRep = vi.fn(() => Promise.resolve(OWNERS[0]));
+    render(<LeadFormDialog owners={OWNERS} onClose={vi.fn()} onSaved={vi.fn()} ensureMyRep={ensureMyRep} />);
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText(/full name/i), "Meera Iyer");
+    await user.click(screen.getByRole("button", { name: /add lead/i }));
+
+    await waitFor(() => expect(client.createLead).toHaveBeenCalled());
+    expect(ensureMyRep).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(client.createLead).mock.calls[0]?.[0];
+    expect(call).not.toHaveProperty("owner_id");
+    expect(call).toMatchObject({ fallback_owner_id: "own-1" });
+  });
+
+  it("does not ask for the login's rep when an owner is named", async () => {
+    vi.spyOn(client, "createLead").mockResolvedValue(CREATED);
+    const ensureMyRep = vi.fn(() => Promise.resolve(OWNERS[0]));
+    render(<LeadFormDialog owners={OWNERS} onClose={vi.fn()} onSaved={vi.fn()} ensureMyRep={ensureMyRep} />);
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText(/full name/i), "Meera Iyer");
+    await user.selectOptions(screen.getByLabelText(/owner/i), "own-1");
+    await user.click(screen.getByRole("button", { name: /add lead/i }));
+
+    await waitFor(() => expect(client.createLead).toHaveBeenCalled());
+    expect(ensureMyRep).not.toHaveBeenCalled();
+    expect(vi.mocked(client.createLead).mock.calls[0]?.[0]).not.toHaveProperty("fallback_owner_id");
+  });
+
+  it("sends a bare Indian mobile as +91 E.164", async () => {
+    vi.spyOn(client, "createLead").mockResolvedValue(CREATED);
+    const { user } = open();
+
+    await user.type(screen.getByLabelText(/full name/i), "Meera Iyer");
+    await user.type(screen.getByLabelText(/^phone/i), "90000 00031");
+    await user.click(screen.getByRole("button", { name: /add lead/i }));
+
+    await waitFor(() => expect(client.createLead).toHaveBeenCalled());
+    expect(client.createLead).toHaveBeenCalledWith(expect.objectContaining({ phone: "+919000000031" }));
+  });
+
+  it("refuses a number it cannot read, in words, and sends nothing", async () => {
+    const spy = vi.spyOn(client, "createLead");
+    const { user } = open();
+
+    await user.type(screen.getByLabelText(/full name/i), "Meera Iyer");
+    await user.type(screen.getByLabelText(/^phone/i), "12345");
+    await user.click(screen.getByRole("button", { name: /add lead/i }));
+
+    expect(await screen.findByText(/^Enter a 10-digit mobile/)).toBeTruthy();
+    expect(spy).not.toHaveBeenCalled();
+  });
 });

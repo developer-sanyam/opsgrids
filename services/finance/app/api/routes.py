@@ -59,6 +59,9 @@ from app.schemas import (
     PurchaseDocumentOut,
     ReturnDiffOut,
     ServiceInfo,
+    SupplierPrintOut,
+    SupplierProfileUpsert,
+    SupplierSettingsOut,
     WithholdingRateOut,
     WithholdingSummaryOut,
     WithholdingWithInvoice,
@@ -240,10 +243,34 @@ async def issue_invoice(
         supply_type=payload.supply_type,
         place_of_supply=payload.place_of_supply,
         reverse_charge=payload.reverse_charge,
+        round_off=payload.round_off,
+        ship_to_address=payload.ship_to_address,
     )
     invoice = await services.create_invoice(session, ctx, create, request=request)
     items = await selectors.invoices_with_filings(session, ctx.organization_id, [invoice])
     return items[0]
+
+
+@router.get(
+    "/finance/invoices/{invoice_id}/print-details",
+    response_model=SupplierPrintOut,
+    summary="The supplier block of one invoice's printable copy, bank account in full",
+    dependencies=[Entitled],
+)
+async def read_invoice_print_details(
+    invoice_id: uuid.UUID, session: SessionDep, ctx: InvoiceRead, request: Request
+) -> SupplierPrintOut:
+    """What the printable tax invoice states about the supplier beyond what the invoice froze:
+    PAN and where to pay. Behind the invoice-read permission, because anybody who may read an
+    invoice may print it — and the bank account is printed for the customer to pay into.
+
+    The account number is sealed at rest; this route opens it, and writes a
+    `supplier_profile.bank_disclosed` audit row naming the invoice each time it does.
+    """
+    invoice = await selectors.get_invoice(session, ctx.organization_id, invoice_id)
+    if invoice is None:
+        raise NotFoundProblem("That invoice is not part of this organization")
+    return await services.supplier_print_details(session, ctx, invoice, request=request)
 
 
 # --------------------------------------------------------------------- GST compliance
@@ -302,6 +329,34 @@ async def set_gst_registration(
     """
     registration = await services.set_gst_registration(session, ctx, payload, request=request)
     return selectors.to_gst_registration_out(registration)
+
+
+@router.get(
+    "/finance/settings/supplier",
+    response_model=SupplierSettingsOut,
+    summary="What tax invoices state about this organization, and what is still missing",
+    dependencies=[Entitled],
+)
+async def read_supplier_settings(session: SessionDep, ctx: RegistrationRead) -> SupplierSettingsOut:
+    """The registration (legal name, GSTIN, address), PAN and bank details with the account number
+    masked, plus `ready`/`missing`: whether a Rule 46 tax invoice can be issued yet. Never 404 —
+    an organization with nothing configured gets `ready: false` and every field listed."""
+    return await selectors.supplier_settings(session, ctx.organization_id)
+
+
+@router.put(
+    "/finance/settings/supplier-profile",
+    response_model=SupplierSettingsOut,
+    summary="Set this organization's PAN and bank details",
+    dependencies=[Entitled],
+)
+async def set_supplier_profile(
+    payload: SupplierProfileUpsert, session: SessionDep, ctx: RegistrationWrite, request: Request
+) -> SupplierSettingsOut:
+    """Behind the same dangerous permission as the GST registration: both decide what every future
+    invoice tells a customer about who to pay. Absent fields are unchanged, empty ones cleared."""
+    await services.set_supplier_profile(session, ctx, payload, request=request)
+    return await selectors.supplier_settings(session, ctx.organization_id)
 
 
 # --------------------------------------------------------------------- GST returns

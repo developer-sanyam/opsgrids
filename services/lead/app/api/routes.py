@@ -191,6 +191,7 @@ async def create_lead(
         phone=payload.phone,
         source=payload.source,
         owner_id=payload.owner_id,
+        fallback_owner_id=payload.fallback_owner_id,
         notes=payload.notes,
         request=request,
     )

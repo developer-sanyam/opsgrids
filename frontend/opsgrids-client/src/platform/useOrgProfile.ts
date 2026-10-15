@@ -33,6 +33,17 @@ interface OrganizationWire {
 
 const DEFAULTS = { timezone: "Asia/Kolkata", currency: "INR", locale: "en-IN", country: "IN" } as const;
 
+/**
+ * The country a bare national phone number is read in. The organization's own country when it set
+ * one. A self-serve signup never asks for it, so an organization that runs in rupees or on India
+ * time with no country is read as Indian -- the platform's home defaults, which it kept -- rather
+ * than refusing every ten-digit mobile its people type. Anything else with no country: none.
+ */
+function phoneRegionOf(profile: Pick<OrgProfile, "country" | "currency" | "timezone">): string | null {
+  if (profile.country !== null && profile.country.trim() !== "") return profile.country;
+  return profile.currency === "INR" || profile.timezone === "Asia/Kolkata" ? "IN" : null;
+}
+
 let settled: OrgProfile | null = null;
 let pending: Promise<OrgProfile> | null = null;
 
@@ -52,7 +63,7 @@ export function loadOrgProfile(): Promise<OrgProfile> {
     )
     .then((profile) => {
       settled = profile;
-      setDefaultPhoneRegion(profile.country);
+      setDefaultPhoneRegion(phoneRegionOf(profile));
       return profile;
     });
   return pending;

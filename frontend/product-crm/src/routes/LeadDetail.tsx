@@ -2,8 +2,9 @@ import { useCallback, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { getLead, revealLeadField, updateLead } from "@/api/client";
-import type { LeadStatus } from "@/api/types";
+import type { Lead, LeadStatus, Owner } from "@/api/types";
 import { useDirectory } from "@/data/directoryContext";
+import { useMyRep } from "@/data/useMyRep";
 import { ownerById } from "@/data/lookups";
 import { ConvertLeadDialog } from "@/forms/ConvertLeadDialog";
 import { formatDate } from "@/lib/format";
@@ -67,6 +68,65 @@ function statusOptions(current: LeadStatus, next: readonly LeadStatus[]): { valu
     value,
     label: value === current ? `${STATUS_LABELS[value]} (current)` : `Mark as ${STATUS_LABELS[value]}`,
   }));
+}
+
+/** The owner control's value for "me, put me on the roster first". Never a real id. */
+const ME = "__me__";
+
+/**
+ * Who works the lead, changeable here -- `PATCH /leads/{id}` with `owner_id`, which the server
+ * re-scopes (an OWN-scoped rep may only take a lead themselves) and checks is an active rep. A
+ * lead captured with no owner must be assignable from its own page: Convert refuses one without.
+ * Only active reps are offered; a login not on the roster yet may pick "Me", which adds them
+ * (`PUT /customers/owners/me`) first. Unassigning is not offered: it needs ORG scope and leaves
+ * the lead unconvertible.
+ */
+function OwnerControl({ lead, owners, onChanged }: { lead: Lead; owners: Owner[]; onChanged: () => void }) {
+  const toast = useToast();
+  const myRep = useMyRep();
+  const current = ownerById(owners, lead.owner_id);
+  const assign = useMutation(
+    async (value: string) => {
+      const ownerId = value === ME ? (await myRep.ensure())?.id : value;
+      if (ownerId === undefined) return null;
+      return updateLead(lead.id, { owner_id: ownerId });
+    },
+    {
+      onSuccess: (saved) => {
+        if (saved === null) return;
+        toast.success("Owner updated.");
+        onChanged();
+      },
+    },
+  );
+
+  const options = owners
+    .filter((o) => o.is_active || o.id === lead.owner_id)
+    .map((o) => ({ value: o.id, label: o.is_active ? o.full_name : `${o.full_name} (inactive)` }));
+  if (myRep.rep === undefined) options.push({ value: ME, label: "Me" });
+
+  return (
+    <div className="flex flex-col gap-2 py-3">
+      <Select
+        label="Owner"
+        value={current ? current.id : ""}
+        disabled={assign.pending}
+        placeholder="Unassigned: choose who works this lead"
+        options={options}
+        onChange={(e) => {
+          const next = e.target.value;
+          if (next !== "" && next !== lead.owner_id) void assign.mutate(next);
+        }}
+        helper={lead.owner_id === null ? "A lead needs an owner before it can be converted." : undefined}
+        containerClassName="max-w-xs"
+      />
+      {assign.error ? (
+        <InlineAlert tone="danger" title="Couldn't change the owner">
+          {problemMessage(assign.error)}
+        </InlineAlert>
+      ) : null}
+    </div>
+  );
 }
 
 function LeadDetailSkeleton() {
@@ -135,6 +195,13 @@ export function LeadDetailPage() {
             const l = lead.data;
             const owner = ownerById(owners, l.owner_id);
             const converted = l.status === "converted";
+            const hasOwner = l.owner_id !== null;
+            const convertBlocker =
+              l.status !== "qualified"
+                ? "Qualify first: only a qualified lead can be converted."
+                : !hasOwner
+                  ? "Assign an owner first: the company, contact and deal it creates need one."
+                  : null;
 
             return (
               <>
@@ -157,15 +224,15 @@ export function LeadDetailPage() {
                             size="md"
                             className="w-full sm:w-auto"
                             leadingIcon={<ArrowRightIcon className="size-4" />}
-                            disabled={l.status !== "qualified"}
-                            aria-describedby={l.status !== "qualified" ? "convert-reason" : undefined}
+                            disabled={convertBlocker !== null}
+                            aria-describedby={convertBlocker !== null ? "convert-reason" : undefined}
                             onClick={() => setConfirmingConvert(true)}
                           >
                             Convert
                           </Button>
-                          {l.status !== "qualified" ? (
+                          {convertBlocker !== null ? (
                             <p id="convert-reason" className="text-xs text-muted">
-                              Qualify first: only a qualified lead can be converted.
+                              {convertBlocker}
                             </p>
                           ) : null}
                         </div>
@@ -174,10 +241,39 @@ export function LeadDetailPage() {
                   </div>
 
                   {converted ? (
-                    <div className="rounded-tile bg-present-soft px-4 py-3 text-sm text-present">
-                      Converted {formatDate(l.converted_at)} — a company
-                      {l.converted_contact_id ? " and contact" : ""} and a deal now exist for this
-                      lead.
+                    <div className="flex flex-col gap-2 rounded-tile bg-present-soft px-4 py-3 text-sm text-present">
+                      <p>
+                        Converted {formatDate(l.converted_at)} — a company
+                        {l.converted_contact_id ? " and contact" : ""} and a deal now exist for this
+                        lead.
+                      </p>
+                      <div className="flex flex-wrap gap-x-4">
+                        {l.converted_company_id ? (
+                          <Link
+                            to={`/companies/${l.converted_company_id}`}
+                            className="relative hit-44 inline-flex items-center gap-1 font-semibold underline-offset-2 hover:underline"
+                          >
+                            Open the company
+                          </Link>
+                        ) : null}
+                        {l.converted_company_id && l.converted_contact_id ? (
+                          // A contact has no page of its own; it is listed on its company's.
+                          <Link
+                            to={`/companies/${l.converted_company_id}`}
+                            className="relative hit-44 inline-flex items-center gap-1 font-semibold underline-offset-2 hover:underline"
+                          >
+                            See the contact
+                          </Link>
+                        ) : null}
+                        {l.converted_deal_id ? (
+                          <Link
+                            to={`/deals/${l.converted_deal_id}`}
+                            className="relative hit-44 inline-flex items-center gap-1 font-semibold underline-offset-2 hover:underline"
+                          >
+                            Open the deal
+                          </Link>
+                        ) : null}
+                      </div>
                     </div>
                   ) : (
                     <Can permission="crm.lead.lead.write" scope="OWN">
@@ -192,7 +288,9 @@ export function LeadDetailPage() {
                         options={statusOptions(l.status, l.next_statuses)}
                         helper={
                           l.status === "qualified"
-                            ? "Ready to convert."
+                            ? hasOwner
+                              ? "Ready to convert."
+                              : "Qualified. Assign an owner below, then convert."
                             : l.status === "new"
                               ? "Mark it Working once you start on it; then Qualify it to convert."
                               : l.status === "working"
@@ -215,16 +313,27 @@ export function LeadDetailPage() {
                   <Card className="flex flex-col gap-1 p-6 lg:col-span-2">
                     <SectionHeader title="Details" />
                     <div className="mt-1 divide-y divide-line">
-                      <Fact label="Owner">
-                        {owner ? (
-                          <span className="inline-flex items-center gap-2">
-                            <Avatar name={owner.full_name} size="sm" />
-                            {owner.full_name}
-                          </span>
+                      {(() => {
+                        const ownerFact = (
+                          <Fact label="Owner">
+                            {owner ? (
+                              <span className="inline-flex items-center gap-2">
+                                <Avatar name={owner.full_name} size="sm" />
+                                {owner.full_name}
+                              </span>
+                            ) : (
+                              "Unassigned"
+                            )}
+                          </Fact>
+                        );
+                        return converted ? (
+                          ownerFact
                         ) : (
-                          "Unassigned"
-                        )}
-                      </Fact>
+                          <Can permission="crm.lead.lead.write" scope="OWN" fallback={ownerFact}>
+                            <OwnerControl lead={l} owners={owners} onChanged={lead.reload} />
+                          </Can>
+                        );
+                      })()}
                       <Fact label="Source">
                         <span className="capitalize">{l.source}</span>
                       </Fact>

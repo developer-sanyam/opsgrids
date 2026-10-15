@@ -398,6 +398,81 @@ async def _assign_owner(
     return owner_id
 
 
+#: `_confirmed_creator_owner`'s own circuit breaker: until when the directory is presumed down
+#: for an organization after the fallback's own check failed. Separate from the rotation's
+#: `_assignment_unavailable_cache`, whose entry is keyed to the rotation's owner set.
+_creator_unavailable_until: dict[uuid.UUID, float] = {}
+
+
+def _creator_owner_candidate(
+    ctx: ScopeContext, fallback_owner_id: uuid.UUID | None
+) -> uuid.UUID | None:
+    """The rep a lead falls back to when the rotation hands it to nobody: the one the caller
+    named as their own, else their employee link, else -- at ORG scope only -- their membership
+    id (the roster row `PUT /customers/owners/me` makes for a login with no employee record).
+
+    The same rule as deal-service's `default_owner`: a narrower scope never falls back to the
+    membership id, because OWN reads compare the employee link and the lead would vanish from
+    the person who just captured it.
+
+    A named fallback is scope-checked like an explicit owner, so an OWN-scoped rep cannot hand a
+    lead to a colleague this way either -- but one the caller may not use is *ignored*, never a
+    403. It is a hint the SPA picks with `findMyRep`, which also matches a roster row by
+    membership id or email; an OWN rep whose row was matched that way (an admin added them by
+    email, a CRM-only tenant with no employee link) must still be able to capture a lead, as
+    they could before the fallback existed. It is never used, so no colleague is assigned."""
+    if fallback_owner_id is not None:
+        try:
+            ctx.assert_can_touch(owner_id=fallback_owner_id)
+        except ForbiddenProblem:
+            log.info(
+                "lead.assignment.fallback_out_of_scope", organization_id=str(ctx.organization_id)
+            )
+        else:
+            return fallback_owner_id
+    # `own_ref`, never the raw employee link (tests/infra/test_no_raw_subject_ref.py): the same id
+    # today, and the membership id once lead declares the membership subject (R2.7).
+    if ctx.own_ref is not None:
+        return ctx.own_ref
+    if ctx.scope is Scope.ORG:
+        return ctx.principal.membership_id
+    return None
+
+
+async def _confirmed_creator_owner(
+    organization_id: uuid.UUID, candidate: uuid.UUID | None
+) -> uuid.UUID | None:
+    """`candidate`, if customer's directory confirms it is an active rep; otherwise `None`.
+
+    Never raises for the directory: a lead capture must not fail because the fallback could not
+    be confirmed. An unconfirmed creator leaves the lead unassigned, which the lead page then
+    lets someone fix. Runs before the rotation row is locked (see `create_lead`)."""
+    if candidate is None:
+        return None
+    now = time.monotonic()
+    # Honour both circuit breakers: a directory the rotation (or this) just found unreachable is
+    # not asked again per capture during an outage.
+    rotation_down = _assignment_unavailable_cache.get(organization_id)
+    if (
+        rotation_down is not None and now < rotation_down[1]
+    ) or now < _creator_unavailable_until.get(organization_id, 0.0):
+        return None
+    try:
+        invalid = await clients.invalid_owner_ids(settings(), organization_id, [candidate])
+    except clients.OwnersValidateUnavailable:
+        log.warning(
+            "lead.assignment.creator_fallback_unconfirmed", organization_id=str(organization_id)
+        )
+        _creator_unavailable_until[organization_id] = (
+            now + _ASSIGNMENT_UNAVAILABLE_CACHE_TTL_SECONDS
+        )
+        return None
+    if candidate in invalid:
+        log.info("lead.assignment.creator_not_a_rep", organization_id=str(organization_id))
+        return None
+    return candidate
+
+
 # ------------------------------------------------------------------ leads
 
 
@@ -412,6 +487,7 @@ async def create_lead(
     source: str,
     owner_id: uuid.UUID | None,
     notes: str,
+    fallback_owner_id: uuid.UUID | None = None,
     request: Request | None = None,
 ) -> Lead:
     """Capture a lead. `email` / `phone` are sealed and masked before anything is stored —
@@ -425,6 +501,12 @@ async def create_lead(
     submission has no rep to name, so this is the path most captures take. Named explicitly,
     it must be a rep the caller may act as (`ctx.assert_can_touch` — an OWN-scoped caller may
     only create leads owned by themselves) and a known, active rep (`_ensure_owners_active`).
+
+    When the rotation hands the lead to nobody -- no rule configured (every new organization),
+    or every rep in it has left -- the creator owns it (`_creator_owner_candidate`), provided
+    customer's directory confirms they are an active rep. `manual` mode still assigns nobody:
+    that is the setting that says "do not assign automatically". A lead with no owner cannot be
+    converted, so leaving a single-user organization's leads unassigned left them stuck.
     """
     if owner_id is not None:
         ctx.assert_can_touch(owner_id=owner_id)
@@ -453,6 +535,15 @@ async def create_lead(
         # locks is the whole organization's rotation; holding that lock across a hanging
         # customer-service would serialize every other concurrent lead capture behind it.
         snapshot_owner_ids, snapshot_active = await _resolve_round_robin_snapshot(session, ctx)
+        # The creator fallback is confirmed here too, for the same reason: it is a network
+        # call, and it must not run with the rotation row locked. Only asked when the snapshot
+        # already says the rotation will pick nobody.
+        candidate = _creator_owner_candidate(ctx, fallback_owner_id)
+        creator_owner = (
+            await _confirmed_creator_owner(ctx.organization_id, candidate)
+            if not snapshot_active
+            else None
+        )
         rule = await _get_or_create_rule(session, ctx)
         resolved_owner_id = await _assign_owner(
             session,
@@ -461,6 +552,8 @@ async def create_lead(
             snapshot_owner_ids=snapshot_owner_ids,
             snapshot_active=snapshot_active,
         )
+        if resolved_owner_id is None and rule.mode != "manual":
+            resolved_owner_id = creator_owner
 
     lead = Lead(
         organization_id=ctx.organization_id,

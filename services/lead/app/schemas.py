@@ -58,6 +58,11 @@ class LeadIn(BaseModel):
     phone: str | None = Field(default=None, max_length=32)
     source: LeadSource = "manual"
     owner_id: uuid.UUID | None = None
+    #: Who owns the lead when `owner_id` is omitted and the round-robin hands it to nobody (no
+    #: rule configured, or every rep in it has left): the SPA names the signed-in login's own
+    #: rep row here. Omitted, the creator is still tried (their employee link, or, at ORG scope,
+    #: their membership id). Never used when `owner_id` is given or a rotation picks someone.
+    fallback_owner_id: uuid.UUID | None = None
     notes: str = Field(default="", max_length=4000)
 
     @field_validator("phone")

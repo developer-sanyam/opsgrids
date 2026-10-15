@@ -297,6 +297,18 @@
             ],
             "title": "Email"
           },
+          "fallback_owner_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fallback Owner Id"
+          },
           "full_name": {
             "maxLength": 160,
             "minLength": 1,

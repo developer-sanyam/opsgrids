@@ -580,6 +580,11 @@ async def seed_finance(session: AsyncSession, ctx: ScopeContext) -> dict[str, in
                 gstin=SELLER_GSTIN,
                 legal_name=SELLER_LEGAL_NAME,
                 trade_name=SELLER_TRADE_NAME,
+                # The principal place of business a tax invoice prints (Rule 46(a)); without it
+                # the demo org's supplier settings would report themselves incomplete.
+                address_line1="Plot 14, MIDC Bhosari",
+                city="Pune",
+                pincode="411026",
             ),
         )
         created["registrations"] += 1

@@ -6,6 +6,7 @@ import * as authApi from "./api";
 import { AuthContext } from "./context";
 import type { AuthStatus } from "./context";
 import { isLocked } from "./problems";
+import { refreshOperatorToken } from "./refresh";
 import { getAccessToken, setAccessToken, setUnauthorizedHandler } from "./session";
 import type { EnrolmentSetup, OperatorMe, OperatorRole, OperatorStep } from "./types";
 
@@ -51,7 +52,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setStatus("unauthenticated");
   }, []);
 
-  // Boot: verify any token carried over from a reload, else land signed-out.
+  // Boot: verify any token carried over from a reload. With none (a new browser run or a new tab,
+  // where `sessionStorage` starts empty) the refresh cookie may still hold a live session, so one
+  // silent refresh gets a chance before landing signed out. A stored token that has since expired
+  // needs nothing extra here: `me()`'s 401 refreshes and retries inside `apiRequest`.
   useEffect(() => {
     let active = true;
     // Fixtures mode renders the console with a stand-in operator and no gateway call.
@@ -66,13 +70,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         active = false;
       };
     }
-    const token = getAccessToken();
-    if (!token) {
-      setStatus("unauthenticated");
-      return;
-    }
-    authApi
-      .me()
+    const restore = async (): Promise<boolean> =>
+      getAccessToken() !== null || (await refreshOperatorToken()) === "ok";
+    void restore()
+      .then((restored) => {
+        if (!restored) throw new Error("No operator session to restore.");
+        return authApi.me();
+      })
       .then((me) => {
         if (!active) return;
         setOperator(me);

@@ -218,6 +218,8 @@ export interface LeadIn {
   phone?: string | null;
   source?: LeadSource;
   owner_id?: string | null;
+  /** Who owns it when `owner_id` is omitted and the round-robin picks nobody. */
+  fallback_owner_id?: string;
   notes?: string;
 }
 

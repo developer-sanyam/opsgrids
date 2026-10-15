@@ -2,10 +2,13 @@
  * The one place a request leaves the console. Everything goes to the same-origin `/api/v1` prefix,
  * which Vite proxies to **admin-gateway** in dev (see `vite.config.ts`) — the operator audience,
  * never a product gateway (ADR-0003 §2). The operator token is attached from the in-memory
- * session, and a `401` trips the global "signed out" handler so a stale token bounces the operator
+ * session. A `401` first tries one silent refresh (`@/auth/refresh` — the access token expires every
+ * 15 minutes; the refresh cookie does not) and retries the request once with the new token; only
+ * if that refresh fails does it trip the global "signed out" handler, which bounces the operator
  * back to the login screen. Gateway errors arrive as RFC 7807 `problem+json`.
  */
 
+import { refreshOperatorToken } from "@/auth/refresh";
 import { getAccessToken, notifyUnauthorized } from "@/auth/session";
 
 /** Same-origin base. The Vite dev proxy forwards this to `http://localhost:8110` (admin-gateway). */
@@ -85,20 +88,30 @@ function messageFor(problem: ProblemJson | null, status: number): string {
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { method = "GET", body, auth = true, signalUnauthorized = true } = options;
 
-  const headers: Record<string, string> = { ...options.headers, Accept: "application/json" };
-  if (body !== undefined) headers["Content-Type"] = "application/json";
-  if (auth) {
-    const token = getAccessToken();
-    if (token) headers.Authorization = `Bearer ${token}`;
+  const send = (): Promise<Response> => {
+    const headers: Record<string, string> = { ...options.headers, Accept: "application/json" };
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    if (auth) {
+      const token = getAccessToken();
+      if (token) headers.Authorization = `Bearer ${token}`;
+    }
+    return fetch(`${API_BASE}${path}`, {
+      method,
+      headers,
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+  };
+
+  let res = await send();
+
+  // A 401 on a bearer call means the access token is stale, not that the session is over: the
+  // gateway refused it before anything was forwarded, so resending the same request (same body,
+  // same Idempotency-Key) once a refresh succeeds is safe. A call that carries no bearer token
+  // (`auth: false`) has nothing a refresh would fix, so it never asks for one.
+  if (res.status === 401 && signalUnauthorized) {
+    if (auth && (await refreshOperatorToken()) === "ok") res = await send();
+    if (res.status === 401) notifyUnauthorized();
   }
-
-  const res = await fetch(`${API_BASE}${path}`, {
-    method,
-    headers,
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-  });
-
-  if (res.status === 401 && signalUnauthorized) notifyUnauthorized();
 
   if (!res.ok) {
     const problem = await readProblem(res);

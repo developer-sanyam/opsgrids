@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GST_REGISTRATION, INVOICES } from "@/api/fixtures";
 
 const registration = vi.hoisted(() => ({ mode: "present" as "present" | "none" }));
+const print = vi.hoisted(() => ({ bank: true }));
 
 vi.mock("@/api/client", async () => {
   const fixtures = await import("@/api/fixtures");
@@ -28,6 +29,30 @@ vi.mock("@/api/client", async () => {
       return fixtures.GST_REGISTRATION;
     },
     listFilings: async () => [],
+    getPrintDetails: async () => {
+      const r = fixtures.GST_REGISTRATION;
+      return {
+        gstin: r.gstin,
+        legal_name: r.legal_name,
+        trade_name: r.trade_name,
+        state_code: r.state_code,
+        address_line1: r.address_line1 ?? "",
+        address_line2: "",
+        city: r.city ?? "",
+        pincode: r.pincode ?? "",
+        pan: "AABCA9012D",
+        bank: print.bank
+          ? {
+              account_name: r.legal_name,
+              account_number: "50100123456789",
+              ifsc: "HDFC0001234",
+              bank_name: "HDFC Bank",
+              branch: "Bhosari",
+              upi_id: "opsgrids@hdfcbank",
+            }
+          : null,
+      };
+    },
   };
 });
 
@@ -49,6 +74,26 @@ function renderPage() {
 describe("InvoicePrintPage", () => {
   beforeEach(() => {
     registration.mode = "present";
+    print.bank = true;
+  });
+
+  it("prints the supplier address, PAN and where to pay", async () => {
+    renderPage();
+    await screen.findByRole("heading", { level: 1, name: "Tax Invoice" });
+    expect(screen.getByText("Plot 14, MIDC Bhosari")).toBeTruthy();
+    expect(screen.getByText("Pune 411026")).toBeTruthy();
+    expect(screen.getByText("AABCA9012D")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Bank details" })).toBeTruthy();
+    expect(screen.getByText("50100123456789")).toBeTruthy();
+    expect(screen.getByText("HDFC0001234")).toBeTruthy();
+  });
+
+  it("prints no bank block when no account is on file", async () => {
+    print.bank = false;
+    renderPage();
+    await screen.findByRole("heading", { level: 1, name: "Tax Invoice" });
+    expect(screen.queryByRole("heading", { name: "Bank details" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Print or save as PDF" }).hasAttribute("disabled")).toBe(false);
   });
 
   it("offers one Print or save as PDF button once the document is ready", async () => {
@@ -58,7 +103,7 @@ describe("InvoicePrintPage", () => {
     expect(print.hasAttribute("disabled")).toBe(false);
     expect(screen.queryByRole("button", { name: "Print" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Download PDF" })).toBeNull();
-    expect(screen.getByText(GST_REGISTRATION.legal_name)).toBeTruthy();
+    expect(screen.getAllByText(GST_REGISTRATION.legal_name).length).toBeGreaterThan(0);
   });
 
   it("offers Share only where the browser can share, and shares the link", async () => {

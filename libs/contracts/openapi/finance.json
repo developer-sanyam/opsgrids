@@ -224,6 +224,45 @@
         "title": "B2csOut",
         "type": "object"
       },
+      "BankDetailsOut": {
+        "description": "The account a customer pays into. On the settings read `account_number` is the mask\n(`\u2022\u2022\u2022\u2022\u2022\u20223210`); only the printable invoice returns it whole.",
+        "properties": {
+          "account_name": {
+            "title": "Account Name",
+            "type": "string"
+          },
+          "account_number": {
+            "title": "Account Number",
+            "type": "string"
+          },
+          "bank_name": {
+            "title": "Bank Name",
+            "type": "string"
+          },
+          "branch": {
+            "title": "Branch",
+            "type": "string"
+          },
+          "ifsc": {
+            "title": "Ifsc",
+            "type": "string"
+          },
+          "upi_id": {
+            "title": "Upi Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_name",
+          "account_number",
+          "ifsc",
+          "bank_name",
+          "branch",
+          "upi_id"
+        ],
+        "title": "BankDetailsOut",
+        "type": "object"
+      },
       "CashflowPoint": {
         "properties": {
           "inflow_minor": {
@@ -338,6 +377,18 @@
       "CustomerCreate": {
         "additionalProperties": false,
         "properties": {
+          "address_line1": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Address Line1",
+            "type": "string"
+          },
+          "address_line2": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Address Line2",
+            "type": "string"
+          },
           "city": {
             "default": "",
             "maxLength": 120,
@@ -386,11 +437,42 @@
             "title": "Name",
             "type": "string"
           },
+          "phone": {
+            "anyOf": [
+              {
+                "maxLength": 24,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          },
+          "pincode": {
+            "default": "",
+            "maxLength": 6,
+            "title": "Pincode",
+            "type": "string"
+          },
           "state": {
             "default": "",
             "maxLength": 120,
             "title": "State",
             "type": "string"
+          },
+          "state_code": {
+            "anyOf": [
+              {
+                "maxLength": 2,
+                "minLength": 2,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State Code"
           },
           "tcs_applicable": {
             "default": false,
@@ -407,6 +489,16 @@
       "CustomerOut": {
         "description": "A billed party. `id` is the finance customer id invoices and payments reference.",
         "properties": {
+          "address_line1": {
+            "default": "",
+            "title": "Address Line1",
+            "type": "string"
+          },
+          "address_line2": {
+            "default": "",
+            "title": "Address Line2",
+            "type": "string"
+          },
           "city": {
             "title": "City",
             "type": "string"
@@ -449,9 +541,30 @@
             "title": "Name",
             "type": "string"
           },
+          "phone": {
+            "default": "",
+            "title": "Phone",
+            "type": "string"
+          },
+          "pincode": {
+            "default": "",
+            "title": "Pincode",
+            "type": "string"
+          },
           "state": {
             "title": "State",
             "type": "string"
+          },
+          "state_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State Code"
           },
           "tcs_applicable": {
             "default": false,
@@ -521,6 +634,30 @@
         "additionalProperties": false,
         "description": "PATCH: every field optional, only what is sent is applied\n(`model_dump(exclude_unset=True)`); everything else is validated exactly as on create.",
         "properties": {
+          "address_line1": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address Line1"
+          },
+          "address_line2": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address Line2"
+          },
           "city": {
             "anyOf": [
               {
@@ -606,6 +743,30 @@
             ],
             "title": "Name"
           },
+          "phone": {
+            "anyOf": [
+              {
+                "maxLength": 24,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          },
+          "pincode": {
+            "anyOf": [
+              {
+                "maxLength": 6,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pincode"
+          },
           "state": {
             "anyOf": [
               {
@@ -617,6 +778,19 @@
               }
             ],
             "title": "State"
+          },
+          "state_code": {
+            "anyOf": [
+              {
+                "maxLength": 2,
+                "minLength": 2,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State Code"
           },
           "tcs_applicable": {
             "anyOf": [
@@ -1259,6 +1433,21 @@
       "GstRegistrationOut": {
         "description": "The organization's own GST registration \u2014 who this seller is, to the portal.",
         "properties": {
+          "address_line1": {
+            "default": "",
+            "title": "Address Line1",
+            "type": "string"
+          },
+          "address_line2": {
+            "default": "",
+            "title": "Address Line2",
+            "type": "string"
+          },
+          "city": {
+            "default": "",
+            "title": "City",
+            "type": "string"
+          },
           "gstin": {
             "title": "Gstin",
             "type": "string"
@@ -1274,6 +1463,11 @@
           },
           "legal_name": {
             "title": "Legal Name",
+            "type": "string"
+          },
+          "pincode": {
+            "default": "",
+            "title": "Pincode",
             "type": "string"
           },
           "registration_type": {
@@ -1307,8 +1501,44 @@
         "type": "object"
       },
       "GstRegistrationUpsert": {
-        "description": "Register or update this organization's GSTIN. The number is parsed and checksum-verified\nbefore a row is written \u2014 an unverified GSTIN is not stored anywhere in this service.",
+        "description": "Register or update this organization's GSTIN. The number is parsed and checksum-verified\nbefore a row is written \u2014 an unverified GSTIN is not stored anywhere in this service.\n\nThe address fields are optional and *absent means unchanged* on an existing registration, so a\ncaller written before they existed cannot blank an address somebody else entered.",
         "properties": {
+          "address_line1": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address Line1"
+          },
+          "address_line2": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address Line2"
+          },
+          "city": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "City"
+          },
           "gstin": {
             "title": "Gstin",
             "type": "string"
@@ -1321,6 +1551,18 @@
           "legal_name": {
             "title": "Legal Name",
             "type": "string"
+          },
+          "pincode": {
+            "anyOf": [
+              {
+                "maxLength": 6,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pincode"
           },
           "registration_type": {
             "default": "regular",
@@ -2269,6 +2511,23 @@
             "title": "Reverse Charge",
             "type": "boolean"
           },
+          "round_off": {
+            "default": false,
+            "title": "Round Off",
+            "type": "boolean"
+          },
+          "ship_to_address": {
+            "anyOf": [
+              {
+                "maxLength": 600,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ship To Address"
+          },
           "supply_type": {
             "anyOf": [
               {
@@ -2304,6 +2563,12 @@
             "title": "Description",
             "type": "string"
           },
+          "discount_minor": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Discount Minor",
+            "type": "integer"
+          },
           "hsn_sac": {
             "anyOf": [
               {
@@ -2314,6 +2579,30 @@
               }
             ],
             "title": "Hsn Sac"
+          },
+          "item_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Id"
+          },
+          "item_sku": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Sku"
           },
           "quantity": {
             "title": "Quantity",
@@ -2330,6 +2619,18 @@
             ],
             "title": "Tax Rate Pct"
           },
+          "unit": {
+            "anyOf": [
+              {
+                "maxLength": 10,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
           "unit_price_minor": {
             "title": "Unit Price Minor",
             "type": "integer"
@@ -2344,7 +2645,7 @@
         "type": "object"
       },
       "InvoiceLineOut": {
-        "description": "One line on an invoice. `amount_minor` foots to `quantity x unit_price_minor`, and is the\n**taxable value** the line's GST is computed on.\n\nExactly one tax shape is populated: `cgst_minor` + `sgst_minor` on an intra-state supply,\n`igst_minor` on an inter-state one. The three always sum to the tax actually charged.",
+        "description": "One line on an invoice. `amount_minor` foots to `quantity x unit_price_minor` less\n`discount_minor`, and is the **taxable value** the line's GST is computed on.\n\nExactly one tax shape is populated: `cgst_minor` + `sgst_minor` on an intra-state supply,\n`igst_minor` on an inter-state one. The three always sum to the tax actually charged.",
         "properties": {
           "amount_minor": {
             "title": "Amount Minor",
@@ -2358,6 +2659,11 @@
           "description": {
             "title": "Description",
             "type": "string"
+          },
+          "discount_minor": {
+            "default": 0,
+            "title": "Discount Minor",
+            "type": "integer"
           },
           "hsn_sac": {
             "anyOf": [
@@ -2380,6 +2686,29 @@
             "title": "Igst Minor",
             "type": "integer"
           },
+          "item_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Id"
+          },
+          "item_sku": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Sku"
+          },
           "quantity": {
             "title": "Quantity",
             "type": "number"
@@ -2393,6 +2722,17 @@
             "default": 0,
             "title": "Tax Rate Pct",
             "type": "number"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
           },
           "unit_price_minor": {
             "title": "Unit Price Minor",
@@ -2410,11 +2750,22 @@
         "type": "object"
       },
       "InvoiceOut": {
-        "description": "An invoice or credit note. Totals foot exactly:\n`subtotal_minor = \u03a3 line.amount_minor`, `total_minor = subtotal_minor + tax_minor`,\nand `tax_minor = cgst_minor + sgst_minor + igst_minor = \u03a3 line tax`.\nA credit note carries negative amounts and a `corrects_invoice_id`.",
+        "description": "An invoice or credit note. Totals foot exactly:\n`subtotal_minor = \u03a3 line.amount_minor`,\n`total_minor = subtotal_minor + tax_minor + round_off_minor`,\nand `tax_minor = cgst_minor + sgst_minor + igst_minor = \u03a3 line tax`.\nA credit note carries negative amounts and a `corrects_invoice_id`.",
         "properties": {
           "amount_paid_minor": {
             "title": "Amount Paid Minor",
             "type": "integer"
+          },
+          "buyer_address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buyer Address"
           },
           "buyer_gstin": {
             "anyOf": [
@@ -2426,6 +2777,28 @@
               }
             ],
             "title": "Buyer Gstin"
+          },
+          "buyer_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buyer Name"
+          },
+          "buyer_state_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buyer State Code"
           },
           "cgst_minor": {
             "default": 0,
@@ -2518,6 +2891,22 @@
             "title": "Reverse Charge",
             "type": "boolean"
           },
+          "round_off_minor": {
+            "default": 0,
+            "title": "Round Off Minor",
+            "type": "integer"
+          },
+          "seller_address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seller Address"
+          },
           "seller_gstin": {
             "anyOf": [
               {
@@ -2529,10 +2918,32 @@
             ],
             "title": "Seller Gstin"
           },
+          "seller_legal_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seller Legal Name"
+          },
           "sgst_minor": {
             "default": 0,
             "title": "Sgst Minor",
             "type": "integer"
+          },
+          "ship_to_address": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ship To Address"
           },
           "status": {
             "title": "Status",
@@ -3959,6 +4370,260 @@
           "schema_name"
         ],
         "title": "ServiceInfo",
+        "type": "object"
+      },
+      "SupplierPrintOut": {
+        "description": "The supplier block of the printable invoice: the live settings, with the bank account\nnumber whole. `gstin` lets the reader check it is the registration the invoice was issued\nunder before using any of it.",
+        "properties": {
+          "address_line1": {
+            "title": "Address Line1",
+            "type": "string"
+          },
+          "address_line2": {
+            "title": "Address Line2",
+            "type": "string"
+          },
+          "bank": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BankDetailsOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "city": {
+            "title": "City",
+            "type": "string"
+          },
+          "gstin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gstin"
+          },
+          "legal_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Legal Name"
+          },
+          "pan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pan"
+          },
+          "pincode": {
+            "title": "Pincode",
+            "type": "string"
+          },
+          "state_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State Code"
+          },
+          "trade_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Name"
+          }
+        },
+        "required": [
+          "gstin",
+          "legal_name",
+          "trade_name",
+          "state_code",
+          "address_line1",
+          "address_line2",
+          "city",
+          "pincode",
+          "pan",
+          "bank"
+        ],
+        "title": "SupplierPrintOut",
+        "type": "object"
+      },
+      "SupplierProfileOut": {
+        "description": "PAN and bank details, masked: what Finance settings shows.",
+        "properties": {
+          "bank": {
+            "$ref": "#/components/schemas/BankDetailsOut"
+          },
+          "pan": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pan"
+          }
+        },
+        "required": [
+          "pan",
+          "bank"
+        ],
+        "title": "SupplierProfileOut",
+        "type": "object"
+      },
+      "SupplierProfileUpsert": {
+        "additionalProperties": false,
+        "description": "Set PAN and bank details. Every field is optional and *absent means unchanged*; an empty\nstring clears it. The account number is write-only: it is sealed on write and never returned\nby this route.",
+        "properties": {
+          "bank_account_name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Account Name"
+          },
+          "bank_account_number": {
+            "anyOf": [
+              {
+                "maxLength": 24,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Account Number"
+          },
+          "bank_branch": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Branch"
+          },
+          "bank_ifsc": {
+            "anyOf": [
+              {
+                "maxLength": 11,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Ifsc"
+          },
+          "bank_name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bank Name"
+          },
+          "pan": {
+            "anyOf": [
+              {
+                "maxLength": 12,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pan"
+          },
+          "upi_id": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upi Id"
+          }
+        },
+        "title": "SupplierProfileUpsert",
+        "type": "object"
+      },
+      "SupplierSettingsOut": {
+        "description": "Everything a tax invoice states about this organization, and whether it is enough.\n\n`missing` lists `domain.SUPPLIER_REQUIRED_FIELDS` keys still to be given; `ready` is true when\nit is empty. The finance screen refuses to start an invoice until then, so no document is\nissued without the supplier facts Rule 46 requires.",
+        "properties": {
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "profile": {
+            "$ref": "#/components/schemas/SupplierProfileOut"
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "registration": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GstRegistrationOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "registration",
+          "profile",
+          "ready",
+          "missing"
+        ],
+        "title": "SupplierSettingsOut",
         "type": "object"
       },
       "TaxHeadAmountsOut": {
@@ -6171,6 +6836,50 @@
         ]
       }
     },
+    "/api/v1/finance/invoices/{invoice_id}/print-details": {
+      "get": {
+        "description": "What the printable tax invoice states about the supplier beyond what the invoice froze:\nPAN and where to pay. Behind the invoice-read permission, because anybody who may read an\ninvoice may print it \u2014 and the bank account is printed for the customer to pay into.\n\nThe account number is sealed at rest; this route opens it, and writes a\n`supplier_profile.bank_disclosed` audit row naming the invoice each time it does.",
+        "operationId": "read_invoice_print_details_api_v1_finance_invoices__invoice_id__print_details_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invoice_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Invoice Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupplierPrintOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The supplier block of one invoice's printable copy, bank account in full",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
     "/api/v1/finance/ledger": {
       "get": {
         "operationId": "get_ledger_api_v1_finance_ledger_get",
@@ -6418,6 +7127,70 @@
           }
         },
         "summary": "Record what a supplier billed this organization",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/settings/supplier": {
+      "get": {
+        "description": "The registration (legal name, GSTIN, address), PAN and bank details with the account number\nmasked, plus `ready`/`missing`: whether a Rule 46 tax invoice can be issued yet. Never 404 \u2014\nan organization with nothing configured gets `ready: false` and every field listed.",
+        "operationId": "read_supplier_settings_api_v1_finance_settings_supplier_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupplierSettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "What tax invoices state about this organization, and what is still missing",
+        "tags": [
+          "finance"
+        ]
+      }
+    },
+    "/api/v1/finance/settings/supplier-profile": {
+      "put": {
+        "description": "Behind the same dangerous permission as the GST registration: both decide what every future\ninvoice tells a customer about who to pay. Absent fields are unchanged, empty ones cleared.",
+        "operationId": "set_supplier_profile_api_v1_finance_settings_supplier_profile_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupplierProfileUpsert"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupplierSettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set this organization's PAN and bank details",
         "tags": [
           "finance"
         ]

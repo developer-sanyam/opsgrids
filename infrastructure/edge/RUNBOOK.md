@@ -545,7 +545,17 @@ What happens, in order, and what each step protects:
 3. **preflight** — `.env` complete, no placeholders, the signing key present and readable, disk
    and inodes, docker responding.
 4. **build** — images build with the running containers untouched. **A failed build stops here
-   and the site keeps serving.**
+   and the site keeps serving.** Images build **one service at a time** (`build_each` in
+   `lib/rebuild-decision.sh`), for a full rebuild (anything under `libs/` except contracts,
+   `pyproject.toml`, `uv.lock`, `.dockerignore`, or `FORCE_PULL=1`) and for the changed-services
+   path alike. Every service's builder stage is identical, so the first image resolves the venv
+   from PyPI and the rest are cache hits. Do not go back to one `docker compose build` of
+   everything: compose builds that through buildx bake, all images at once (it ignores
+   `COMPOSE_PARALLEL_LIMIT`, and on compose v5 `COMPOSE_BAKE=false` too), and ~30 concurrent
+   `uv sync` downloads timed out on this box three times running on 2026-10-15. The Dockerfiles
+   also give uv `UV_HTTP_TIMEOUT=120`, `UV_HTTP_RETRIES=5` and `UV_CONCURRENT_DOWNLOADS=4`.
+   A build that still fails on `operation timed out` is a download, not a defect: re-run the
+   deploy, and the images that already built are reused from cache.
 5. **caddy validate** — the Caddyfile is loaded by the pinned Caddy binary. A Caddyfile that
    fails to load is a total outage and there is no staging environment to catch it.
 6. **migrate** — first **reconcile-roles**: create any `opsgrids_<service>` role this box does
