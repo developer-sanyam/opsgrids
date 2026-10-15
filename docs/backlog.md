@@ -12,10 +12,10 @@ rather than a horizontal layer. Nothing is "done" until its tests pass.
 
 ## Gaps found by the 2026-10-15 customer test (not built)
 
-- **Organization audit log.** There is no org-scoped audit read API: the only audit read is console's
-  operator-only `GET /admin/audit`. The "Audit Logs" sidebar link (`/admin/audit` on the app host) had no
-  page behind it and was removed from every product shell. Building it needs an account-service read
-  endpoint behind `core.identity.audit.read` (sensitive reveals first), then the page and the link back.
+- **Organization audit log.** Built on `feat/org-audit-log` (ADR-0044): `GET /api/v1/audit/<service>` in nine
+  services, merged by the dashboard's `/admin/audit`, behind `core.identity.audit.read` at ORG. Remaining sources
+  (auth sign-ins, approval, document, attendance, leave, PulseBoard, Projects, support, marketing, itsm, commerce)
+  are listed in the ADR's consequences.
 - **General ledger.** `GET /finance/ledger` has no ledger table behind it, so it now returns no accounts
   (`sample: true`, empty) and Finance shows "Ledger reports are not available yet" with no export.
   Profit and loss and the trial balance need a posting ledger first.

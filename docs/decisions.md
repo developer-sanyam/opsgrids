@@ -6,11 +6,11 @@ themselves are the authority — this page exists so you can find the right one 
 **Every question an ADR left open is decided or recorded as waiting on demand** in
 [adr/open-questions-register.md](adr/open-questions-register.md). That page links each question
 to the ADR section that decides it and to the backlog item that builds it. Numbers are allocated in
-order and never reused. The next free number is **0044**: 0039, 0041, 0042 and 0043 are reserved
+order and never reused. The next free number is **0045**: 0039, 0041, 0042 and 0043 are reserved
 for the CRM programme's follow-up ADRs (row I2 of
 [the interface registry](superpowers/specs/2026-10-07-crm-overhaul-interface-registry.md)), and
 0027 is the inventory Phase 9 ADR, which is not in the table below. This table was last brought up
-to date at 0019, apart from 0028–0033, 0035–0038 and 0040 below; [`adr/`](adr/) is the complete
+to date at 0019, apart from 0028–0033, 0035–0038, 0040 and 0044 below; [`adr/`](adr/) is the complete
 list.
 
 | ADR | Title | Header status | What exists today |
@@ -46,6 +46,7 @@ list.
 | [0037](adr/0037-stop-events-and-the-hand-activation-gate.md) | Stop events and the hand-activation gate | Proposed 2026-10-06 (for owner sign-off) | Built on `fix/subscription-stop-events-and-activation-gate`, not merged or deployed. No migration, no event change: a stop that finds a lapsed pending change applies it without announcing it, so product and console can no longer drop the stop; `POST /products/activations` (and a live subscription's `DELETE`) answers 409 `subscription_managed` for a product a subscription has fed, in any status. Read-only audit query for orgs that already hand-activated: RUNBOOK |
 | [0038](adr/0038-crm-programme-decisions.md) | CRM programme decisions: the owner's answers to the overhaul's forty-one decisions, and the costing of folding `lead` into `customer` | Accepted 2026-10-11 (proposed 2026-10-07) | Documents only (R1.1 of the CRM overhaul): no code, migration, event or setting changes. The owner accepted every recommended default (D-1 to D-41) on 2026-10-11. Amends ADR-0017, ADR-0008 and ADR-0020 by dated notes; `docs/crm.md` is the CRM's single reference |
 | [0040](adr/0040-faster-ci.md) | Faster CI: service tests sharded by item, a tuned throwaway database, static checks in parallel | Accepted 2026-10-06 (owner request) | Merged (#118). `tools/ci_shards.py` cuts a heavy service (`operations`: 19 min alone) into parts by recorded per-file duration and deals the items to six shards, never two parts of one service to one shard (so never one database); the CI Postgres runs without fsync; the static job is three jobs and every row reports; migrations are one job; the frontend is a static job plus four legs; docs-only changes skip the database-backed jobs (a rename is classified by both its paths); a superseded run is still cancelled on main; the deploy plan does nothing when the box is already past the commit. First sharded run 13.0 min against 32.5 (measured); the second round is unmeasured because Actions refused to start jobs |
+| [0044](adr/0044-organization-audit-log.md) | The organization audit log is read per service and merged in the dashboard | Proposed 2026-10-15 | Branch `feat/org-audit-log`. `GET /api/v1/audit/<service>` in nine services (field names, never values), `core.identity.audit.read` at ORG (now also `ORG_ADMIN`), dashboard `/admin/audit` |
 
 Several header status lines (0002, 0004, 0006, 0007, 0009, 0010, 0012) were written before the
 work they describe shipped. The "What exists today" column is the current fact. Correcting the

@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from app import consumers
+from app.api.audit import router as audit_router
 from app.api.c1_customer360 import router as c1_customer360_router
 from app.api.internal import router as internal_router
 from app.api.routes import router
@@ -64,7 +65,7 @@ app = create_app(
     settings(),
     title="Customer service",
     description="Customer service — part of the OpsGrids platform.",
-    routers=[router, c1_customer360_router],
+    routers=[audit_router, router, c1_customer360_router],
     on_startup=_start_background_worker,
     on_shutdown=_stop_background_worker,
     # Only the reveal budget (`services.enforce_reveal_budget`) uses Redis. Declared here so the
