@@ -101,8 +101,15 @@ describe("nextPage", () => {
 describe("activeSources", () => {
   it("always includes the platform and only the products the organisation has activated", () => {
     const services = activeSources(["crm"]).map((s) => s.service);
-    expect(services).toEqual(["account", "customer", "deal", "lead"]);
-    expect(activeSources(null).map((s) => s.service)).toEqual(["account"]);
+    const platform = ["account", "auth", "approval", "document", "subscription", "billing", "payment"];
+    expect(services).toEqual(["account", "customer", "deal", "lead", ...platform.slice(1)]);
+    expect(activeSources(null).map((s) => s.service)).toEqual(platform);
+    expect(activeSources(["pulseboard"]).map((s) => s.service)).toEqual([
+      ...platform,
+      "project",
+      "timesheet",
+      "standup",
+    ]);
   });
 });
 
@@ -110,5 +117,6 @@ describe("describeAction", () => {
   it("turns an action code into words", () => {
     expect(describeAction("member.invited")).toBe("Member invited");
     expect(describeAction("deal.stage_changed")).toBe("Deal stage changed");
+    expect(describeAction("auth.password_verified")).toBe("Signed in with a password");
   });
 });

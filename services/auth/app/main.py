@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from app.api.audit import router as audit_router
 from app.api.routes import router, wellknown
 from app.config import settings
 from app.directory import HttpDirectory
@@ -55,7 +56,7 @@ app = create_app(
         "Credentials, sessions and tokens. The only service in the platform that holds a "
         "private signing key — everything else verifies through JWKS."
     ),
-    routers=[router],
+    routers=[audit_router, router],
     on_startup=_startup,
     on_shutdown=_shutdown,
     # Declared since single sign-on landed. The pending-authorization store is Redis, it

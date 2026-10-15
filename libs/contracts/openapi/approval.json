@@ -57,6 +57,140 @@
         "title": "ApprovalChainOut",
         "type": "object"
       },
+      "AuditEntryOut": {
+        "description": "One audit row, as the organization may read it. Values never leave the service.",
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "actor_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Id"
+          },
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "by_operator": {
+            "title": "By Operator",
+            "type": "boolean"
+          },
+          "entity": {
+            "title": "Entity",
+            "type": "string"
+          },
+          "entity_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Id"
+          },
+          "fields": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "product": {
+            "title": "Product",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "sensitive": {
+            "title": "Sensitive",
+            "type": "boolean"
+          },
+          "service": {
+            "title": "Service",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "service",
+          "product",
+          "actor_id",
+          "by_operator",
+          "action",
+          "entity",
+          "entity_id",
+          "fields",
+          "sensitive",
+          "reason"
+        ],
+        "title": "AuditEntryOut",
+        "type": "object"
+      },
+      "AuditPageOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AuditEntryOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "product": {
+            "title": "Product",
+            "type": "string"
+          },
+          "service": {
+            "title": "Service",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "product",
+          "items"
+        ],
+        "title": "AuditPageOut",
+        "type": "object"
+      },
       "ChainRungOut": {
         "description": "One entry in the rendered chain: a real rung, or the trailing HR-fallback marker.",
         "properties": {
@@ -1987,6 +2121,155 @@
         "summary": "Approve or reject a pending request",
         "tags": [
           "approval"
+        ]
+      }
+    },
+    "/api/v1/audit/approval": {
+      "get": {
+        "operationId": "list_audit_log_api_v1_audit_approval_get",
+        "parameters": [
+          {
+            "description": "Inclusive lower bound on `at`",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive lower bound on `at`",
+              "title": "From"
+            }
+          },
+          {
+            "description": "Exclusive upper bound on `at`",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exclusive upper bound on `at`",
+              "title": "To"
+            }
+          },
+          {
+            "description": "The user who acted",
+            "in": "query",
+            "name": "actor_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The user who acted",
+              "title": "Actor Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "action",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Action"
+            }
+          },
+          {
+            "in": "query",
+            "name": "entity",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 80,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Entity"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditPageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "description": "Missing core.identity.audit.read at ORG scope"
+          },
+          "422": {
+            "description": "A bad cursor, filter or date range"
+          }
+        },
+        "summary": "The organization's audit trail recorded by this service, newest first",
+        "tags": [
+          "audit"
         ]
       }
     },

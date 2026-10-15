@@ -142,6 +142,7 @@ PRINCIPAL_ON_BARE_SESSION_ROUTES = {
 #: six — step-up, enrolment start and confirm — and password change take a bare session and bind
 #: the tenant themselves: `PRINCIPAL_ON_BARE_SESSION_ROUTES`.)
 PRINCIPAL_ROUTES = {
+    ("GET", "/api/v1/audit/auth"),
     ("GET", "/api/v1/auth/me"),
     ("POST", "/api/v1/auth/mfa/enrol"),
     ("POST", "/api/v1/auth/mfa/enrol/confirm"),

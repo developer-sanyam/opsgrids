@@ -122,6 +122,21 @@
     { "prefix": "/api/v1/audit/operations", "upstream": "http://localhost:8172", "product": "operations" },
     { "prefix": "/api/v1/audit/notification", "upstream": "http://localhost:8151", "product": "engage" },
     { "prefix": "/api/v1/audit/storefront", "upstream": "http://localhost:8174", "product": "storefront" },
-    { "prefix": "/api/v1/audit/finance", "upstream": "http://localhost:8171", "product": "finance" }
+    { "prefix": "/api/v1/audit/finance", "upstream": "http://localhost:8171", "product": "finance" },
+    { "prefix": "/api/v1/audit/auth", "upstream": "http://localhost:8110" },
+    { "prefix": "/api/v1/audit/approval", "upstream": "http://localhost:8152" },
+    { "prefix": "/api/v1/audit/document", "upstream": "http://localhost:8150" },
+    { "prefix": "/api/v1/audit/subscription", "upstream": "http://localhost:8161" },
+    { "prefix": "/api/v1/audit/billing", "upstream": "http://localhost:8160" },
+    { "prefix": "/api/v1/audit/payment", "upstream": "http://localhost:8163" },
+    { "prefix": "/api/v1/audit/attendance", "upstream": "http://localhost:8121", "product": "hrms" },
+    { "prefix": "/api/v1/audit/leave", "upstream": "http://localhost:8122", "product": "hrms" },
+    { "prefix": "/api/v1/audit/project", "upstream": "http://localhost:8140", "product": "pulseboard" },
+    { "prefix": "/api/v1/audit/timesheet", "upstream": "http://localhost:8141", "product": "pulseboard" },
+    { "prefix": "/api/v1/audit/standup", "upstream": "http://localhost:8142", "product": "pulseboard" },
+    { "prefix": "/api/v1/audit/projects", "upstream": "http://localhost:8170", "product": "projects" },
+    { "prefix": "/api/v1/audit/support", "upstream": "http://localhost:8180", "product": "support" },
+    { "prefix": "/api/v1/audit/marketing", "upstream": "http://localhost:8134", "product": "marketing" },
+    { "prefix": "/api/v1/audit/itsm", "upstream": "http://localhost:8173", "product": "itsm" }
   ]
 }
