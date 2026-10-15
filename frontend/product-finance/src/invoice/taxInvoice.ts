@@ -343,14 +343,30 @@ export function buildTaxInvoice(input: TaxInvoiceInputs): {
         : [];
   // With no registration at all, the registration gap above already sends the person to the
   // one form that holds the address too; a second alert would only repeat it.
+  //
+  // A document issued before party snapshots existed (no `seller_legal_name` frozen on it) was
+  // issued, and may have been sent, without an address on file anywhere: holding back its reprint
+  // would only stop people reprinting what already exists, so for those the gap is advisory.
+  // A document issued since then must state it, so its gap blocks until the address is added.
+  const issuedBeforeSnapshots = invoice.seller_legal_name == null && invoice.seller_address == null;
   if (supplierAddress.length === 0 && sellerGstin !== null && (registration !== null || frozenLegalName !== null)) {
-    gaps.push({
-      key: "supplier_address",
-      severity: "blocking",
-      message:
-        "Your registered address is not on file, and a tax invoice must state it. Add it to your GST registration in Settings, then come back.",
-      fix: SETTINGS_FIX,
-    });
+    gaps.push(
+      issuedBeforeSnapshots
+        ? {
+            key: "supplier_address",
+            severity: "advisory",
+            message:
+              "This document was issued before Finance stored your registered address, so none is printed. Add it to your GST registration in Settings and reprints will carry it.",
+            fix: SETTINGS_FIX,
+          }
+        : {
+            key: "supplier_address",
+            severity: "blocking",
+            message:
+              "Your registered address is not on file, and a tax invoice must state it. Add it to your GST registration in Settings, then come back.",
+            fix: SETTINGS_FIX,
+          },
+    );
   }
 
   // --- Place of supply and tax heads.

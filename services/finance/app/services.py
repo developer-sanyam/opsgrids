@@ -1799,7 +1799,13 @@ async def supplier_print_details(
     registration = await selectors.get_gst_registration(session, ctx.organization_id)
     profile = await selectors.get_supplier_profile(session, ctx.organization_id)
     bank = None
-    if profile is not None and profile.bank_account_number_enc is not None:
+    # A credit note asks the customer to pay nothing, and its printed copy carries no bank block,
+    # so the number is not opened (or disclosed, or audited) for one.
+    if (
+        invoice.document_type != "credit_note"
+        and profile is not None
+        and profile.bank_account_number_enc is not None
+    ):
         try:
             number = pii.open_sealed(
                 profile.bank_account_number_enc,

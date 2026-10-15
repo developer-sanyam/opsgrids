@@ -540,6 +540,50 @@ class TestSupplierSettings:
         assert len(audits) == 1 and audits[0].entity_id == invoice.id
         assert "50100123456789" not in str(audits[0].after)
 
+    async def test_a_credit_note_does_not_open_the_account_number(
+        self, client, session, org_id
+    ) -> None:
+        """A credit note prints no bank block, so its print details neither return the number
+        nor write a disclosure row."""
+        ctx = admin_ctx(org_id)
+        async with session.begin():
+            await _register(session, ctx)
+            await services.set_supplier_profile(
+                session, ctx, SupplierProfileUpsert(bank_account_number="50100123456789")
+            )
+            customer = await _customer(session, ctx)
+            original = await services.create_invoice(session, ctx, _invoice(customer.id, "INV-P-3"))
+            credit = await services.create_invoice(
+                session,
+                ctx,
+                _invoice(
+                    customer.id,
+                    "CN-P-3",
+                    document_type="credit_note",
+                    corrects_invoice_id=original.id,
+                    lines=[
+                        InvoiceLineCreate(
+                            description="Return: steel brackets",
+                            quantity=-1,
+                            unit="nos",
+                            unit_price_minor=123_45,
+                            hsn_sac="7326",
+                        )
+                    ],
+                ),
+            )
+        res = await client.get(f"/api/v1/finance/invoices/{credit.id}/print-details")
+        assert res.status_code == 200, res.text
+        assert res.json()["bank"] is None
+        assert "50100123456789" not in res.text
+        async with session.begin():
+            rows = (
+                await session.execute(
+                    select(AuditLog).where(AuditLog.action == "supplier_profile.bank_disclosed")
+                )
+            ).all()
+        assert rows == []
+
     async def test_print_details_without_an_account_audit_nothing(
         self, client, session, org_id
     ) -> None:
