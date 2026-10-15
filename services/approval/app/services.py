@@ -751,6 +751,7 @@ async def decide_request(
     comment: str | None,
     is_owner: bool = False,
     self_approve: bool = False,
+    caller_user_id: uuid.UUID | None = None,
 ) -> ApprovalRequest:
     """`POST /requests/{id}/decision` (ADR-0006 §7), one transaction:
 
@@ -838,7 +839,8 @@ async def decide_request(
         session,
         AuditLog,
         organization_id=organization_id,
-        actor_id=caller_id,
+        # The audit read resolves actors by user id; the employee id stays on the request row.
+        actor_id=caller_user_id or caller_id,
         acting_as=(
             str(eligibility.acting_for_employee_id) if eligibility.acting_for_employee_id else None
         ),
@@ -863,6 +865,10 @@ async def decide_request(
             "source_ref": str(request.source_ref),
             "outcome": request.status,
             "decided_by_employee_id": str(caller_id),
+            # Additive: the deciding *user* (the audit actor in product services, whose audit
+            # read resolves user ids), and whether this was the owner's audited self-approval.
+            "decided_by_user_id": str(caller_user_id) if caller_user_id else None,
+            "self_approved": self_approved,
             # Additive (data model amendment), reusing `check_eligibility`'s own `caller_node`
             # lookup (`Eligibility.decider_name`) rather than a second query for the same id.
             # `None` for a route-(c) `decide:ORG` decider who is legitimately not in the copy —
