@@ -4,7 +4,8 @@ The offline tests (`test_purge_test_orgs.py`) pin the rules that need no databas
 tool does what it says to a real schema: thirty-odd service schemas, a few hundred tables, real
 foreign keys, row-level security and the append-only triggers.
 
-**Opt-in** (`make test-infra-db` does all of the following and CI runs it), like the put-away purge's real-database test: set
+**Opt-in** (`make test-infra-db` does all of the following and CI runs it), like the put-away
+purge's real-database test: set
 `OPSGRIDS_PURGE_ORGS_TEST_DATABASE_URL` to a **migrated, throwaway** database and the
 migration/owner role, for example
 
