@@ -4,6 +4,8 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 
+import { assetsInlineLimit } from "@opsgrids/config/vite";
+
 // The operator console (ADR-0001 `opsgrids-internal`). Dev on 4330 so it never collides with the
 // marketing site (4300) or the product apps (4310+).
 export default defineConfig({
@@ -25,5 +27,8 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
+  },
+  build: {
+    assetsInlineLimit,
   },
 });

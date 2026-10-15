@@ -3,6 +3,7 @@ import { fileURLToPath, URL } from "node:url";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig, type Plugin } from "vite";
+import { assetsInlineLimit } from "@opsgrids/config/vite";
 
 /**
  * Two entry points, one app (ADR-0001, ADR-0012 §2).
@@ -65,17 +66,18 @@ export default defineConfig(({ mode }) => {
         "@": fileURLToPath(new URL("./src", import.meta.url)),
       },
     },
-    ...(buyer
-      ? {
-          build: {
+    build: {
+      assetsInlineLimit,
+      ...(buyer
+        ? {
             outDir: BUYER_OUT_DIR,
             emptyOutDir: true,
             rollupOptions: {
               input: fileURLToPath(new URL("./buyer.html", import.meta.url)),
             },
-          },
-        }
-      : {}),
+          }
+        : {}),
+    },
     server: {
       port: 4400,
       strictPort: true,

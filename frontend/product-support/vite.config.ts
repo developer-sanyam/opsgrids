@@ -4,6 +4,8 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 
+import { assetsInlineLimit } from "@opsgrids/config/vite";
+
 // One Vite app per product (ADR-0001). Dev on 4430 so it never collides with the
 // marketing site on 4300 or the HRMS product on 4310.
 export default defineConfig({
@@ -24,5 +26,8 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
+  },
+  build: {
+    assetsInlineLimit,
   },
 });

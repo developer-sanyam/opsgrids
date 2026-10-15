@@ -8,7 +8,8 @@
     "tsconfig.base.json",
     "tsconfig.app.json",
     "eslint.preset.js",
-    "vite.preset.ts",
+    "vite.preset.js",
+    "vite.preset.d.ts",
     "rules",
     "scripts",
     "token-baseline.json"
@@ -17,7 +18,10 @@
     "./tsconfig.base.json": "./tsconfig.base.json",
     "./tsconfig.app.json": "./tsconfig.app.json",
     "./eslint": "./eslint.preset.js",
-    "./vite": "./vite.preset.ts"
+    "./vite": {
+      "types": "./vite.preset.d.ts",
+      "default": "./vite.preset.js"
+    }
   },
   "scripts": {
     "test": "vitest run",
