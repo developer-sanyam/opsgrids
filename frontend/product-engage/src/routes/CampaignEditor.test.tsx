@@ -146,10 +146,10 @@ function renderCampaign(campaignId = DRAFT.id, grants: readonly string[] = ALL_G
   );
 }
 
-function renderNew(grants: readonly string[] = ALL_GRANTS) {
+function renderNew(grants: readonly string[] = ALL_GRANTS, state?: unknown) {
   return render(
     <PermissionProvider grants={grants}>
-      <MemoryRouter initialEntries={["/campaigns/new"]}>
+      <MemoryRouter initialEntries={[{ pathname: "/campaigns/new", state }]}>
         <Routes>
           <Route path="/campaigns/new" element={<NewCampaignPage />} />
           <Route path="/campaigns/:campaignId" element={<CampaignPage />} />
@@ -162,6 +162,15 @@ function renderNew(grants: readonly string[] = ALL_GRANTS) {
 function refused(message: string, status = 422) {
   return new ApiError(status, message, { type: "x", title: "x", status, detail: message });
 }
+
+describe("new campaign from an email template", () => {
+  it("prefills the subject and plain-text body from the template", async () => {
+    mockReads();
+    renderNew(ALL_GRANTS, { template: { subject: "Welcome aboard", textBody: "Glad you are here." } });
+    expect(((await screen.findByLabelText(/^Subject/)) as HTMLInputElement).value).toBe("Welcome aboard");
+    expect((screen.getByLabelText(/^Plain-text body/) as HTMLTextAreaElement).value).toBe("Glad you are here.");
+  });
+});
 
 describe("loading", () => {
   it("shows a skeleton while the reads are in flight", () => {

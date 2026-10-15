@@ -12,10 +12,9 @@ import { Button, Card, EmptyState, PageHeading, SearchInput, Skeleton } from "@/
 import { TemplatesFailure } from "./TemplatesFailure";
 
 /**
- * Every email template in the organization.
- *
- * The columns are what the service sends: the code, the subject, how many variables the template
- * names, and when it last changed. The design also shows a category, a status, a language and where
+ * Every email template in the organization, as cards: the code, the subject, how many variables the
+ * template names, and when it last changed. "Use template" opens a new campaign with the subject
+ * and body filled from it; "Edit" opens the editor. The design also shows a category, a status, a language and where
  * a template is used; `TemplateOut` carries none of them, so there are no category tabs and no
  * status badges here — a filter over a value the service never returns would filter nothing.
  *
@@ -42,26 +41,47 @@ function CreateButton() {
   );
 }
 
-function TemplateRow({ template }: { template: EmailTemplateOut }) {
+function TemplateTile({ template }: { template: EmailTemplateOut }) {
+  const navigate = useNavigate();
+  const count = template.placeholders.length;
   return (
-    <tr className="border-t border-line align-top">
-      <th scope="row" className="py-3 pr-4 text-left">
+    <li className="flex flex-col gap-4 rounded-tile border border-line p-4">
+      <div className="flex min-w-0 flex-col gap-1">
         <Link
           to={`/email/templates/${encodeURIComponent(template.id)}`}
-          className="relative hit-44 text-sm font-bold text-ink underline-offset-4 hover:text-accent-ink hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          className="relative hit-44 break-words text-sm font-bold text-ink underline-offset-4 hover:text-accent-ink hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
           {template.id}
         </Link>
-        {template.description !== "" ? (
-          <span className="mt-1 block text-xs text-muted">{template.description}</span>
-        ) : null}
-      </th>
-      <td className="py-3 pr-4 text-sm text-ink">{template.subject ?? "—"}</td>
-      <td className="py-3 pr-4 text-sm tabular-nums text-ink">
-        {formatNumber(template.placeholders.length)}
-      </td>
-      <td className="py-3 pr-4 text-sm text-muted">{formatInstant(template.updated_at)}</td>
-    </tr>
+        {template.description !== "" ? <p className="text-xs text-muted">{template.description}</p> : null}
+        <p className="break-words text-sm text-ink">{template.subject ?? "—"}</p>
+        <p className="text-xs tabular-nums text-muted">
+          {formatNumber(count)} {count === 1 ? "variable" : "variables"} · Updated{" "}
+          {formatInstant(template.updated_at)}
+        </p>
+      </div>
+      <div className="mt-auto flex flex-wrap gap-2">
+        <Can permission="engage.campaign.campaign.write" scope="ORG">
+          <Button
+            aria-label={`Use template ${template.id}`}
+            onClick={() =>
+              navigate("/campaigns/new", {
+                state: { template: { subject: template.subject ?? "", textBody: template.body } },
+              })
+            }
+          >
+            Use template
+          </Button>
+        </Can>
+        <Button
+          variant="secondary"
+          aria-label={`Edit template ${template.id}`}
+          onClick={() => navigate(`/email/templates/${encodeURIComponent(template.id)}`)}
+        >
+          Edit
+        </Button>
+      </div>
+    </li>
   );
 }
 
@@ -132,34 +152,11 @@ export function EmailTemplatesPage() {
               }
             />
           ) : (
-            <div className="relative overflow-x-auto">
-              <table className="w-full min-w-2xl border-collapse text-left">
-                <caption className="sr-only">
-                  Email templates, their subject, how many variables each names, and when each last changed
-                </caption>
-                <thead>
-                  <tr className="text-xs font-bold uppercase tracking-wider text-faint">
-                    <th scope="col" className="pb-2 pr-4">
-                      Name
-                    </th>
-                    <th scope="col" className="pb-2 pr-4">
-                      Subject
-                    </th>
-                    <th scope="col" className="pb-2 pr-4">
-                      Variables
-                    </th>
-                    <th scope="col" className="pb-2 pr-4">
-                      Updated
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {shown.map((template) => (
-                    <TemplateRow key={template.id} template={template} />
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <ul aria-label="Email templates" className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {shown.map((template) => (
+                <TemplateTile key={template.id} template={template} />
+              ))}
+            </ul>
           )}
 
           <p className="text-xs text-muted">

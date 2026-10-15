@@ -1,7 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
 import { ApiError, PermissionProvider } from "@opsgrids/client";
 
@@ -42,6 +42,11 @@ function page(items: EmailTemplateOut[]): Page<EmailTemplateOut> {
 
 const WRITE = "engage.email.template.write:ORG";
 
+function CampaignStub() {
+  const state = useLocation().state as { template: { subject: string; textBody: string } };
+  return <p>{`New campaign: ${state.template.subject} / ${state.template.textBody}`}</p>;
+}
+
 function renderPage(grants: string[] = [WRITE]) {
   return render(
     <PermissionProvider grants={grants}>
@@ -49,6 +54,7 @@ function renderPage(grants: string[] = [WRITE]) {
         <Routes>
           <Route path="/email/templates" element={<EmailTemplatesPage />} />
           <Route path="/email/templates/new" element={<p>New template page</p>} />
+          <Route path="/campaigns/new" element={<CampaignStub />} />
         </Routes>
       </MemoryRouter>
     </PermissionProvider>,
@@ -60,12 +66,12 @@ afterEach(() => {
 });
 
 describe("loading", () => {
-  it("says it is loading and shows placeholders rather than an empty table", () => {
+  it("says it is loading and shows placeholders rather than an empty list", () => {
     vi.spyOn(email, "listEmailTemplates").mockReturnValue(new Promise(() => {}));
     const { container } = renderPage();
     expect(screen.getByText("Loading email templates")).toBeTruthy();
     expect(container.querySelectorAll('[class*="animate-pulse"]').length).toBeGreaterThan(0);
-    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.queryByRole("list")).toBeNull();
   });
 });
 
@@ -76,19 +82,35 @@ describe("populated", () => {
 
     const link = await screen.findByRole("link", { name: "order_shipped" });
     expect(link.getAttribute("href")).toBe("/email/templates/order_shipped");
-    const row = link.closest("tr");
+    const row = link.closest("li");
     expect(row).not.toBeNull();
     expect(within(row as HTMLElement).getByText("Your order {{order_number}} has shipped")).toBeTruthy();
-    expect(within(row as HTMLElement).getByText("2")).toBeTruthy();
+    expect(within(row as HTMLElement).getByText(/2 variables/)).toBeTruthy();
     expect(screen.getByText("Showing 2 of 2 templates")).toBeTruthy();
+  });
+
+  it("Use template opens a new campaign carrying the template's subject and body", async () => {
+    vi.spyOn(email, "listEmailTemplates").mockResolvedValue(page([WELCOME]));
+    const user = userEvent.setup();
+    renderPage(["engage.campaign.campaign.write:ORG"]);
+
+    await user.click(await screen.findByRole("button", { name: "Use template welcome_email" }));
+    expect(screen.getByText("New campaign: Welcome aboard / Glad you are here.")).toBeTruthy();
+  });
+
+  it("hides Use template from someone who may not draft campaigns, and still offers Edit", async () => {
+    vi.spyOn(email, "listEmailTemplates").mockResolvedValue(page([WELCOME]));
+    renderPage([]);
+    await screen.findByRole("button", { name: "Edit template welcome_email" });
+    expect(screen.queryByRole("button", { name: /Use template/ })).toBeNull();
   });
 
   it("does not draw columns or tabs the service gives no data for", async () => {
     vi.spyOn(email, "listEmailTemplates").mockResolvedValue(page([SHIPPED]));
     renderPage();
-    await screen.findByRole("table");
+    await screen.findByRole("list", { name: "Email templates" });
     for (const absent of ["Used in", "Category", "Status", "Language"]) {
-      expect(screen.queryByRole("columnheader", { name: absent })).toBeNull();
+      expect(screen.queryByText(absent)).toBeNull();
     }
     expect(screen.queryByRole("tablist")).toBeNull();
   });
