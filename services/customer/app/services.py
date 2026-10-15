@@ -240,6 +240,43 @@ async def create_owner(
     return owner
 
 
+async def ensure_own_owner(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    *,
+    full_name: str,
+    email: str,
+    role: str = "",
+) -> tuple[Owner, bool]:
+    """Make the caller's own login a sales rep -- idempotently. Returns `(owner, created)`.
+
+    A membership with no employee link (the owner who just signed up, every CRM-only tenant)
+    has no `subject_ref`, so nothing could be attributed to them. The roster row made here
+    carries the caller's **membership id as its own id**: deal-service defaults an owner from
+    the token alone with no cross-schema read, and ADR-0038 R2.7 (CRM scope keyed on the
+    membership) later needs no data migration for these rows.
+
+    Order: a row already at that id (a repeat call) is returned as is; a live row with the same
+    email -- the old one-click claim made one with a random id -- is returned rather than
+    duplicated or 409'd (the caller names *their own* session email, and nothing here grants
+    them access: OWN/TEAM scoping still compares `subject_ref`, never this roster); otherwise
+    the row is created at the membership id through `create_owner`, which audits it.
+    """
+    membership_id = ctx.principal.membership_id
+    if membership_id is None:
+        raise ForbiddenProblem("This session has no membership to make a rep from")
+    existing = await selectors.get_owner(session, ctx.organization_id, membership_id)
+    if existing is not None:
+        return existing, False
+    by_email = await selectors.get_owner_by_email(session, ctx.organization_id, email)
+    if by_email is not None:
+        return by_email, False
+    owner = await create_owner(
+        session, ctx, full_name=full_name, email=email, role=role, owner_id=membership_id
+    )
+    return owner, True
+
+
 async def update_owner(
     session: AsyncSession,
     ctx: ScopeContext,

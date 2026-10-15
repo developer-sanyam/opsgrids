@@ -649,6 +649,25 @@ class TestApprovalGrantsReachExistingTenants:
             "services/approval/app/catalogue.py wired into the exporter?"
         )
 
+        # A tenant created before organization creation installed the merged `core` manifest:
+        # strip what that tenant never received (approval's grants and the APPROVAL_ADMIN
+        # role). New organizations now get these at creation; the tenants this reconcile
+        # exists for are the ones that predate that.
+        async with session.begin():
+            await session.execute(
+                text(
+                    "DELETE FROM account.role_permissions WHERE role_id IN "
+                    "(SELECT id FROM account.roles WHERE organization_id = :org) "
+                    "AND permission_id IN "
+                    "(SELECT id FROM account.permissions WHERE code LIKE 'core.approval.%')"
+                ),
+                {"org": org.id},
+            )
+            await session.execute(
+                text("DELETE FROM account.roles WHERE organization_id = :org AND code = :code"),
+                {"org": org.id, "code": "APPROVAL_ADMIN"},
+            )
+
         async with session.begin():
             summary = await services.reconcile_registration(
                 session, org.id, manifest.registration, acting_as="test"

@@ -30,6 +30,9 @@ from app.schemas import OrganizationIn
 pytestmark = pytest.mark.integration
 
 TRIO = ["hrms", "crm", "finance"]
+#: What every organization holds at creation: account's core roles plus approval's, installed
+#: from the merged `core` manifest.
+CORE_ROLES = {"ORG_OWNER", "ORG_ADMIN", "MEMBER", "APPROVAL_ADMIN"}
 ADMIN_ROLES = {"HR_ADMIN", "CRM_BOOK_ADMIN", "CRM_PIPELINE_ADMIN", "FINANCE_ADMIN"}
 
 
@@ -97,7 +100,7 @@ class TestFanOut:
         manifest and never will; it is recorded as processed, not dead-lettered."""
         event = _suite_event(org.id, members=None)
         await install_registration_on_activation(event)
-        assert await _role_codes(session, org.id) == {"ORG_OWNER", "ORG_ADMIN", "MEMBER"}
+        assert await _role_codes(session, org.id) == CORE_ROLES
         async with session.begin():
             done = await session.get(ProcessedEvent, uuid.UUID(event["event_id"]))
         assert done is not None
@@ -123,7 +126,7 @@ class TestFanOut:
         await install_registration_on_activation(
             _suite_event(org.id, members=TRIO, state="suspended")
         )
-        assert await _role_codes(session, org.id) == {"ORG_OWNER", "ORG_ADMIN", "MEMBER"}
+        assert await _role_codes(session, org.id) == CORE_ROLES
 
 
 class TestIdempotencyAndTenancy:
@@ -166,7 +169,7 @@ class TestIdempotencyAndTenancy:
 
         async with admin_session.begin():
             theirs = {r.code for r in await selectors.list_roles(admin_session, other.id)}
-        assert theirs == {"ORG_OWNER", "ORG_ADMIN", "MEMBER"}, (
+        assert theirs == CORE_ROLES, (
             "a bundle installed for one organization leaked roles into another"
         )
 
