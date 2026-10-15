@@ -56,9 +56,18 @@ storefront, not by account.
 ## Consequences
 
 - Adding a source takes three lines: `app/api/audit.py`, one router in `main.py`, and one prefix in each route
-  table. It also needs `tests/test_org_audit_log.py`, which runs the shared contract. Not yet sources: `auth`
-  (sign-ins), `approval`, `document`, `attendance`, `leave`, the PulseBoard and Projects services, `support`,
-  `marketing`, `itsm` and the commerce services.
+  table. It also needs `tests/test_org_audit_log.py`, which runs the shared contract.
+- Second batch (`feat/org-audit-log-rest`): `approval`, `document`, `subscription`, `billing`, `payment` (ungated),
+  `attendance`, `leave` (hrms), `project`, `timesheet`, `standup` (pulseboard), `projects`, `support`, `marketing`
+  and `itsm`. `auth` is a source too, but only for its sign-in family (`only_actions`: password, OAuth and SSO
+  sign-in, password change and its failure) and each row is *bare*: actor, action and time, with no entity id (a
+  sign-in row's entity id is the session id), fields, reason or operator flag. Its MFA and step-up rows stay out.
+  `subscription` returns `reason` only when it is a machine code (`reason_codes_only`): its operator notes are
+  free text and staff-only.
+  Not sources: `catalog` and `product` (their rows belong to the platform organization, not a customer's),
+  `metering` (writes no audit rows) and `scheduler`, `config`, `eventbridge`, `quotation`, `console`.
+  Sign-out, password-reset requests and failed sign-ins write no audit row today (events only; a failed sign-in
+  has no organization), so they do not appear until `auth` writes them.
 - A page costs one request per active source, about ten at most. That is acceptable for an admin screen. A central
   store would be the next step if the source count or volume grows.
 - Existing organizations' `ORG_ADMIN` roles gain the grant only after `make edge-reconcile PRODUCTS=core` (dry run

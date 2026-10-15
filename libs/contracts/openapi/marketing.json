@@ -129,6 +129,140 @@
         "title": "AudiencePatch",
         "type": "object"
       },
+      "AuditEntryOut": {
+        "description": "One audit row, as the organization may read it. Values never leave the service.",
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "actor_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Id"
+          },
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "by_operator": {
+            "title": "By Operator",
+            "type": "boolean"
+          },
+          "entity": {
+            "title": "Entity",
+            "type": "string"
+          },
+          "entity_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entity Id"
+          },
+          "fields": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "product": {
+            "title": "Product",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "sensitive": {
+            "title": "Sensitive",
+            "type": "boolean"
+          },
+          "service": {
+            "title": "Service",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "at",
+          "service",
+          "product",
+          "actor_id",
+          "by_operator",
+          "action",
+          "entity",
+          "entity_id",
+          "fields",
+          "sensitive",
+          "reason"
+        ],
+        "title": "AuditEntryOut",
+        "type": "object"
+      },
+      "AuditPageOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AuditEntryOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "product": {
+            "title": "Product",
+            "type": "string"
+          },
+          "service": {
+            "title": "Service",
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "product",
+          "items"
+        ],
+        "title": "AuditPageOut",
+        "type": "object"
+      },
       "CampaignIn": {
         "additionalProperties": false,
         "description": "Create a campaign.\n\nMoney arrives as minor units, matching how it is stored and returned. `audience_id` must name\nan audience in the same organization \u2014 enforced in `services`, so naming another tenant's\naudience reads as \"not found\" rather than resolving.\n\n`currency` accepts any 3-letter code with no ISO allow-list. The Overview and Channels\nrollups (`domain.overview_totals`, `domain.channel_performance`) sum `*_minor` across every\nin-scope campaign assuming one currency per organization (`api/routes.py#overview` reads\n`campaigns[0].currency` as *the* org currency) \u2014 a campaign created in a second currency\nwould sum into that total without conversion and silently misstate it. This is a known,\nunresolved risk (see the audit's Risks section): rejecting a second currency outright is a\nproduct decision nobody has made, since a legitimate multi-currency org would then have no\nway to record a campaign at all, so it is documented rather than enforced here. A future\nguard belongs in this validator once the product decides what a mismatch should do (refuse,\nconvert, or partition the rollups by currency).",
@@ -855,6 +989,155 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/audit/marketing": {
+      "get": {
+        "operationId": "list_audit_log_api_v1_audit_marketing_get",
+        "parameters": [
+          {
+            "description": "Inclusive lower bound on `at`",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Inclusive lower bound on `at`",
+              "title": "From"
+            }
+          },
+          {
+            "description": "Exclusive upper bound on `at`",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Exclusive upper bound on `at`",
+              "title": "To"
+            }
+          },
+          {
+            "description": "The user who acted",
+            "in": "query",
+            "name": "actor_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The user who acted",
+              "title": "Actor Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "action",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Action"
+            }
+          },
+          {
+            "in": "query",
+            "name": "entity",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 80,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Entity"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 512,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditPageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "description": "Missing core.identity.audit.read at ORG scope"
+          },
+          "422": {
+            "description": "A bad cursor, filter or date range"
+          }
+        },
+        "summary": "The organization's audit trail recorded by this service, newest first",
+        "tags": [
+          "audit"
+        ]
+      }
+    },
     "/api/v1/marketing/analytics/revenue-vs-spend": {
       "get": {
         "operationId": "revenue_vs_spend_api_v1_marketing_analytics_revenue_vs_spend_get",

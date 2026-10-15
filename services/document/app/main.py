@@ -6,6 +6,7 @@ from datetime import timedelta
 
 from fastapi import FastAPI
 
+from app.api.audit import router as audit_router
 from app.api.routes import router
 from app.config import settings
 from app.cron import PurgeSweep
@@ -112,7 +113,7 @@ app = create_app(
         "the private half is named and unbuilt, so the failure mode for a confidential file "
         "is a missing feature rather than a misplaced payslip."
     ),
-    routers=[router],
+    routers=[audit_router, router],
     on_startup=_start_purge_sweep,
     on_shutdown=_stop_purge_sweep,
     # Redis is a declared dependency because the upload route is rate limited, and the limiter

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.api.audit import router as audit_router
 from app.api.routes import router
 from app.config import settings
 from app.models import OutboxEvent
@@ -12,7 +13,7 @@ app = create_app(
     title="Project service",
     description="PulseBoard's engagements and board — the delivery portfolio, the team "
     "roster and the task board, part of the OpsGrids platform.",
-    routers=[router],
+    routers=[audit_router, router],
     # A stalled relay is silent; `/health/outbox` makes it visible, counting through the
     # outbox engine so it is not blind to the rows the app role cannot see.
     outbox_model=OutboxEvent,

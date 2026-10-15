@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.api.admin import router as admin_router
+from app.api.audit import router as audit_router
 from app.api.health import router as health_router
 from app.api.internal import router as internal_router
 from app.api.routes import router
@@ -18,7 +19,7 @@ app = create_app(
         "append-only credit ledger whose balance is a windowed SUM, never a stored column. "
         "All money is integer minor units — no floats anywhere in billing."
     ),
-    routers=[router, admin_router],
+    routers=[audit_router, router, admin_router],
     outbox_model=OutboxEvent,
 )
 

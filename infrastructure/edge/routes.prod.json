@@ -144,6 +144,21 @@
     { "prefix": "/api/v1/audit/operations", "upstream": "http://operations:8000", "product": "operations" },
     { "prefix": "/api/v1/audit/notification", "upstream": "http://notification:8000", "product": "engage" },
     { "prefix": "/api/v1/audit/storefront", "upstream": "http://storefront:8000", "product": "storefront" },
-    { "prefix": "/api/v1/audit/finance", "upstream": "http://finance:8000", "product": "finance" }
+    { "prefix": "/api/v1/audit/finance", "upstream": "http://finance:8000", "product": "finance" },
+    { "prefix": "/api/v1/audit/auth", "upstream": "http://auth:8000" },
+    { "prefix": "/api/v1/audit/approval", "upstream": "http://approval:8000" },
+    { "prefix": "/api/v1/audit/document", "upstream": "http://document:8000" },
+    { "prefix": "/api/v1/audit/subscription", "upstream": "http://subscription:8000" },
+    { "prefix": "/api/v1/audit/billing", "upstream": "http://billing:8000" },
+    { "prefix": "/api/v1/audit/payment", "upstream": "http://payment:8000" },
+    { "prefix": "/api/v1/audit/attendance", "upstream": "http://attendance:8000", "product": "hrms" },
+    { "prefix": "/api/v1/audit/leave", "upstream": "http://leave:8000", "product": "hrms" },
+    { "prefix": "/api/v1/audit/project", "upstream": "http://project:8000", "product": "pulseboard" },
+    { "prefix": "/api/v1/audit/timesheet", "upstream": "http://timesheet:8000", "product": "pulseboard" },
+    { "prefix": "/api/v1/audit/standup", "upstream": "http://standup:8000", "product": "pulseboard" },
+    { "prefix": "/api/v1/audit/projects", "upstream": "http://projects:8000", "product": "projects" },
+    { "prefix": "/api/v1/audit/support", "upstream": "http://support:8000", "product": "support" },
+    { "prefix": "/api/v1/audit/marketing", "upstream": "http://marketing:8000", "product": "marketing" },
+    { "prefix": "/api/v1/audit/itsm", "upstream": "http://itsm:8000", "product": "itsm" }
   ]
 }

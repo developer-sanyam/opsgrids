@@ -41,6 +41,21 @@ export const AUDIT_SOURCES: readonly AuditSource[] = [
   { service: "notification", product: "engage", label: "Engage" },
   { service: "storefront", product: "storefront", label: "Storefront" },
   { service: "finance", product: "finance", label: "Finance" },
+  { service: "auth", product: null, label: "Sign-ins" },
+  { service: "approval", product: null, label: "Approvals" },
+  { service: "document", product: null, label: "Documents" },
+  { service: "subscription", product: null, label: "Subscription" },
+  { service: "billing", product: null, label: "Billing" },
+  { service: "payment", product: null, label: "Payments" },
+  { service: "attendance", product: "hrms", label: "People: attendance" },
+  { service: "leave", product: "hrms", label: "People: leave" },
+  { service: "project", product: "pulseboard", label: "PulseBoard: projects" },
+  { service: "timesheet", product: "pulseboard", label: "PulseBoard: timesheets" },
+  { service: "standup", product: "pulseboard", label: "PulseBoard: standups" },
+  { service: "projects", product: "projects", label: "Projects" },
+  { service: "support", product: "support", label: "Support" },
+  { service: "marketing", product: "marketing", label: "Marketing" },
+  { service: "itsm", product: "itsm", label: "IT Management" },
 ];
 
 export function sourceLabel(service: string): string {
@@ -146,8 +161,18 @@ export function everySourceRefused(states: readonly SourceState[]): boolean {
   return states.length > 0 && states.every((s) => s.error instanceof ApiError && s.error.status === 403);
 }
 
+const SIGN_IN_ACTIONS: Record<string, string> = {
+  "auth.password_verified": "Signed in with a password",
+  "auth.oauth_signed_in": "Signed in with a social account",
+  "auth.sso_signed_in": "Signed in with SSO",
+  "auth.password_changed": "Password changed",
+  "auth.password_change_failed": "Password change failed",
+};
+
 /** "member.invited" → "Member invited". */
 export function describeAction(action: string): string {
+  const known = SIGN_IN_ACTIONS[action];
+  if (known) return known;
   const words = action.replace(/[._]+/g, " ").trim();
   return words.charAt(0).toUpperCase() + words.slice(1);
 }

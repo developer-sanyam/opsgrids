@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from app import consumers
+from app.api.audit import router as audit_router
 from app.api.routes import router
 from app.config import settings
 from app.cron import EscalationSweep
@@ -101,7 +102,7 @@ app = create_app(
         "delegation applied at open, the inbox, and the product's application-state return leg. "
         "No SLA clock yet: every step opens with `due_at = NULL` until slice 4."
     ),
-    routers=[router],
+    routers=[audit_router, router],
     outbox_model=OutboxEvent,
     on_startup=_start_background_worker,
     on_shutdown=_stop_background_worker,

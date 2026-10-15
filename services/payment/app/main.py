@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from app import consumers
+from app.api.audit import router as audit_router
 from app.api.checkout import router as checkout_router
 from app.api.collections import router as collections_router
 from app.api.collections import webhook_router as collections_webhook_router
@@ -108,6 +109,7 @@ app = create_app(
     # The customer info route and the signature-guarded provider webhook are the public surface;
     # the webhook is authenticated by its provider signature, not a token.
     routers=[
+        audit_router,
         router,
         checkout_router,
         webhooks_router,

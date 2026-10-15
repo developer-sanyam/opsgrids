@@ -107,9 +107,20 @@ describe("AuditLogPage", () => {
     expect(await screen.findAllByText("Revealed phone")).not.toHaveLength(0);
     expect(screen.getAllByText("Bob Iyer").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Member invited").length).toBeGreaterThan(0);
-    // Only the platform and the CRM services are asked: no other product is active.
+    // Only the platform's own services and the CRM services are asked: no other product is active.
     const asked = listAuditLog.mock.calls.map(([service]) => service).sort();
-    expect(asked).toEqual(["account", "customer", "deal", "lead"]);
+    expect(asked).toEqual([
+      "account",
+      "approval",
+      "auth",
+      "billing",
+      "customer",
+      "deal",
+      "document",
+      "lead",
+      "payment",
+      "subscription",
+    ]);
   });
 
   it("filters to personal-data reveals on the server, not by hiding rows", async () => {
