@@ -20,6 +20,15 @@ function Steps({ account }: { account: MerchantAccountOut }) {
       </ol>
     );
   }
+  if (account.provider === "payu") {
+    return (
+      <ol className="flex list-decimal flex-col gap-1 pl-4 text-sm text-ink-soft">
+        <li>In PayU's dashboard, open Developers → Webhooks and create a Payments webhook with this URL.</li>
+        <li>Create one for each of the events below.</li>
+        <li>There is no webhook secret to copy: PayU signs every payment webhook with your salt.</li>
+      </ol>
+    );
+  }
   if (account.provider === "cashfree") {
     return (
       <ol className="flex list-decimal flex-col gap-1 pl-4 text-sm text-ink-soft">

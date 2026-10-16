@@ -35,6 +35,8 @@ from app.providers.base import CollectionsProvider, PaymentProvider
 from app.providers.cashfree_collections import CashfreeCollectionsProvider
 from app.providers.cashfree_fake import CashfreeFakeWire
 from app.providers.cashfree_wire import CashfreeHttpWire
+from app.providers.payu_collections import PayUCollectionsProvider, PayUHttpWire
+from app.providers.payu_fake import PayUFakeWire
 from app.providers.phonepe_collections import PhonePeCollectionsProvider, PhonePeHttpWire
 from app.providers.phonepe_fake import PhonePeFakeWire
 from app.providers.razorpay_collections import build_collections_provider
@@ -207,6 +209,16 @@ def _phonepe(
     )
 
 
+def _payu(key_id: str, key_secret: str, mode: str) -> CollectionsProvider:
+    env: Literal["sandbox", "production"] = "production" if mode == "live" else "sandbox"
+    if _collections_wire_live(settings(), registry.PROVIDER_PAYU):
+        return PayUCollectionsProvider(
+            wire=PayUHttpWire(env=env), key=key_id, salt=key_secret, mode=env
+        )
+    wire = _stub_wire(registry.PROVIDER_PAYU, key_id, key_secret, PayUFakeWire)
+    return PayUCollectionsProvider(wire=wire, key=key_id, salt=key_secret, mode="stub")
+
+
 def _collections_provider(
     key_id: str,
     key_secret: str,
@@ -244,6 +256,8 @@ def _collections_provider(
         )
     if provider == registry.PROVIDER_PHONEPE:
         return _phonepe(key_id, key_secret, webhook_secret, mode, config or {})
+    if provider == registry.PROVIDER_PAYU:
+        return _payu(key_id, key_secret, mode)
     raise ValueError(f"{provider!r} is not a collections provider")
 
 

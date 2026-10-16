@@ -134,15 +134,16 @@ export function OrderPaymentCard({ order, onOrderChanged }: { order: OrderOut; o
         );
         return opened;
       }
-      if (opened.checkout.provider === "phonepe") {
+      const session = opened.checkout;
+      if ("url" in session) {
         // The customer pays in another tab; this page keeps asking the provider meanwhile.
-        setRedirect(opened.checkout);
-        setPendingProvider(opened.checkout.provider);
+        setRedirect(session);
+        setPendingProvider(session.provider);
         poll.start(opened.collection.id);
         return opened;
       }
       setRedirect(null);
-      await openCheckout(opened.checkout, businessName);
+      await openCheckout(session, businessName);
       // However the checkout closed, ask the provider (through the server) what really happened.
       const checked = await syncOrderPayment(order.id, opened.collection.id);
       if (checked.state === "captured") toast.success("Payment received — confirmed with the provider.");

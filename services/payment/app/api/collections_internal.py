@@ -188,11 +188,11 @@ async def open_checkout(
     ):
         openable = settings().collections_wire_for(account.provider) == "live"
         redirect = order.redirect if order is not None else None
-        if account.provider == domain.PROVIDER_PHONEPE:
+        if account.provider in domain.REDIRECT_PROVIDERS:
             # In memory only, like Cashfree's session: this response is the one place it goes.
             if redirect is not None:
                 checkout = RedirectCheckoutSessionOut(
-                    provider="phonepe",
+                    provider=account.provider,
                     method=redirect.method,
                     url=redirect.url,
                     fields=dict(redirect.fields),

@@ -26,6 +26,8 @@ from app.main import app
 from app.providers.base import PaymentSnapshot
 from app.providers.cashfree_collections import CashfreeCollectionsProvider
 from app.providers.cashfree_fake import CashfreeFakeWire
+from app.providers.payu_collections import PayUCollectionsProvider
+from app.providers.payu_fake import PayUFakeWire
 from app.providers.phonepe_collections import PhonePeCollectionsProvider
 from app.providers.phonepe_fake import PhonePeFakeWire
 from app.providers.razorpay import RazorpayProvider
@@ -69,6 +71,8 @@ class MerchantProviders:
     cashfree_live: bool = False
     #: One stateful `PhonePeFakeWire` per Client ID, as `COLLECTIONS_PHONEPE_WIRE=stub` runs.
     phonepe_wires: dict[str, PhonePeFakeWire] = field(default_factory=dict)
+    #: One stateful `PayUFakeWire` per merchant key, as `COLLECTIONS_PAYU_WIRE=stub` runs.
+    payu_wires: dict[str, PayUFakeWire] = field(default_factory=dict)
     #: The non-secret config of every adapter built, in order.
     configs: list[dict[str, Any]] = field(default_factory=list)
 
@@ -86,6 +90,13 @@ class MerchantProviders:
             self.key_secrets_seen.append(key_secret)
         self.built.append((provider, mode))
         self.configs.append(dict(config or {}))
+        if provider == "payu":
+            return PayUCollectionsProvider(
+                wire=self.payu_wires.setdefault(key_id, PayUFakeWire()),
+                key=key_id,
+                salt=key_secret,
+                mode="stub",
+            )
         if provider == "phonepe":
             return PhonePeCollectionsProvider(
                 wire=self.phonepe_wires.setdefault(key_id, PhonePeFakeWire()),
