@@ -166,6 +166,8 @@ class Recorded:
     event_id: str
     outcome: str
     duplicate: bool
+    #: The minimised payload that was stored (what a handler may act on).
+    payload: Mapping[str, Any]
 
 
 async def record_event(
@@ -211,4 +213,5 @@ async def record_event(
         event_id=parsed.event_id,
         outcome="received" if known else "ignored",
         duplicate=inserted is None,
+        payload=minimise(parsed.fields, verifier.allowed_fields),
     )

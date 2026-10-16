@@ -23,6 +23,8 @@ type name.
 
 from __future__ import annotations
 
+import json
+import secrets
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol, runtime_checkable
@@ -63,6 +65,17 @@ class CarrierBookingRequest:
     consignee_address: str
     cod_amount_minor: int = 0
     currency: str = "INR"
+    consignee_city: str = ""
+    consignee_state: str = ""
+    consignee_email: str = ""
+    length_cm: int = 10
+    breadth_cm: int = 10
+    height_cm: int = 10
+    #: The pickup location registered at the carrier (the connection's `external_shop_id`).
+    pickup_location: str = ""
+    #: ISO date the order was placed, and its value for the carrier's records.
+    order_date: str = ""
+    declared_value_minor: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +85,34 @@ class CarrierBooking:
 
     awb: str
     external_shipment_id: str
+    label_url: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CarrierCredential:
+    """A carrier connection's sealed credential: the account key (token or login), an optional
+    second half (a password) and the token the carrier presents on its tracking webhook. One
+    JSON string inside the existing sealed `api_key_enc`, so no column or migration is needed."""
+
+    key: str
+    secret: str
+    webhook_token: str
+
+    def pack(self) -> str:
+        return json.dumps({"k": self.key, "s": self.secret, "w": self.webhook_token})
+
+    @classmethod
+    def unpack(cls, raw: str) -> CarrierCredential | None:
+        """None for anything that is not a packed carrier credential -- callers fail closed."""
+        try:
+            data = json.loads(raw)
+            return cls(key=data["k"], secret=data["s"], webhook_token=data["w"])
+        except (ValueError, KeyError, TypeError):
+            return None
+
+    @classmethod
+    def new(cls, key: str, secret: str = "") -> CarrierCredential:
+        return cls(key=key, secret=secret, webhook_token=secrets.token_urlsafe(24))
 
 
 @dataclass(frozen=True, slots=True)

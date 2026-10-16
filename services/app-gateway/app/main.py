@@ -155,6 +155,10 @@ WEBHOOK_PUBLIC_PATHS: Mapping[str, frozenset[str]] = MappingProxyType(
         "/api/v1/webhooks/whatsapp/data-deletion-status": frozenset({"GET"}),
         "/api/v1/webhooks/razorpay/collections": frozenset({"POST"}),
         "/api/v1/webhooks/collections": frozenset({"POST"}),
+        # A customer's own Shiprocket account pushing tracking (operations verifies the
+        # per-connection `x-api-key` token). Shiprocket forbids "shiprocket"/"sr"/"kr" in a webhook
+        # URL, hence the neutral slug. Body cap 256 KiB in both route tables.
+        "/api/v1/webhooks/operations/parcel-track": frozenset({"POST"}),
     }
 )
 

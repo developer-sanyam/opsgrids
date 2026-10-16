@@ -275,6 +275,7 @@ async def dispatch_order(  # type: ignore[no-untyped-def]
     payment_confirmed: bool = False,
     perms: list[str] | None = None,
     channel_id: uuid.UUID | None = None,
+    booking: dict | None = None,
 ):
     principal = principal_for(
         org_id, perms if perms is not None else [DISPATCH_WRITE_PERM], subject_ref=uuid.uuid4()
@@ -289,6 +290,8 @@ async def dispatch_order(  # type: ignore[no-untyped-def]
         body["carrier_name"] = carrier_name
     if channel_id is not None:
         body["channel_id"] = str(channel_id)
+    if booking is not None:
+        body["booking"] = booking
     with as_principal(principal):
         return await client.post("/api/v1/operations/dispatch/shipments", json=body)
 

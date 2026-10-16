@@ -1611,6 +1611,115 @@
         "title": "CancelIn",
         "type": "object"
       },
+      "CarrierBookingIn": {
+        "additionalProperties": false,
+        "description": "Where and what to book when `POST /dispatch/shipments` ships through a carrier connection\nin `live` mode. The order carries no address, so the dispatcher supplies it here.",
+        "properties": {
+          "breadth_cm": {
+            "default": 10,
+            "maximum": 200.0,
+            "minimum": 1.0,
+            "title": "Breadth Cm",
+            "type": "integer"
+          },
+          "cod_amount_minor": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Cod Amount Minor",
+            "type": "integer"
+          },
+          "consignee_address": {
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Consignee Address",
+            "type": "string"
+          },
+          "consignee_city": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Consignee City",
+            "type": "string"
+          },
+          "consignee_email": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "pattern": "^[^@\\s]+@[^@\\s]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Consignee Email"
+          },
+          "consignee_name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Consignee Name",
+            "type": "string"
+          },
+          "consignee_phone": {
+            "pattern": "^\\+?\\d{10,15}$",
+            "title": "Consignee Phone",
+            "type": "string"
+          },
+          "consignee_state": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Consignee State",
+            "type": "string"
+          },
+          "destination_pincode": {
+            "pattern": "^\\d{6}$",
+            "title": "Destination Pincode",
+            "type": "string"
+          },
+          "height_cm": {
+            "default": 10,
+            "maximum": 200.0,
+            "minimum": 1.0,
+            "title": "Height Cm",
+            "type": "integer"
+          },
+          "length_cm": {
+            "default": 10,
+            "maximum": 200.0,
+            "minimum": 1.0,
+            "title": "Length Cm",
+            "type": "integer"
+          },
+          "service_code": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{1,10}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Service Code"
+          },
+          "weight_grams": {
+            "maximum": 500000.0,
+            "minimum": 1.0,
+            "title": "Weight Grams",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "consignee_name",
+          "consignee_phone",
+          "consignee_address",
+          "consignee_city",
+          "consignee_state",
+          "destination_pincode",
+          "weight_grams"
+        ],
+        "title": "CarrierBookingIn",
+        "type": "object"
+      },
       "CashfreeOrderCheckoutSessionOut": {
         "description": "What the browser's `Cashfree({mode}).checkout({paymentSessionId})` needs (ADR-0033). The\nsession id is fetched from Cashfree for this response by payment and never stored anywhere;\nreopening the checkout fetches it again. No credential, and no customer detail: the phone\nCashfree requires went to it server to server.",
         "properties": {
@@ -2001,6 +2110,19 @@
             "title": "Api Key",
             "type": "string"
           },
+          "api_secret": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Secret"
+          },
           "auto_accept_orders": {
             "default": true,
             "title": "Auto Accept Orders",
@@ -2042,7 +2164,10 @@
             "type": "string"
           },
           "provider": {
-            "const": "mock_marketplace",
+            "enum": [
+              "mock_marketplace",
+              "shiprocket"
+            ],
             "title": "Provider",
             "type": "string"
           }
@@ -2261,6 +2386,19 @@
             "minLength": 1,
             "title": "Api Key",
             "type": "string"
+          },
+          "api_secret": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Secret"
           }
         },
         "required": [
@@ -19535,6 +19673,16 @@
         "additionalProperties": false,
         "description": "`POST /dispatch/shipments` \u2014 the carrier handover (Fulfilment plan F5): creates the\nshipment, already at `PICKUP_HANDOVER`, posts the dispatch `issue` move against whatever pick\nand pack transferred (ADR-0024 \u00a76), and moves the order `READY -> HANDED_OVER -> DELIVERED`\nin the same call once `app.orders.services.check_billing_gate` passes \u2014 the delivery/courier\ncounterpart to `POST /orders/{id}/hand-over`'s counter/walk-in path.\n\n`carrier_name`/`tracking_reference` are manual text only \u2014 no carrier API integration exists\nin this build (Fulfilment plan F5's own \"not in phase\" list); `tracking_reference` may be\nunknown at handover and set (or corrected) on a later transition instead.\n\n`payment_confirmed` mirrors `OrderHandoverIn`'s own field exactly \u2014 the carrier-desk\noperator's attestation that a cash/prepaid order's payment was collected, the same documented\nstand-in for `services/payment`'s tenant collections module (ADR-0024 A4) the counter path\nalready uses (security review M3). Inert for a credit-terms order.",
         "properties": {
+          "booking": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CarrierBookingIn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "carrier_name": {
             "anyOf": [
               {
@@ -19661,6 +19809,8 @@
           },
           "status": {
             "enum": [
+              "BOOKING",
+              "BOOKING_FAILED",
               "PICKUP_HANDOVER",
               "IN_TRANSIT",
               "DELIVERED",
@@ -23055,6 +23205,25 @@
         "title": "WastageThresholdOut",
         "type": "object"
       },
+      "WebhookSetupOut": {
+        "description": "What the customer registers at their carrier for tracking: the public path (the dashboard\nprefixes its own origin) and the token the carrier must present. The token is a secret.",
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "token": {
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "token"
+        ],
+        "title": "WebhookSetupOut",
+        "type": "object"
+      },
       "WorkerIn": {
         "additionalProperties": false,
         "description": "`POST /fulfilment/workers`.",
@@ -24383,6 +24552,49 @@
           }
         },
         "summary": "Poll this channel for new orders now, instead of waiting for the scheduled sync",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/api/v1/operations/channels/{channel_id}/webhook-setup": {
+      "get": {
+        "operationId": "channel_webhook_setup_api_v1_operations_channels__channel_id__webhook_setup_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "channel_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Channel Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookSetupOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "The tracking-webhook path and token to register at a carrier (audited reveal)",
         "tags": [
           "operations"
         ]
@@ -40272,16 +40484,16 @@
         ]
       }
     },
-    "/api/v1/webhooks/operations/{provider}": {
+    "/api/v1/webhooks/operations/{slug}": {
       "post": {
-        "operationId": "integration_webhook_api_v1_webhooks_operations__provider__post",
+        "operationId": "integration_webhook_api_v1_webhooks_operations__slug__post",
         "parameters": [
           {
             "in": "path",
-            "name": "provider",
+            "name": "slug",
             "required": true,
             "schema": {
-              "title": "Provider",
+              "title": "Slug",
               "type": "string"
             }
           },
