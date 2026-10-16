@@ -51,8 +51,11 @@ export function CarriersPage() {
     },
   });
   const reconnect = useMutation(
-    (input: { channel: ChannelOut; api_key: string; api_secret: string }) =>
-      reconnectChannel(input.channel.id, { api_key: input.api_key, api_secret: input.api_secret }),
+    (input: { channel: ChannelOut; api_key: string; api_secret?: string }) =>
+      reconnectChannel(input.channel.id, {
+        api_key: input.api_key,
+        ...(input.api_secret !== undefined ? { api_secret: input.api_secret } : {}),
+      }),
     {
       onSuccess: () => {
         setReconnecting(null);
@@ -65,11 +68,16 @@ export function CarriersPage() {
 
   function submitReconnect() {
     setCredentialError(undefined);
-    if (email.trim().length < 1 || password.length < 1) {
-      setCredentialError("Both the API user's email and password are needed to reconnect.");
+    const needsPassword = reconnecting?.provider === "shiprocket";
+    if (email.trim().length < 1 || (needsPassword && password.length < 1)) {
+      setCredentialError(
+        needsPassword ? "Both the API user's email and password are needed to reconnect." : "The API token is needed to reconnect.",
+      );
       return;
     }
-    if (reconnecting) void reconnect.mutate({ channel: reconnecting, api_key: email.trim(), api_secret: password });
+    if (reconnecting) {
+      void reconnect.mutate({ channel: reconnecting, api_key: email.trim(), ...(needsPassword ? { api_secret: password } : {}) });
+    }
   }
 
   const columns: Column<ChannelOut>[] = [
@@ -172,7 +180,7 @@ export function CarriersPage() {
                 <EmptyState
                   icon={<TruckIcon className="size-6" />}
                   title="No couriers connected yet"
-                  description="Connect your Shiprocket account to book shipments and get tracking without leaving dispatch."
+                  description="Connect your Shiprocket or Delhivery account to book shipments and get tracking without leaving dispatch."
                 />
               }
             />
@@ -241,25 +249,40 @@ export function CarriersPage() {
         pending={reconnect.pending}
         {...(reconnect.error ? { error: problemMessage(reconnect.error) } : {})}
       >
-        <TextField
-          label="API user email"
-          type="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          maxLength={500}
-          autoComplete="off"
-          required
-        />
-        <TextField
-          label="API user password"
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          maxLength={200}
-          autoComplete="new-password"
-          required
-          {...(credentialError !== undefined ? { error: credentialError } : {})}
-        />
+        {reconnecting?.provider === "delhivery" ? (
+          <TextField
+            label="API token"
+            type="password"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            maxLength={500}
+            autoComplete="off"
+            required
+            {...(credentialError !== undefined ? { error: credentialError } : {})}
+          />
+        ) : (
+          <>
+            <TextField
+              label="API user email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              maxLength={500}
+              autoComplete="off"
+              required
+            />
+            <TextField
+              label="API user password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              maxLength={200}
+              autoComplete="new-password"
+              required
+              {...(credentialError !== undefined ? { error: credentialError } : {})}
+            />
+          </>
+        )}
       </ConfirmDialog>
     </div>
   );
@@ -274,7 +297,11 @@ function WebhookSetup({ channel, onClose }: { channel: ChannelOut; onClose: () =
       onClose={onClose}
       onConfirm={onClose}
       title="Tracking webhook"
-      body="In Shiprocket, open Settings → API → Webhooks, add this URL, switch it on and paste the token as the security token. Tracking then updates your shipments as it happens."
+      body={
+        channel.provider === "delhivery"
+          ? "Delhivery switches scan pushes on for you: email lastmile-integration@delhivery.com the Webhook Requirement Document with this URL and the token as the Authorization header value. Tracking then updates your shipments as it happens."
+          : "In Shiprocket, open Settings → API → Webhooks, add this URL, switch it on and paste the token as the security token. Tracking then updates your shipments as it happens."
+      }
       confirmLabel="Done"
       tone="primary"
     >

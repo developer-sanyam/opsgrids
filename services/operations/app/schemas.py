@@ -2236,7 +2236,7 @@ class OrderRefundIn(BaseModel):
 
 # ------------------------------------------------------------------ channels (Fulfilment plan F11)
 
-ChannelProvider = Literal["mock_marketplace", "shiprocket"]
+ChannelProvider = Literal["mock_marketplace", "shiprocket", "delhivery"]
 ChannelStatus = Literal["connected", "disconnected", "error"]
 ChannelSyncType = Literal["order_import", "inventory_push", "fulfilment_push", "health_check"]
 ChannelSyncStatus = Literal["success", "failed"]

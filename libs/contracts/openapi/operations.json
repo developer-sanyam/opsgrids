@@ -2166,7 +2166,8 @@
           "provider": {
             "enum": [
               "mock_marketplace",
-              "shiprocket"
+              "shiprocket",
+              "delhivery"
             ],
             "title": "Provider",
             "type": "string"

@@ -9,7 +9,7 @@ from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any
 
-from app.channels import shiprocket
+from app.channels import delhivery, shiprocket
 from app.channels.carrier import CarrierClient, CarrierCredential
 from app.channels.webhooks import VERIFIERS as _BASE_VERIFIERS
 from app.channels.webhooks import WebhookVerifier
@@ -19,6 +19,7 @@ from platform_core.errors import ValidationProblem
 VERIFIERS: dict[str, WebhookVerifier] = {
     **_BASE_VERIFIERS,
     "shiprocket": shiprocket.ShiprocketVerifier(),
+    "delhivery": delhivery.DelhiveryVerifier(),
 }
 
 #: The last path segment of a public webhook URL -> the provider it belongs to. Absent means the
@@ -28,6 +29,7 @@ WEBHOOK_SLUGS: dict[str, str] = {"parcel-track": "shiprocket"}
 #: provider -> `(minimised payload) -> (awb, platform status, occurred_at) | None`.
 TRACKING_MAPPERS: dict[str, Callable[[Mapping[str, Any]], tuple[str, str, datetime] | None]] = {
     "shiprocket": shiprocket.tracking_update,
+    "delhivery": delhivery.tracking_update,
 }
 
 
@@ -38,5 +40,9 @@ def build_carrier_client(provider: str, credential: CarrierCredential) -> Carrie
             base_url=settings().shiprocket_api_base,
             email=credential.key,
             password=credential.secret,
+        )
+    if provider == "delhivery":
+        return delhivery.DelhiveryClient(
+            base_url=settings().delhivery_api_base, token=credential.key
         )
     raise ValidationProblem(f"{provider!r} is not a carrier this build can book with")
