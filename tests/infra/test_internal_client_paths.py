@@ -395,6 +395,23 @@ asyncio.run(main())
 emit(ORG, cfg, "customer")
 """
 
+# A14: notification -> lead `leads:export`, the cold e-mail audience's read.
+_A14 = """
+from app import crm_leads
+from app.config import Settings
+
+cfg = Settings()
+
+
+async def main():
+    async with make_client() as client:
+        await attempt(crm_leads.fetch_leads(cfg, uuid.UUID(ORG), client=client))
+
+
+asyncio.run(main())
+emit(ORG, cfg, "lead")
+"""
+
 # --------------------------------------------------------------------------------- the registry
 
 
@@ -517,6 +534,15 @@ CALLS: tuple[Call, ...] = (
         "/internal/v1/organizations/{org}/contacts:export",
         "notification/app/crm_contacts.py",
         _A13,
+    ),
+    Call(
+        "A14",
+        "notification",
+        "lead",
+        "GET",
+        "/internal/v1/organizations/{org}/leads:export",
+        "notification/app/crm_leads.py",
+        _A14,
     ),
 )
 

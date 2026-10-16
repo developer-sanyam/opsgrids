@@ -36,6 +36,7 @@ from app.schemas import (
     LeadPatch,
     LeadRevealIn,
     LeadRevealOut,
+    LeadSource,
     ServiceInfo,
 )
 from platform_core.auth import CurrentPrincipal, ScopeContext, require, require_product
@@ -166,8 +167,9 @@ async def list_leads(
     params: PageQuery,
     lead_status: Annotated[str | None, Query(alias="status")] = None,
     owner_id: Annotated[uuid.UUID | None, Query()] = None,
+    source: Annotated[LeadSource | None, Query()] = None,
 ) -> Page[LeadOut]:
-    stmt = selectors.leads_stmt(ctx, status=lead_status, owner_id=owner_id)
+    stmt = selectors.leads_stmt(ctx, status=lead_status, owner_id=owner_id, source=source)
     rows, total = await paginate(session, stmt, params)
     return Page.build([selectors.lead_out(lead) for lead in rows], total=total, params=params)
 

@@ -72,6 +72,7 @@ import type {
   LeadConvertOptions,
   LeadConvertResult,
   LeadRevealField,
+  LeadSource,
   LeadStatus,
   Owner,
   Page,
@@ -827,6 +828,7 @@ export async function updateOwner(id: string, patch: OwnerPatch): Promise<Owner>
 
 export interface ListLeadsParams {
   status?: LeadStatus | "all";
+  source?: LeadSource | "all";
   ownerId?: string | "all";
   page?: number;
   size?: number;
@@ -839,14 +841,16 @@ export async function listLeads(params: ListLeadsParams = {}): Promise<Page<Lead
   if (USE_FIXTURES) {
     const filtered = LEADS.filter((l) => {
       const matchesStatus = !params.status || params.status === "all" || l.status === params.status;
+      const matchesSource = !params.source || params.source === "all" || l.source === params.source;
       const matchesOwner =
         !params.ownerId || params.ownerId === "all" || l.owner_id === params.ownerId;
-      return matchesStatus && matchesOwner;
+      return matchesStatus && matchesSource && matchesOwner;
     });
     return settle(paginateFixture(filtered, page, size));
   }
   const query = new URLSearchParams({ page: String(page), size: String(size) });
   if (params.status && params.status !== "all") query.set("status", params.status);
+  if (params.source && params.source !== "all") query.set("source", params.source);
   if (params.ownerId && params.ownerId !== "all") query.set("owner_id", params.ownerId);
   const result = await apiRequest<WirePage<LeadOut>>(`/leads?${query.toString()}`, {
     signal: params.signal,

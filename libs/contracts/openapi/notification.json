@@ -914,6 +914,11 @@
             "title": "Channel",
             "type": "string"
           },
+          "cold_outreach": {
+            "default": false,
+            "title": "Cold Outreach",
+            "type": "boolean"
+          },
           "completed_at": {
             "anyOf": [
               {
@@ -3368,6 +3373,331 @@
           "costs"
         ],
         "title": "HubOverview",
+        "type": "object"
+      },
+      "LeadAudiencePreviewIn": {
+        "additionalProperties": false,
+        "description": "The draft the preview fills in with a real lead, so the rep sees what goes out.",
+        "properties": {
+          "lead_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "maxItems": 2000,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lead Ids"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "form",
+                  "import",
+                  "manual"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "new",
+                  "working",
+                  "qualified",
+                  "disqualified",
+                  "converted"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "subject": {
+            "default": "",
+            "maxLength": 255,
+            "title": "Subject",
+            "type": "string"
+          },
+          "text_body": {
+            "default": "",
+            "maxLength": 500000,
+            "title": "Text Body",
+            "type": "string"
+          }
+        },
+        "title": "LeadAudiencePreviewIn",
+        "type": "object"
+      },
+      "LeadAudiencePreviewOut": {
+        "properties": {
+          "daily_cap": {
+            "title": "Daily Cap",
+            "type": "integer"
+          },
+          "excluded": {
+            "title": "Excluded",
+            "type": "integer"
+          },
+          "sample": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LeadSample"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "selected": {
+            "title": "Selected",
+            "type": "integer"
+          },
+          "sendable": {
+            "title": "Sendable",
+            "type": "integer"
+          },
+          "sent_today": {
+            "title": "Sent Today",
+            "type": "integer"
+          },
+          "skipped_status": {
+            "title": "Skipped Status",
+            "type": "integer"
+          },
+          "unknown_fields": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unknown Fields",
+            "type": "array"
+          },
+          "with_email": {
+            "title": "With Email",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "selected",
+          "with_email",
+          "skipped_status",
+          "excluded",
+          "sendable",
+          "daily_cap",
+          "sent_today",
+          "sample",
+          "unknown_fields"
+        ],
+        "title": "LeadAudiencePreviewOut",
+        "type": "object"
+      },
+      "LeadCampaignIn": {
+        "additionalProperties": false,
+        "properties": {
+          "html_body": {
+            "default": "",
+            "maxLength": 500000,
+            "title": "Html Body",
+            "type": "string"
+          },
+          "lead_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "maxItems": 2000,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lead Ids"
+          },
+          "name": {
+            "default": "",
+            "maxLength": 160,
+            "title": "Name",
+            "type": "string"
+          },
+          "sender_id": {
+            "format": "uuid",
+            "title": "Sender Id",
+            "type": "string"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "form",
+                  "import",
+                  "manual"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "new",
+                  "working",
+                  "qualified",
+                  "disqualified",
+                  "converted"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "subject": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Subject",
+            "type": "string"
+          },
+          "text_body": {
+            "maxLength": 500000,
+            "minLength": 1,
+            "title": "Text Body",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sender_id",
+          "subject",
+          "text_body"
+        ],
+        "title": "LeadCampaignIn",
+        "type": "object"
+      },
+      "LeadCampaignOut": {
+        "properties": {
+          "campaign": {
+            "$ref": "#/components/schemas/CampaignOut"
+          },
+          "daily_cap": {
+            "title": "Daily Cap",
+            "type": "integer"
+          },
+          "excluded": {
+            "title": "Excluded",
+            "type": "integer"
+          },
+          "selected": {
+            "title": "Selected",
+            "type": "integer"
+          },
+          "sendable": {
+            "title": "Sendable",
+            "type": "integer"
+          },
+          "sent_today": {
+            "title": "Sent Today",
+            "type": "integer"
+          },
+          "skipped_status": {
+            "title": "Skipped Status",
+            "type": "integer"
+          },
+          "with_email": {
+            "title": "With Email",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "selected",
+          "with_email",
+          "skipped_status",
+          "excluded",
+          "sendable",
+          "daily_cap",
+          "sent_today",
+          "campaign"
+        ],
+        "title": "LeadCampaignOut",
+        "type": "object"
+      },
+      "LeadColdEmailOut": {
+        "description": "One line of a lead's timeline: a cold email sent. The campaign subject, never the body or\nthe address.",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "campaign_id",
+          "title",
+          "at"
+        ],
+        "title": "LeadColdEmailOut",
+        "type": "object"
+      },
+      "LeadSample": {
+        "properties": {
+          "full_name": {
+            "title": "Full Name",
+            "type": "string"
+          },
+          "lead_id": {
+            "title": "Lead Id",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "text_body": {
+            "title": "Text Body",
+            "type": "string"
+          }
+        },
+        "required": [
+          "lead_id",
+          "full_name",
+          "subject",
+          "text_body"
+        ],
+        "title": "LeadSample",
         "type": "object"
       },
       "LinkClicks": {
@@ -11640,6 +11970,136 @@
           }
         },
         "summary": "Create or replace an email template",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/lead-campaigns": {
+      "post": {
+        "description": "Copies the leads that have an address into the contact book (no consent is written),\nmakes a list of exactly them and a draft campaign over it. Send or schedule it with the\nordinary `/engage/campaigns/{id}/send` and `/schedule`, which keep every gate. 422 when\nnobody in the selection can be emailed.",
+        "operationId": "draft_lead_campaign_api_v1_engage_lead_campaigns_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeadCampaignIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeadCampaignOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Draft a cold-email campaign to the selected leads",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/lead-campaigns/leads/{lead_id}/emails": {
+      "get": {
+        "operationId": "read_lead_cold_emails_api_v1_engage_lead_campaigns_leads__lead_id__emails_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "lead_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Lead Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/LeadColdEmailOut"
+                  },
+                  "title": "Response Read Lead Cold Emails Api V1 Engage Lead Campaigns Leads  Lead Id  Emails Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cold emails sent to one lead, newest first (subject only)",
+        "tags": [
+          "engage"
+        ]
+      }
+    },
+    "/api/v1/engage/lead-campaigns/preview": {
+      "post": {
+        "operationId": "preview_lead_campaign_api_v1_engage_lead_campaigns_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeadAudiencePreviewIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeadAudiencePreviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "What an email to these leads would reach, with a real lead filled in. Writes nothing",
         "tags": [
           "engage"
         ]

@@ -7,6 +7,7 @@ import { useDirectory } from "@/data/directoryContext";
 import { useMyRep } from "@/data/useMyRep";
 import { ownerById } from "@/data/lookups";
 import { ConvertLeadDialog } from "@/forms/ConvertLeadDialog";
+import { ColdEmailCard } from "@/ui/ColdEmailCard";
 import { formatDate } from "@/lib/format";
 import { RevealField } from "@/reveal/RevealField";
 import {
@@ -380,6 +381,8 @@ export function LeadDetailPage() {
                     ) : null}
                   </Card>
                 </div>
+
+                <ColdEmailCard leadId={l.id} />
 
                 {confirmingConvert ? (
                   <ConvertLeadDialog

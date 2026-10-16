@@ -129,6 +129,22 @@ function count(label: string): string | null {
   return term.nextElementSibling?.textContent ?? null;
 }
 
+describe("a cold email to CRM leads", () => {
+  it("says so, and an ordinary campaign does not", async () => {
+    mockRefs();
+    vi.spyOn(client, "listCampaignRecipients").mockResolvedValue(page(ROWS));
+    vi.spyOn(client, "getCampaign").mockResolvedValue({ ...SENT, cold_outreach: true });
+    const { unmount } = renderReport(SENT);
+    expect(await screen.findByText(/Cold email to CRM leads/)).toBeTruthy();
+    unmount();
+
+    vi.spyOn(client, "getCampaign").mockResolvedValue(SENT);
+    renderReport(SENT);
+    await screen.findByText("Addressed to");
+    expect(screen.queryByText(/Cold email to CRM leads/)).toBeNull();
+  });
+});
+
 describe("a sent campaign", () => {
   function mockSent() {
     mockRefs();

@@ -120,6 +120,25 @@ class LeadOut(BaseModel):
     created_at: datetime
 
 
+class LeadExportItem(BaseModel):
+    """One lead as Engage's cold e-mail audience needs it (internal). `email` is the real address
+    (null with `emails=false` or none on file)."""
+
+    lead_id: str
+    full_name: str
+    company: str | None
+    email: str | None
+    status: LeadStatus
+    source: LeadSource
+    owner_id: str | None
+
+
+class LeadExportOut(BaseModel):
+    items: list[LeadExportItem]
+    #: Keyset cursor for the next page; None on the last page (and always for an `ids` read).
+    next_after_id: str | None = None
+
+
 class LeadConvertIn(BaseModel):
     """Optional say over the deal a conversion opens. The whole body is optional, and so is each
     field: `POST /leads/{id}:convert` with no body opens a zero-value deal in the pipeline's

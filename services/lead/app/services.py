@@ -1010,6 +1010,21 @@ class ConversionClaim:
     raw_phone: str | None
 
 
+def open_lead_emails(leads: Sequence[Lead]) -> dict[uuid.UUID, str]:
+    """Real addresses for an internal export (Engage's cold e-mail audience), by lead id. A lead
+    with none on file, or one that will not open, is simply absent: the caller sends to nobody
+    rather than failing the page. Never logged."""
+    out: dict[uuid.UUID, str] = {}
+    for lead in leads:
+        if lead.email_enc is None:
+            continue
+        try:
+            out[lead.id] = open_sealed(lead.email_enc, settings=settings())
+        except PiiError:
+            log.error("lead.export.unopenable", lead_id=str(lead.id))
+    return out
+
+
 async def claim_conversion(
     session: AsyncSession,
     ctx: ScopeContext,

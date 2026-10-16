@@ -844,7 +844,12 @@ class Contact(Base, TenantBase):
     attributes: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     #: The CRM contact this row is a copy of: a plain UUID, never a foreign key (ADR-0000 §10).
     crm_contact_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
-    #: manual | import | signup | crm. A `crm` row is managed in the CRM (PATCH/DELETE are 409).
+    #: The CRM lead this row was built from for a cold-email campaign (ADR-0038 addendum
+    #: 2026-10-16): a plain UUID, never a foreign key. Only a row carrying one can be mailed by a
+    #: `cold_outreach` campaign.
+    crm_lead_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    #: manual | import | signup | crm | crm_lead. A `crm` row is managed in the CRM (PATCH/DELETE
+    #: are 409); a `crm_lead` row is Engage's own copy of a lead's address and may be deleted.
     origin: Mapped[str] = mapped_column(
         String(12), nullable=False, default="manual", server_default=text("'manual'")
     )
@@ -857,7 +862,9 @@ class Contact(Base, TenantBase):
     __table_args__ = (
         UniqueConstraint("organization_id", "email_index", name="uq_contact_org_email"),
         Index("ix_contacts_org_name", "organization_id", "name"),
-        CheckConstraint("origin IN ('manual', 'import', 'signup', 'crm')", name="origin"),
+        CheckConstraint(
+            "origin IN ('manual', 'import', 'signup', 'crm', 'crm_lead')", name="origin"
+        ),
         CheckConstraint(
             "email_index IS NOT NULL OR phone_index IS NOT NULL", name="has_an_address"
         ),
@@ -867,6 +874,13 @@ class Contact(Base, TenantBase):
             "crm_contact_id",
             unique=True,
             postgresql_where=text("crm_contact_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_contact_org_crm_lead",
+            "organization_id",
+            "crm_lead_id",
+            unique=True,
+            postgresql_where=text("crm_lead_id IS NOT NULL"),
         ),
         Index(
             "ix_contacts_org_phone_index",
@@ -1181,6 +1195,13 @@ class Campaign(Base, TenantBase):
     #: a | b, once decided; null before (and always, for a campaign that is not an A/B test).
     ab_winner: Mapped[str | None] = mapped_column(String(1))
     ab_decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: B2B cold outreach to CRM leads under legitimate interest (ADR-0038 addendum 2026-10-16).
+    #: Changes exactly one thing: the audience needs "not opted out" instead of "opted in", and
+    #: only for contacts built from a lead. Suppressions, opt-outs, the unsubscribe link and the
+    #: daily cold cap apply as always. Set only by `services.create_lead_campaign`.
+    cold_outreach: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
     __table_args__ = (
         CheckConstraint(

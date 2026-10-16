@@ -118,6 +118,7 @@ function Contacts() {
             {contact.email !== "" ? contact.email : (contact.phone ?? "")}
           </span>
           {contact.origin === "crm" ? <span className="text-xs text-muted">From the CRM</span> : null}
+          {contact.origin === "crm_lead" ? <span className="text-xs text-muted">From a CRM lead</span> : null}
         </div>
       ),
     },

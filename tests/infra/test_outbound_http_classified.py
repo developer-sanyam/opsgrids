@@ -73,6 +73,8 @@ CLASSIFIED: dict[tuple[str, str], tuple[str, str]] = {
     ("services/notification/app/targets.py", "resolve_contact_target"): (PLATFORM, "sibling services' URLs from settings"),
     ("services/notification/app/memberships.py", "membership_is_active"): (PLATFORM, "account-service URL from settings"),
     ("services/notification/app/storefront_optin.py", "fetch_storefront_opt_in"): (PLATFORM, "storefront-service URL from settings"),
+    ("services/notification/app/crm_contacts.py", "_export"): (PLATFORM, "customer-service URL from settings"),
+    ("services/notification/app/crm_leads.py", "fetch_leads"): (PLATFORM, "lead-service URL from settings"),
     ("services/console/app/api/routes.py", "get_delegation_client"): (PLATFORM, "this platform's own admin endpoints"),
     ("services/console/app/backfill.py", "main"): (PLATFORM, "this platform's own services"),
     ("services/console/app/price.py", "resolve_plan_price"): (PLATFORM, "catalog-service URL from settings"),

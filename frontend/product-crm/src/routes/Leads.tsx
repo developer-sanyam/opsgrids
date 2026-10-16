@@ -2,14 +2,15 @@ import { useCallback, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { listLeads } from "@/api/client";
-import type { Lead, LeadStatus } from "@/api/types";
+import type { LeadSelection } from "@/api/coldEmail";
+import type { Lead, LeadSource, LeadStatus } from "@/api/types";
 import { useDirectory } from "@/data/directoryContext";
 import { useMyRep } from "@/data/useMyRep";
 import { leadImport } from "@/data/importExport/leads";
 import type { LeadFilters } from "@/data/importExport/leads";
 import { formatDate } from "@/lib/format";
-import { Can, problemMessage, useAsync, useCan, useImportExport } from "@opsgrids/client";
-import { ImportExportButton, PlusIcon, UserPlusIcon, ChipRow } from "@opsgrids/ui";
+import { Can, problemMessage, useAsync, useCan, useEntitlement, useImportExport } from "@opsgrids/client";
+import { ImportExportButton, MailIcon, PlusIcon, UserPlusIcon, ChipRow, useToast } from "@opsgrids/ui";
 import {
   Button,
   Card,
@@ -21,12 +22,28 @@ import {
   PageHeader,
   Pagination,
   Pill,
+  Select,
   Skeleton,
 } from "@/ui";
-import type { Column } from "@/ui";
+import type { Column, TableSelection } from "@/ui";
+import { EmailLeadsDialog } from "@/forms/EmailLeadsDialog";
 import { LeadFormDialog } from "@/forms/LeadFormDialog";
 
 type StatusFilter = LeadStatus | "all";
+type SourceFilter = LeadSource | "all";
+
+const SOURCE_FILTERS: { value: SourceFilter; label: string }[] = [
+  { value: "all", label: "All sources" },
+  { value: "form", label: "Web form" },
+  { value: "import", label: "Import" },
+  { value: "manual", label: "Manual" },
+];
+
+/** What the email dialog is for, in the Leads list's own words. */
+function describe(status: StatusFilter, source: SourceFilter): string {
+  if (status === "all" && source === "all") return "all the leads you can see";
+  return `${status === "all" ? "all" : status} leads${source === "all" ? "" : ` from ${source}`}`;
+}
 
 const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
   { value: "all", label: "All" },
@@ -91,15 +108,51 @@ export function LeadsPage() {
   const [status, setStatus] = useState<StatusFilter>("all");
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(PAGE_SIZE);
+  const [source, setSource] = useState<SourceFilter>("all");
   const [creating, setCreating] = useState(false);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [emailing, setEmailing] = useState<{ selection: LeadSelection; label: string } | null>(null);
+  const toast = useToast();
 
   const loader = useCallback(
-    () => listLeads({ status, page, size }),
-    [status, page, size],
+    () => listLeads({ status, source, page, size }),
+    [status, source, page, size],
   );
-  const leads = useAsync(loader, [status, page, size]);
+  const leads = useAsync(loader, [status, source, page, size]);
   const columns = useMemo(() => buildColumns(), []);
   const canCreate = useCan("crm.lead.lead.write", "OWN");
+  // Hides the control only; the server checks the entitlement, both permissions and lead scope.
+  const entitledToEngage = useEntitlement("engage");
+  const canDraft = useCan("engage.campaign.campaign.write", "ORG");
+  const canSend = useCan("engage.campaign.campaign.send", "ORG");
+  const canEmail = entitledToEngage && canDraft && canSend;
+
+  function emailMatching() {
+    setEmailing({
+      selection: { kind: "filter", status: status === "all" ? null : status, source: source === "all" ? null : source },
+      label: describe(status, source),
+    });
+  }
+  function emailSelected() {
+    const n = selected.size;
+    setEmailing({
+      selection: { kind: "ids", ids: [...selected] },
+      label: `${n} selected ${n === 1 ? "lead" : "leads"}`,
+    });
+  }
+  const selection: TableSelection<Lead> = {
+    selected,
+    onToggle: (key, next) =>
+      setSelected((prev) => {
+        const copy = new Set(prev);
+        if (next) copy.add(key);
+        else copy.delete(key);
+        return copy;
+      }),
+    onToggleAll: (next) =>
+      setSelected(next && leads.status === "success" ? new Set(leads.data.items.map((l) => l.id)) : new Set()),
+    label: (l) => l.full_name,
+  };
 
   // The export writes the whole filtered list, not the page on screen, so it needs the filters
   // the list itself is loaded with.
@@ -123,6 +176,11 @@ export function LeadsPage() {
               canImport={canCreate}
               canExport
             />
+            {canEmail ? (
+              <Button variant="outline" leadingIcon={<MailIcon className="size-4" />} onClick={emailMatching}>
+                Email these leads
+              </Button>
+            ) : null}
             <Can permission="crm.lead.lead.write" scope="OWN">
               <Button leadingIcon={<PlusIcon className="size-4" />} onClick={() => setCreating(true)}>
                 Capture lead
@@ -141,12 +199,24 @@ export function LeadsPage() {
               onClick={() => {
                 setStatus(f.value);
                 setPage(1);
+                setSelected(new Set());
               }}
             >
               {f.label}
             </Pill>
           ))}
         </ChipRow>
+        <Select
+          label="Source"
+          containerClassName="sm:max-w-xs"
+          value={source}
+          onChange={(e) => {
+            setSource(e.target.value as SourceFilter);
+            setPage(1);
+            setSelected(new Set());
+          }}
+          options={SOURCE_FILTERS}
+        />
       </Card>
 
       {leads.status === "loading" ? (
@@ -193,6 +263,16 @@ export function LeadsPage() {
                 columns={columns}
                 rows={leads.data.items}
                 rowKey={(l) => l.id}
+                {...(canEmail
+                  ? {
+                      selection,
+                      bulkActions: (
+                        <Button variant="outline" size="sm" leadingIcon={<MailIcon className="size-4" />} onClick={emailSelected}>
+                          Email selected
+                        </Button>
+                      ),
+                    }
+                  : {})}
               />
             </Card>
             <Pagination
@@ -201,14 +281,31 @@ export function LeadsPage() {
               total={leads.data.total}
               size={leads.data.size}
               noun="leads"
-              onPageChange={setPage}
+              onPageChange={(n) => {
+                setPage(n);
+                setSelected(new Set());
+              }}
               onSizeChange={(n) => {
                 setSize(n);
                 setPage(1);
+                setSelected(new Set());
               }}
             />
           </>
         )
+      ) : null}
+
+      {emailing ? (
+        <EmailLeadsDialog
+          selection={emailing.selection}
+          selectionLabel={emailing.label}
+          onClose={() => setEmailing(null)}
+          onDone={(message) => {
+            setEmailing(null);
+            setSelected(new Set());
+            toast.success(message);
+          }}
+        />
       ) : null}
 
       {creating ? (

@@ -26,7 +26,7 @@ from fastapi import APIRouter, Body, Depends, Query, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import consent, dns_check, selectors, services, w2_selectors, webhooks
+from app import consent, dns_check, lead_campaigns, selectors, services, w2_selectors, webhooks
 from app import domain as _rules
 from app.api.w2_templates import template_out as _whatsapp_template_out
 from app.domain import UnsubscribeTarget
@@ -85,6 +85,11 @@ from app.schemas import (
     DomainIn,
     DomainOut,
     DomainPatch,
+    LeadAudiencePreviewIn,
+    LeadAudiencePreviewOut,
+    LeadCampaignIn,
+    LeadCampaignOut,
+    LeadColdEmailOut,
     ListMembersIn,
     ListMembersOut,
     ProviderTemplateIn,
@@ -1536,6 +1541,7 @@ def _campaign_out(row: Campaign, counts: dict[str, int]) -> CampaignOut:
         ab_wait_minutes=row.ab_wait_minutes,
         ab_winner=row.ab_winner,
         ab_decided_at=row.ab_decided_at,
+        cold_outreach=row.cold_outreach,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -2127,3 +2133,72 @@ async def unsubscribe_via_link(token: str, session: PlainSessionDep, request: Re
     if _wants_html(request):
         return _html(_done_page(masked))
     return JSONResponse(UnsubscribeOut(unsubscribed=True).model_dump(), headers=_PUBLIC_HEADERS)
+
+
+# --------------------------------------------------------------- cold e-mail to CRM leads
+#
+# The CRM Leads list's "Email these leads" (ADR-0038 addendum 2026-10-16). Each route needs the
+# Engage entitlement, `engage.campaign.campaign.write` (read for the timeline), and the CRM
+# entitlement plus the caller's `crm.lead.lead.read` scope, which lead applies when it is asked for
+# the leads (`lead_campaigns.require_lead_access`). The leads are read first, with no transaction
+# open, and the database work follows in one short transaction of its own.
+
+
+async def _bind_tenant(session: AsyncSession, request: Request, organization_id: uuid.UUID) -> None:
+    cfg: ServiceSettings = request.app.state.settings
+    await set_tenant(session, organization_id)
+    if not cfg.is_production:
+        await assert_tenant(session, organization_id)
+
+
+@router.post(
+    "/engage/lead-campaigns/preview",
+    response_model=LeadAudiencePreviewOut,
+    summary="What an email to these leads would reach, with a real lead filled in. Writes nothing",
+    dependencies=[Entitled],
+)
+async def preview_lead_campaign(
+    body: LeadAudiencePreviewIn, session: RawSessionDep, ctx: CampaignWrite, request: Request
+) -> LeadAudiencePreviewOut:
+    leads = await lead_campaigns.read_selection(ctx.principal, body)
+    async with session.begin():
+        await _bind_tenant(session, request, ctx.organization_id)
+        return await lead_campaigns.preview(session, ctx.principal, body, leads)
+
+
+@router.post(
+    "/engage/lead-campaigns",
+    response_model=LeadCampaignOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Draft a cold-email campaign to the selected leads",
+    dependencies=[Entitled],
+)
+async def draft_lead_campaign(
+    body: LeadCampaignIn, session: RawSessionDep, ctx: CampaignWrite, request: Request
+) -> LeadCampaignOut:
+    """Copies the leads that have an address into the contact book (no consent is written),
+    makes a list of exactly them and a draft campaign over it. Send or schedule it with the
+    ordinary `/engage/campaigns/{id}/send` and `/schedule`, which keep every gate. 422 when
+    nobody in the selection can be emailed."""
+    leads = await lead_campaigns.read_selection(ctx.principal, body)
+    async with session.begin():
+        await _bind_tenant(session, request, ctx.organization_id)
+        row, _, counts = await lead_campaigns.create_lead_campaign(
+            session, ctx, body, leads, request=request
+        )
+        return LeadCampaignOut(**counts.model_dump(), campaign=_campaign_out(row, {}))
+
+
+@router.get(
+    "/engage/lead-campaigns/leads/{lead_id}/emails",
+    response_model=list[LeadColdEmailOut],
+    summary="Cold emails sent to one lead, newest first (subject only)",
+    dependencies=[Entitled],
+)
+async def read_lead_cold_emails(
+    lead_id: uuid.UUID, session: RawSessionDep, ctx: CampaignRead, request: Request
+) -> list[LeadColdEmailOut]:
+    await lead_campaigns.lead_visible(ctx.principal, lead_id)
+    async with session.begin():
+        await _bind_tenant(session, request, ctx.organization_id)
+        return await lead_campaigns.lead_cold_emails(session, ctx.organization_id, lead_id)

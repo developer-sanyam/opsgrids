@@ -5396,6 +5396,7 @@ async def _ensure_campaign_sendable(
         limit=1,
         list_id=row.list_id if row.audience == "list" else None,
         segment=segment,
+        cold=row.cold_outreach,
     ):
         raise BusinessRuleProblem(
             "You have no contacts who can be emailed."
@@ -5785,6 +5786,7 @@ async def expand_campaign(
             after_id=after,
             list_id=campaign.list_id if campaign.audience == "list" else None,
             segment=segment,
+            cold=campaign.cold_outreach,
             # FOR KEY SHARE: a concurrent `delete_contact` on one of these rows must wait for
             # this transaction to commit, so its own erasure of `campaign_recipients` — which
             # only sees rows that exist yet — always runs after the copy below exists to
@@ -6596,6 +6598,11 @@ async def claim_campaign_batch(
     today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     used = await selectors.campaign_mail_sent_since(session, organization_id, today)
     room = connection.daily_cap - used
+    if campaign.cold_outreach:
+        # The cold cap is per organization across every cold campaign; what it holds back stays
+        # `queued` and goes out when the UTC day turns over.
+        cold_used = await selectors.cold_mail_sent_since(session, organization_id, today)
+        room = min(room, settings().engage_cold_daily_cap - cold_used)
     if room <= 0:
         log.info("engage.campaign.capped", campaign_id=str(campaign_id), cap=connection.daily_cap)
         return "capped", None
@@ -6651,6 +6658,14 @@ async def claim_campaign_batch(
             resolved.append((recipient.id, "failed", _ERASED_ERROR))
             continue
         refusal = consent_decisions.get(recipient.email_index)
+        if (
+            campaign.cold_outreach
+            and refusal is not None
+            and refusal.reason == consent.REASON_NO_OPT_IN
+        ):
+            refusal = (
+                None  # Legitimate interest: silence is not an opt-out. Every other refusal stands.
+            )
         if refusal is not None and not refusal.allowed:
             # Recorded on the recipient as a machine-readable reason (`consent:opted_out`, ...).
             resolved.append((recipient.id, "suppressed", consent.stored_reason(refusal)))
