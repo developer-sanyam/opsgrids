@@ -228,6 +228,7 @@ async def set_merchant_account(
     key_secret: str,
     webhook_secret: str | None,
     mode: str | None = None,
+    config: dict[str, Any] | None = None,
     request: Request | None = None,
 ) -> MerchantAccount:
     """Connect the organization's provider account, or rotate its credentials in place.
@@ -265,6 +266,8 @@ async def set_merchant_account(
                 organization_id, existing.id, WEBHOOK_SECRET, webhook_secret
             )
             existing.webhook_secret_masked = domain.mask_secret(webhook_secret)
+        if config is not None:
+            existing.config = config
         existing.verified_at = None
         existing.last_error_code = None
         existing.rotated_at = now
@@ -280,7 +283,7 @@ async def set_merchant_account(
             entity="merchant_account",
             entity_id=existing.id,
             before=before,
-            after={"provider": provider, "key_id": key_id, "mode": mode},
+            after={"provider": provider, "key_id": key_id, "mode": mode, "config": existing.config},
             request=request,
         )
         return existing
@@ -302,6 +305,7 @@ async def set_merchant_account(
         ),
         webhook_secret_masked=domain.mask_secret(hook_secret) if hook_secret is not None else "",
         status=MERCHANT_ACCOUNT_ACTIVE,
+        config=config or {},
         created_by=str(actor_id) if actor_id else None,
         updated_at=now,
     )
@@ -321,7 +325,7 @@ async def set_merchant_account(
         action="payment.merchant_account.connected",
         entity="merchant_account",
         entity_id=account.id,
-        after={"provider": provider, "key_id": key_id, "mode": mode},
+        after={"provider": provider, "key_id": key_id, "mode": mode, "config": account.config},
         request=request,
     )
     return account

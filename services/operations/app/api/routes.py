@@ -69,6 +69,7 @@ from app.schemas import (
     ChannelConfigPatch,
     ChannelConnectIn,
     ChannelHealthCheckOut,
+    ChannelKind,
     ChannelOut,
     ChannelReconnectIn,
     ChannelRetryResultOut,
@@ -2964,6 +2965,7 @@ async def dispatch_order(
         order,
         expected_version=payload.order_version,
         carrier_name=payload.carrier_name,
+        channel_id=payload.channel_id,
         tracking_reference=payload.tracking_reference,
         payment_confirmed=payload.payment_confirmed,
         request=request,
@@ -3373,6 +3375,7 @@ async def connect_channel(
         session,
         ctx,
         provider=payload.provider,
+        kind=payload.kind,
         name=payload.name,
         external_shop_id=payload.external_shop_id,
         api_key=payload.api_key,
@@ -3395,8 +3398,9 @@ async def list_channels(
     ctx: ChannelRead,
     params: PageQuery,
     channel_status: Annotated[str | None, Query(alias="status")] = None,
+    kind: Annotated[ChannelKind | None, Query()] = None,
 ) -> Page[ChannelOut]:
-    stmt = channel_selectors.channels_stmt(ctx, status=channel_status)
+    stmt = channel_selectors.channels_stmt(ctx, status=channel_status, kind=kind)
     rows, total = await paginate(session, stmt, params)
     return Page.build([channel_selectors.channel_out(c) for c in rows], total=total, params=params)
 

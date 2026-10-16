@@ -39,7 +39,7 @@ WorkScope = Callable[[uuid.UUID], AbstractAsyncContextManager[AsyncSession]]
 _CONNECTED_CHANNELS_SQL = text(
     f"""
     SELECT organization_id, id FROM {SCHEMA}.channels
-    WHERE status = 'connected' AND deleted_at IS NULL
+    WHERE status = 'connected' AND kind = 'sales' AND deleted_at IS NULL
     """  # noqa: S608 — only the SCHEMA constant is interpolated
 )
 

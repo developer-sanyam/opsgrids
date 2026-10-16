@@ -10,11 +10,18 @@ invoice's own charge's, never a request field.
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+
+#: Non-secret connector settings (`MerchantAccount.config`): scalars only, small and bounded.
+ConfigValue = str | int | bool
+_CONFIG_KEY = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+MAX_CONFIG_KEYS = 10
+MAX_CONFIG_VALUE_CHARS = 200
 
 
 class ServiceInfo(BaseModel):
@@ -159,6 +166,25 @@ class MerchantAccountIn(BaseModel):
     key_secret: SecretStr = Field(min_length=8, max_length=128)
     webhook_secret: SecretStr | None = Field(default=None, min_length=8, max_length=128)
     mode: Literal["sandbox", "production"] | None = None
+    #: Non-secret provider settings (a merchant id, a store id). **Never put a credential here**: it
+    #: is returned by `GET` and written to the audit row. Replaces the stored config when sent.
+    config: dict[str, ConfigValue] | None = None
+
+    @field_validator("config")
+    @classmethod
+    def _bounded_config(cls, value: dict[str, ConfigValue] | None) -> dict[str, ConfigValue] | None:
+        if value is None:
+            return value
+        if len(value) > MAX_CONFIG_KEYS:
+            raise ValueError(f"config holds at most {MAX_CONFIG_KEYS} settings")
+        for key, item in value.items():
+            if _CONFIG_KEY.fullmatch(key) is None:
+                raise ValueError("config keys are lower-case letters, digits and underscores")
+            if isinstance(item, str) and (
+                len(item) > MAX_CONFIG_VALUE_CHARS or not item.isprintable()
+            ):
+                raise ValueError("config values are short printable text")
+        return value
 
 
 class CollectionWiresOut(BaseModel):
@@ -197,6 +223,8 @@ class MerchantAccountOut(BaseModel):
     last_error_code: str | None = None
     #: When the platform last received a webhook from this account's provider (since connecting).
     last_webhook_at: datetime | None = None
+    #: The non-secret provider settings stored with the account (empty when none).
+    config: dict[str, ConfigValue] = Field(default_factory=dict)
     #: Whether this deployment accepts live keys at all (`COLLECTIONS_ALLOW_LIVE_KEYS`): Razorpay
     #: `rzp_live_…`, Cashfree Production.
     live_keys_allowed: bool

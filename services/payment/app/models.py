@@ -138,6 +138,21 @@ MERCHANT_ACCOUNT_STATES = (MERCHANT_ACCOUNT_ACTIVE, MERCHANT_ACCOUNT_REMOVED)
 #: the deployment says otherwise (`Settings.collections_allow_live_keys`).
 MERCHANT_MODE_TEST = "test"
 MERCHANT_MODE_LIVE = "live"
+#: Every provider a merchant account may name -- the registry's names
+#: (`app/providers/registry.py` `PROVIDER_NAMES`) and `app.collections.domain.PROVIDERS`;
+#: `tests/test_merchant_provider_registry.py` pins the three equal. Kept here, import-free,
+#: because the CHECKs below are built from it: adding a provider is its registry entry, a name
+#: here, and a migration widening the CHECK.
+MERCHANT_PROVIDERS: tuple[str, ...] = ("razorpay", "cashfree")
+#: The subset whose merchant chooses a webhook secret (`ProviderSpec.has_webhook_secret`).
+#: The others sign with the API secret, so their row holds no webhook secret.
+MERCHANT_WEBHOOK_SECRET_PROVIDERS: tuple[str, ...] = ("razorpay",)
+
+
+def sql_in(column: str, values: tuple[str, ...], *, negate: bool = False) -> str:
+    """`column in ('a', 'b')` for the CHECKs above (values are code constants, never input)."""
+    return f"{column} {'not in' if negate else 'in'} ({', '.join(repr(v) for v in values)})"
+
 
 # --- mandate states ------------------------------------------------------------------
 #: A Razorpay eMandate is `created`, `pending` while the bank confirms (multi-day), `active` once
@@ -278,26 +293,34 @@ class MerchantAccount(Base, TenantBase):
     #: The stable code of the last failed verification (`credentials_rejected`, or the provider's
     #: own code) — never its message. NULL once verified, or when never tried.
     last_error_code: Mapped[str | None] = mapped_column(String(64))
+    #: Non-secret, provider-specific settings a connector needs beyond the key pair (a merchant id,
+    #: a salt index, a store id). **Never a secret**: it is returned by the API and written to the
+    #: audit row; a credential goes in `key_secret_enc`. Scalars only, bounded at the boundary.
+    config: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
 
     __table_args__ = (
         CheckConstraint("status in ('active', 'removed')", name="status"),
         CheckConstraint("mode in ('test', 'live')", name="mode"),
-        CheckConstraint("provider in ('razorpay', 'cashfree')", name="provider"),
+        CheckConstraint(sql_in("provider", MERCHANT_PROVIDERS), name="provider"),
         # Every live account holds the key secret it calls the provider with; a removed one holds
         # none (wiped, not kept).
         CheckConstraint(
             "(status = 'active') = (key_secret_enc IS NOT NULL)",
             name="key_secret_present_iff_active",
         ),
-        # A Razorpay account's webhooks are signed with a secret of their own...
+        # A provider whose merchant chooses a webhook secret keeps one while the account is live...
         CheckConstraint(
-            "provider <> 'razorpay' OR status <> 'active' OR webhook_secret_enc IS NOT NULL",
-            name="razorpay_active_has_webhook_secret",
+            f"{sql_in('provider', MERCHANT_WEBHOOK_SECRET_PROVIDERS, negate=True)} "
+            "OR status <> 'active' OR webhook_secret_enc IS NOT NULL",
+            name="webhook_secret_required",
         ),
-        # ...and a Cashfree account has none: its Secret Key signs them.
+        # ...and every other provider holds none: its API secret signs the webhooks.
         CheckConstraint(
-            "provider <> 'cashfree' OR webhook_secret_enc IS NULL",
-            name="cashfree_has_no_webhook_secret",
+            f"{sql_in('provider', MERCHANT_WEBHOOK_SECRET_PROVIDERS)} "
+            "OR webhook_secret_enc IS NULL",
+            name="webhook_secret_forbidden",
         ),
         # One live account per organization. Partial, so a removed row stays as history and a
         # new one can be connected beside it.

@@ -2524,6 +2524,13 @@ class Shipment(Base, TenantBase):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="PICKUP_HANDOVER")
     carrier_name: Mapped[str] = mapped_column(String(120), nullable=False)
     tracking_reference: Mapped[str | None] = mapped_column(String(120))
+    #: The carrier connection (`channels.kind = 'carrier'`) this shipment was booked through, and
+    #: the carrier's own shipment id there. Both null for a manually-entered carrier (`carrier_name`
+    #: alone), which keeps working exactly as before.
+    channel_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("operations.channels.id", ondelete="RESTRICT")
+    )
+    external_shipment_id: Mapped[str | None] = mapped_column(String(120))
     #: Set on a `-> FAILED` transition — why the delivery attempt did not land, for the next
     #: attempt or the return to read.
     failure_reason: Mapped[str | None] = mapped_column(String(500))
@@ -2539,6 +2546,20 @@ class Shipment(Base, TenantBase):
         ),
         Index("ix_shipments_org_status", "organization_id", "status"),
         Index("ix_shipments_org_warehouse", "organization_id", "warehouse_id"),
+        # A carrier's shipment id names one shipment per connection; this is also how an inbound
+        # carrier event finds the shipment it is about.
+        Index(
+            "uq_shipments_org_channel_external",
+            "organization_id",
+            "channel_id",
+            "external_shipment_id",
+            unique=True,
+            postgresql_where=text("external_shipment_id IS NOT NULL AND deleted_at IS NULL"),
+        ),
+        CheckConstraint(
+            "channel_id IS NOT NULL OR external_shipment_id IS NULL",
+            name="external_shipment_needs_channel",
+        ),
         CheckConstraint(
             "status IN ('PICKUP_HANDOVER', 'IN_TRANSIT', 'DELIVERED', 'FAILED', 'RETURNED')",
             name="status_known",
@@ -3047,6 +3068,12 @@ class Channel(Base, TenantBase):
     #: behind the same `Protocol`, not a new table (`app.domain.CHANNEL_PROVIDERS`).
     provider: Mapped[str] = mapped_column(String(30), nullable=False)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
+    #: What this connection is for -- `sales` (a marketplace/storefront whose orders are imported),
+    #: `erp`, `pos` or `carrier` (books and tracks shipments) -- `app.domain.CHANNEL_KINDS`. Only
+    #: `sales` channels are polled for orders; a carrier is used at dispatch.
+    kind: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="sales", server_default="sales"
+    )
     #: connected | disconnected | error — `app.domain.CHANNEL_STATUSES`. `error` is set by a sync
     #: attempt that hit `ChannelAuthError` (an expired or revoked credential): the connection is
     #: still configured, but nothing will sync again until it is reconnected with a fresh key.
@@ -3106,6 +3133,7 @@ class Channel(Base, TenantBase):
         ),
         Index("ix_channels_org_status", "organization_id", "status"),
         CheckConstraint("consecutive_failures >= 0", name="consecutive_failures_non_negative"),
+        CheckConstraint("kind IN ('sales', 'erp', 'pos', 'carrier')", name="kind_known"),
     )
 
 
@@ -3247,6 +3275,51 @@ class ChannelSyncLog(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
             "ix_channel_sync_logs_org_channel_at", "organization_id", "channel_id", "attempted_at"
         ),
         Index("ix_channel_sync_logs_org_channel_status", "organization_id", "channel_id", "status"),
+    )
+
+
+class IntegrationEvent(Base, UUIDPrimaryKeyMixin, OrgScopedMixin):
+    """The inbound-webhook inbox for connected channels (carriers, ERPs, POS, marketplaces) and
+    the dedupe record for them. **Append-only** (`integration_events` joins `APPEND_ONLY_TABLES`
+    in `migrations/env.py`), modelled on `payment.provider_events`.
+
+    A delivery is recorded only after its signature verified against the connection's own
+    credential, idempotently: the unique `(organization_id, provider, event_id)` means a provider
+    redelivering the same event lands one row. The `payload` is **minimised** to the allow-list the
+    provider's verifier declares (`app.channels.webhooks`): scalars only, so no buyer name, phone,
+    address or card detail ever reaches an append-only table that could not erase it. The row
+    states its outcome at insert -- `received` (awaiting its handler) or `ignored` (an event the
+    provider's verifier does not know) -- because it is never updated.
+    """
+
+    __tablename__ = "integration_events"
+
+    channel_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("operations.channels.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    provider: Mapped[str] = mapped_column(String(30), nullable=False)
+    #: The provider's own delivery id, validated and never empty.
+    event_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    event_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    outcome: Mapped[str] = mapped_column(String(10), nullable=False, default="received")
+    outcome_reason: Mapped[str | None] = mapped_column(String(40))
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", "provider", "event_id", name="uq_integration_events"),
+        CheckConstraint("event_id <> ''", name="event_id_not_empty"),
+        CheckConstraint("outcome IN ('received', 'ignored')", name="outcome_known"),
+        CheckConstraint(
+            "(outcome = 'ignored') = (outcome_reason IS NOT NULL)", name="reason_iff_ignored"
+        ),
+        Index(
+            "ix_integration_events_org_channel_at", "organization_id", "channel_id", "received_at"
+        ),
     )
 
 

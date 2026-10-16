@@ -17,6 +17,7 @@ commercial status lives on its own record).
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -25,6 +26,9 @@ from starlette.requests import Request
 
 from app import domain
 from app.alerts import selectors as alert_selectors
+from app.channels import selectors as channel_selectors
+from app.channels.carrier import CarrierBooking
+from app.config import settings
 from app.dispatch import selectors
 from app.inventory.quantity import format_qty
 from app.models import AuditLog, Order, OutboxEvent, Shipment, ShipmentTransition
@@ -32,7 +36,7 @@ from app.orders import selectors as order_selectors
 from app.orders.services import attest_payment_if_confirmed, check_billing_gate, complete_handover
 from platform_core.audit import record_audit
 from platform_core.auth import ScopeContext
-from platform_core.errors import ConflictProblem
+from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
 from platform_core.events import actor_for, publish_event
 from platform_core.logging import get_logger
 
@@ -78,8 +82,10 @@ async def dispatch_order(
     order: Order,
     *,
     expected_version: int,
-    carrier_name: str,
+    carrier_name: str | None,
     tracking_reference: str | None,
+    channel_id: uuid.UUID | None = None,
+    booking: CarrierBooking | None = None,
     payment_confirmed: bool = False,
     request: Request | None = None,
 ) -> Shipment:
@@ -113,6 +119,14 @@ async def dispatch_order(
        `issue` move** (`app.orders.services.complete_handover`, security review M2 — previously
        only this function's own job, leaving every counter hand-over writing zero ledger activity;
        now shared so the consuming move exists in exactly one place either path can reach).
+    **A carrier connection** (`channel_id`, a `carrier`-kind channel of this organization) names the
+    carrier by its connection and links the shipment to it. What happens next is
+    `Settings.carrier_booking_mode`: `log_only` (the default) logs the booking that would be made
+    and calls nothing, recording the shipment with the entered `tracking_reference` exactly as a
+    manual carrier would; `live` records the AWB and carrier shipment id of a `booking` the caller
+    made **before** this transaction (a carrier call must never run inside one), and refuses to
+    dispatch without it. Without a `channel_id`, `carrier_name` is free text and nothing changes.
+
     6. Emits `operations.dispatch.shipment.created`, and — when the order's own tax-inclusive
        total (an approximation, `app.domain.expected_gst_amount_minor` over the order's subtotal)
        crosses the e-Way value threshold, and the order is priced in INR — emits
@@ -156,6 +170,35 @@ async def dispatch_order(
             f"Order {order.number} cannot be dispatched — staged but not fully packed: {detail}"
         )
 
+    external_shipment_id: str | None = None
+    if channel_id is not None:
+        carrier = await channel_selectors.get_channel(session, org_id, channel_id)
+        if carrier is None:
+            raise NotFoundProblem("That carrier is not part of this organization")
+        if carrier.kind != "carrier":
+            raise ValidationProblem(f"Channel {carrier.id} is not a carrier connection")
+        if carrier.status != "connected":
+            raise ConflictProblem(f"Carrier {carrier.name} is {carrier.status}, not connected")
+        carrier_name = carrier_name or carrier.name
+        if settings().carrier_booking_mode == "log_only":
+            log.info(
+                "carrier.booking.log_only",
+                organization_id=str(org_id),
+                order_id=str(order.id),
+                channel_id=str(carrier.id),
+                provider=carrier.provider,
+            )
+        elif booking is None:
+            raise ConflictProblem(
+                f"Order {order.number} cannot be dispatched through {carrier.name}: "
+                "the carrier booking was not made"
+            )
+        else:
+            tracking_reference = booking.awb
+            external_shipment_id = booking.external_shipment_id
+    if carrier_name is None:
+        raise ValidationProblem("name a carrier: carrier_name or a connected carrier channel_id")
+
     shipment = Shipment(
         organization_id=org_id,
         created_by=str(ctx.principal.sub),
@@ -164,6 +207,8 @@ async def dispatch_order(
         status="PICKUP_HANDOVER",
         carrier_name=carrier_name,
         tracking_reference=tracking_reference,
+        channel_id=channel_id,
+        external_shipment_id=external_shipment_id,
     )
     session.add(shipment)
     await session.flush()
@@ -185,6 +230,8 @@ async def dispatch_order(
             "order_id": str(order.id),
             "carrier_name": carrier_name,
             "tracking_reference": tracking_reference,
+            "channel_id": str(channel_id) if channel_id else None,
+            "external_shipment_id": external_shipment_id,
         },
         request=request,
     )

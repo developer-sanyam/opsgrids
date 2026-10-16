@@ -1862,6 +1862,9 @@ class ShipmentOut(BaseModel):
     status: ShipmentStatus
     carrier_name: str
     tracking_reference: str | None
+    #: The carrier connection it was booked through, if any, and the carrier's own shipment id.
+    channel_id: str | None = None
+    external_shipment_id: str | None = None
     failure_reason: str | None
     delivered_at: datetime | None
     created_at: datetime
@@ -1904,14 +1907,24 @@ class ShipmentIn(BaseModel):
     #: The order's own optimistic-lock version (ADR-0025 §1) — this call moves the order, the
     #: same `order_version` field `CreatePickTasksIn` names for the identical reason.
     order_version: int = Field(ge=0)
-    carrier_name: str = Field(min_length=1, max_length=120)
+    #: Free text for a manually-entered carrier; optional when `channel_id` names a connected
+    #: carrier, whose name is then used.
+    carrier_name: str | None = Field(default=None, min_length=1, max_length=120)
+    #: A connected `carrier` channel to ship through (`GET /operations/channels?kind=carrier`).
+    channel_id: UUID | None = None
     tracking_reference: str | None = Field(default=None, max_length=120)
     payment_confirmed: bool = False
 
     @field_validator("carrier_name")
     @classmethod
-    def _carrier_name_is_not_blank(cls, value: str) -> str:
-        return _reject_blank_or_control(value, field_name="carrier_name")
+    def _carrier_name_is_not_blank(cls, value: str | None) -> str | None:
+        return None if value is None else _reject_blank_or_control(value, field_name="carrier_name")
+
+    @model_validator(mode="after")
+    def _a_carrier_is_named(self) -> Self:
+        if self.carrier_name is None and self.channel_id is None:
+            raise ValueError("name a carrier: carrier_name or a connected carrier channel_id")
+        return self
 
 
 class ShipmentAdvanceIn(BaseModel):
@@ -2191,9 +2204,23 @@ ChannelSyncType = Literal["order_import", "inventory_push", "fulfilment_push", "
 ChannelSyncStatus = Literal["success", "failed"]
 
 
+ChannelKind = Literal["sales", "erp", "pos", "carrier"]
+
+
+class IntegrationWebhookAck(BaseModel):
+    """The answer to a recorded (or already-recorded) webhook delivery."""
+
+    event_id: str
+    outcome: Literal["received", "ignored"]
+    duplicate: bool
+
+
 class ChannelOut(BaseModel):
     id: str
-    provider: ChannelProvider
+    #: Free text on read: a carrier, ERP or POS provider is not in `ChannelProvider` (what can be
+    #: connected through `POST /operations/channels`) until its connector lands.
+    provider: str
+    kind: ChannelKind
     name: str
     status: ChannelStatus
     external_shop_id: str
@@ -2222,6 +2249,8 @@ class ChannelConnectIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     provider: ChannelProvider
+    #: What the connection is for; must be its provider's kind (`domain.CHANNEL_PROVIDER_KINDS`).
+    kind: ChannelKind = "sales"
     name: str = Field(min_length=1, max_length=120)
     external_shop_id: str = Field(min_length=1, max_length=120)
     api_key: str = Field(min_length=1, max_length=500)

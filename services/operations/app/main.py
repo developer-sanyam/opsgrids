@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from app import consumers
 from app.api.audit import router as audit_router
 from app.api.routes import router
+from app.api.webhooks import router as webhooks_router
 from app.channels.sweep import ChannelSyncSweep
 from app.config import settings
 from app.cron import AlertSweep, ReconcileSweep
@@ -362,6 +363,7 @@ app = create_app(
         manufacturing_router,
         mrp_router,
         jobwork_router,
+        webhooks_router,
     ],
     on_startup=_startup,
     on_shutdown=_shutdown,

@@ -38,6 +38,7 @@ const WRITE = "operations.channels.channel.write:ORG";
 const CHANNEL: ChannelOut = {
   id: "chan-1",
   provider: "mock_marketplace",
+  kind: "sales",
   name: "My sandbox shop",
   status: "connected",
   external_shop_id: "shop-1",

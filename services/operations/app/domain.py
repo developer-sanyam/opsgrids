@@ -1015,6 +1015,14 @@ def shortest_walk_path(
 #: changes shape.
 CHANNEL_PROVIDERS: tuple[str, ...] = ("mock_marketplace",)
 
+#: `Channel.kind`'s vocabulary: what a connection is for. Only `sales` channels import orders.
+CHANNEL_KINDS: tuple[str, ...] = ("sales", "erp", "pos", "carrier")
+
+#: The kind each provider's connection has. A provider is added here with its adapter; connecting
+#: refuses a `kind` that disagrees, so a carrier is never polled for orders nor a marketplace
+#: booked as a courier.
+CHANNEL_PROVIDER_KINDS: dict[str, str] = {"mock_marketplace": "sales"}
+
 #: `Channel.status`'s vocabulary. `error` means the last sync attempt hit an auth failure (an
 #: expired or revoked credential) — the row is still configured, but nothing syncs again until it
 #: is reconnected with a fresh key (`app.channels.services.reconnect_channel`).

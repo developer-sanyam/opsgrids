@@ -267,6 +267,30 @@
         "additionalProperties": false,
         "description": "`PUT /payment/collections/merchant-account` \u2014 connect the organization's payment-provider\naccount, or rotate its credentials in place (same provider and mode only: switching is\ndisconnect, then connect). Needs a session that signed in with a one-time code.\n\n* **Razorpay**: `key_id` (`rzp_test_\u2026` / `rzp_live_\u2026`, public \u2014 Checkout is opened with it; the\n  mode is read from it, so `mode` is not sent), `key_secret`, `webhook_secret` (the one set on\n  the webhook in Razorpay's dashboard).\n* **Cashfree**: `key_id` is the App ID, `key_secret` the Secret Key (it also signs webhooks, so\n  there is no `webhook_secret`), and `mode` is `sandbox` or `production` \u2014 an App ID does not\n  say which.\n\nSecrets are sealed on arrival and never returned \u2014 only a masked hint of each.",
         "properties": {
+          "config": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config"
+          },
           "key_id": {
             "maxLength": 64,
             "minLength": 1,
@@ -331,6 +355,23 @@
       "MerchantAccountOut": {
         "description": "The organization's payment-provider connection as an admin may see it: masked secrets\nonly, the webhook URL to register at the provider (`?account=` names this account), whether\nthe credentials have been verified, and when a webhook last arrived.",
         "properties": {
+          "config": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "title": "Config",
+            "type": "object"
+          },
           "configured": {
             "title": "Configured",
             "type": "boolean"

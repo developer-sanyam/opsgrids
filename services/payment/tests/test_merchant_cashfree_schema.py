@@ -57,14 +57,14 @@ async def _insert(
 class TestTheChecks:
     async def test_a_cashfree_account_holds_one_secret(self, admin_session: AsyncSession) -> None:
         await _insert(admin_session, provider="cashfree")
-        with pytest.raises(IntegrityError, match="cashfree_has_no_webhook_secret"):
+        with pytest.raises(IntegrityError, match="webhook_secret_forbidden"):
             await _insert(admin_session, provider="cashfree", hook=b"sealed-hook")
 
     async def test_a_live_razorpay_account_still_holds_both(
         self, admin_session: AsyncSession
     ) -> None:
         await _insert(admin_session, provider="razorpay", hook=b"sealed-hook")
-        with pytest.raises(IntegrityError, match="razorpay_active_has_webhook_secret"):
+        with pytest.raises(IntegrityError, match="webhook_secret_required"):
             await _insert(admin_session, provider="razorpay")
 
     async def test_a_live_account_always_holds_its_key_and_a_removed_one_none(
@@ -95,8 +95,8 @@ class TestTheChecks:
         assert {
             "ck_merchant_accounts_provider",
             "ck_merchant_accounts_key_secret_present_iff_active",
-            "ck_merchant_accounts_razorpay_active_has_webhook_secret",
-            "ck_merchant_accounts_cashfree_has_no_webhook_secret",
+            "ck_merchant_accounts_webhook_secret_required",
+            "ck_merchant_accounts_webhook_secret_forbidden",
         } <= checks
         columns = {
             r["column_name"]: r["is_nullable"]

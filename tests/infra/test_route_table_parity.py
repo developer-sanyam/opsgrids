@@ -102,6 +102,10 @@ RAZORPAY_COLLECTIONS = "/api/v1/webhooks/razorpay/collections"
 #: row, so the Razorpay path above stays as an alias of it forever.
 COLLECTIONS = "/api/v1/webhooks/collections"
 WEBHOOK_PREFIX = "/api/v1/webhooks/"
+#: A connected channel's webhook (operations): routed in both tables with a body cap, public per
+#: provider (exact path) when that provider's connector lands.
+OPERATIONS_WEBHOOKS = "/api/v1/webhooks/operations"
+OPERATIONS_WEBHOOK_BODY_CAP = 256 * 1024
 
 #: Meta documents WhatsApp Business Platform webhook payloads up to 3 MB. Above the gateway's
 #: 2 MiB default, so the route has to say so, and the same figure is notification's own ceiling on
@@ -151,7 +155,7 @@ NOTIFICATION_WEBHOOKS = [
 #: Routed in the production table but deliberately NOT public in app-gateway: Razorpay's callback,
 #: which the owner decides separately. A new `/api/v1/webhooks/*` route must be added here or
 #: declared public — silently being neither is the defect this file exists to prevent.
-ROUTED_BUT_NOT_PUBLIC = {"/api/v1/webhooks/razorpay"}
+ROUTED_BUT_NOT_PUBLIC = {"/api/v1/webhooks/razorpay", OPERATIONS_WEBHOOKS}
 
 _POLICY_SCRIPT = """
 import json
@@ -434,3 +438,16 @@ def test_every_audit_prefix_reaches_the_service_that_serves_it() -> None:
         assert route["upstream"] == f"http://{service}:8000", prefix
         spec = json.loads((REPO_ROOT / f"libs/contracts/openapi/{service}.json").read_text())
         assert prefix in spec["paths"], f"{service} does not serve {prefix}"
+
+
+@pytest.mark.parametrize("table", TABLES)
+def test_the_operations_integration_webhook_is_routed_with_the_body_cap_operations_enforces(
+    table: Path,
+) -> None:
+    from platform_core.gateway import RouteTable
+
+    route = RouteTable.from_file(table).resolve(f"{OPERATIONS_WEBHOOKS}/mock_marketplace")
+    assert route is not None and route.prefix == OPERATIONS_WEBHOOKS
+    assert route.max_body_bytes == OPERATIONS_WEBHOOK_BODY_CAP
+    assert route.product is None and not route.blocked and not route.staff_only
+    assert OPERATIONS_WEBHOOKS in _webhook_routes(table)

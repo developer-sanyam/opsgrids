@@ -132,6 +132,7 @@ def _account_out(
         verified_at=account.verified_at,
         last_error_code=account.last_error_code,
         last_webhook_at=last_webhook_at,
+        config=dict(account.config),
         live_keys_allowed=cfg.collections_allow_live_keys,
         wire=cfg.collections_wire,
         wires=_wires(),
@@ -176,6 +177,7 @@ async def put_merchant_account(
             payload.webhook_secret.get_secret_value() if payload.webhook_secret else None
         ),
         mode=payload.mode,
+        config=payload.config,
         request=request,
     )
     log.info(

@@ -60,6 +60,13 @@ class Settings(ServiceSettings):
     #: `expires_at` — the same cadence as the channel sweep: a lapsed hold is freed within
     #: minutes, and a pass with nothing due is one indexed query.
     reservation_expiry_interval_seconds: float = 300
+    #: Whether dispatching through a carrier connection really books with the carrier.
+    #: `log_only` (the default) logs the booking that would be made and calls nothing: the
+    #: shipment is recorded with the manually-entered carrier details, exactly as before. `live`
+    #: expects the booking to have been made (outside the transaction) before dispatch records it,
+    #: and is refused at dispatch until a carrier adapter exists. The owner flips it after reading
+    #: the `carrier.booking.log_only` log lines.
+    carrier_booking_mode: Literal["log_only", "live"] = "log_only"
     #: The self-hosted sandbox marketplace's base URL (`app.channels.mock_marketplace`) —
     #: platform configuration, not a value a tenant supplies (`app.channels.mock_provider`'s own
     #: module docstring: the same "fixed, operator-configured base" reasoning

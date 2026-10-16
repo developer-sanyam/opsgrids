@@ -87,6 +87,10 @@ CLIENT_TYPE_NAMES: frozenset[str] = frozenset(
         # payment's tenant-collections seam (app/providers/base.py, ADR-0024 §8): a merchant's
         # adapter, which reaches Razorpay over HTTP when the collections wire is enabled.
         "CollectionsProvider",
+        # operations' carrier seam (app/channels/carrier.py): every method is a call to a courier.
+        # Nothing takes one yet; the first carrier adapter's booking must run outside the dispatch
+        # transaction, and this is what will say so if it does not.
+        "CarrierClient",
         "ProductRegistry",
         "ObjectStore",
         "Resolver",
