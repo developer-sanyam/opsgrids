@@ -1477,7 +1477,7 @@ export interface DiscrepancyTrendPointOut {
  * marketplace`): a `ChannelOut` row is the connector itself.
  */
 
-export type ChannelProvider = "mock_marketplace" | "shiprocket" | "delhivery";
+export type ChannelProvider = "mock_marketplace" | "shopify" | "shiprocket" | "delhivery";
 export type ChannelKind = "sales" | "erp" | "pos" | "carrier";
 export type ChannelStatus = "connected" | "disconnected" | "error";
 export type ChannelSyncType = "order_import" | "inventory_push" | "fulfilment_push" | "health_check";
@@ -1516,6 +1516,8 @@ export interface ChannelConnectIn {
   api_key: string;
   /** The second half of a login (Shiprocket's password). */
   api_secret?: string;
+  /** Shopify only: the custom app's API secret key; sealed with the access token. */
+  webhook_secret?: string;
   /** Defaults to the provider's kind on the server; send `carrier` for a courier. */
   kind?: ChannelKind;
   default_warehouse_id: string;
@@ -1535,6 +1537,8 @@ export interface ChannelConfigPatch {
 export interface ChannelReconnectIn {
   api_key: string;
   api_secret?: string;
+  /** Shopify only; omitting it on rotation drops the stored webhook secret. */
+  webhook_secret?: string;
 }
 
 export interface ChannelSkuMappingOut {

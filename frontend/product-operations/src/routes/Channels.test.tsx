@@ -100,6 +100,7 @@ describe("ChannelsPage", () => {
     renderScreen(<ChannelsPage />, [READ, WRITE]);
 
     await user.click(await screen.findByRole("button", { name: "Connect channel" }));
+    await user.selectOptions(screen.getByLabelText("Provider"), "mock_marketplace");
     await user.type(screen.getByLabelText("Connection name"), "My sandbox shop");
     await user.type(screen.getByLabelText("Sandbox shop id"), "shop-1");
     await user.type(screen.getByLabelText("API key"), "sandbox-key-1");
@@ -120,12 +121,40 @@ describe("ChannelsPage", () => {
     expect(listChannels).toHaveBeenCalledTimes(2);
   });
 
+  it("connects a Shopify store with its domain, token and webhook secret", async () => {
+    const user = userEvent.setup();
+    listChannels.mockResolvedValue(page([]));
+    connectChannel.mockResolvedValue(channel({ provider: "shopify" }));
+    renderScreen(<ChannelsPage />, [READ, WRITE]);
+
+    await user.click(await screen.findByRole("button", { name: "Connect channel" }));
+    await user.type(screen.getByLabelText("Connection name"), "My store");
+    await user.type(screen.getByLabelText("Shop domain"), "my-store.myshopify.com");
+    await user.type(screen.getByLabelText("Admin API access token"), "shpat_test_token");
+    await user.type(screen.getByLabelText("Webhook secret (optional)"), "whsec_test");
+    await user.selectOptions(screen.getByLabelText("Default warehouse"), "wh-1");
+    await user.click(screen.getByRole("button", { name: "Connect" }));
+
+    await waitFor(() =>
+      expect(connectChannel).toHaveBeenCalledWith({
+        provider: "shopify",
+        name: "My store",
+        external_shop_id: "my-store.myshopify.com",
+        api_key: "shpat_test_token", // pragma: allowlist secret
+        webhook_secret: "whsec_test", // pragma: allowlist secret
+        default_warehouse_id: "wh-1",
+        auto_accept_orders: true,
+      }),
+    );
+  });
+
   it("refuses to connect without a warehouse, and never calls the server", async () => {
     const user = userEvent.setup();
     listChannels.mockResolvedValue(page([]));
     renderScreen(<ChannelsPage />, [READ, WRITE]);
 
     await user.click(await screen.findByRole("button", { name: "Connect channel" }));
+    await user.selectOptions(screen.getByLabelText("Provider"), "mock_marketplace");
     await user.type(screen.getByLabelText("Connection name"), "My sandbox shop");
     await user.type(screen.getByLabelText("Sandbox shop id"), "shop-1");
     await user.type(screen.getByLabelText("API key"), "sandbox-key-1");

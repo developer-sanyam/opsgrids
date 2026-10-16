@@ -1019,7 +1019,7 @@ def shortest_walk_path(
 #: this environment (see `app/channels/mock_marketplace.py`). A real provider is a new
 #: `ChannelClient` (`app/channels/base.py`) plus a new entry here; nothing else about the module
 #: changes shape.
-CHANNEL_PROVIDERS: tuple[str, ...] = ("mock_marketplace", "shiprocket", "delhivery")
+CHANNEL_PROVIDERS: tuple[str, ...] = ("mock_marketplace", "shopify", "shiprocket", "delhivery")
 
 #: `Channel.kind`'s vocabulary: what a connection is for. Only `sales` channels import orders.
 CHANNEL_KINDS: tuple[str, ...] = ("sales", "erp", "pos", "carrier")
@@ -1029,6 +1029,7 @@ CHANNEL_KINDS: tuple[str, ...] = ("sales", "erp", "pos", "carrier")
 #: booked as a courier.
 CHANNEL_PROVIDER_KINDS: dict[str, str] = {
     "mock_marketplace": "sales",
+    "shopify": "sales",
     "shiprocket": "carrier",
     "delhivery": "carrier",
 }

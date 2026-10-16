@@ -41,7 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import domain
-from app.channels import registry, selectors
+from app.channels import registry, selectors, shopify
 from app.channels.base import (
     ChannelAuthError,
     ChannelClient,
@@ -53,6 +53,7 @@ from app.channels.base import (
 )
 from app.channels.carrier import CarrierCredential
 from app.channels.mock_provider import MockMarketplaceClient, parse_order
+from app.channels.shopify import ShopifyClient
 from app.config import settings
 from app.inventory import quantity as qty_lib
 from app.inventory import selectors as inv_selectors
@@ -124,6 +125,9 @@ def build_client(channel: Channel, *, api_key: str) -> ChannelClient:
         return MockMarketplaceClient(
             base_url=base_url, shop_id=channel.external_shop_id, api_key=api_key
         )
+    if channel.provider == "shopify":
+        token, _ = shopify.unpack_credential(api_key)
+        return ShopifyClient(shop_domain=channel.external_shop_id, access_token=token)
     raise ValidationProblem(f"{channel.provider!r} is not a channel provider this build supports")
 
 
@@ -153,14 +157,27 @@ def _sealed_credential(
     organization_id: uuid.UUID,
     channel_id: uuid.UUID,
     *,
+    provider: str,
     kind: str,
     api_key: str,
-    api_secret: str | None,
+    api_secret: str | None = None,
+    webhook_secret: str | None = None,
     webhook_token: str | None = None,
 ) -> tuple[bytes, str]:
     """`(ciphertext, mask)` for a connection's credential. A carrier's is packed with its second
     half and webhook token (kept across a reconnect, so the URL the customer registered keeps
-    working); the mask is always of the account key alone."""
+    working); Shopify's holds the access token and the webhook secret together, and its mask
+    shows only the token's tail; the mask is always of the account key alone."""
+    if provider == "shopify":
+        enc, _ = seal(
+            shopify.pack_credential(api_key.strip(), webhook_secret),
+            kind="secret",
+            settings=settings(),
+            aad=_aad(organization_id, channel_id),
+        )
+        return enc, "••••" + api_key.strip()[-2:]
+    if webhook_secret:
+        raise ValidationProblem(f"{provider!r} takes no webhook secret")
     plaintext = api_key
     if kind == "carrier":
         packed = CarrierCredential.new(api_key, api_secret or "")
@@ -208,6 +225,7 @@ async def connect_channel(
     default_warehouse_id: uuid.UUID,
     default_currency: str,
     auto_accept_orders: bool,
+    webhook_secret: str | None = None,
     kind: str = "sales",
     api_secret: str | None = None,
     request: Request | None = None,
@@ -222,6 +240,13 @@ async def connect_channel(
         raise ValidationProblem("A channel connection needs a credential")
     if provider in domain.CARRIER_NEEDS_SECRET and not (api_secret or "").strip():
         raise ValidationProblem(f"{provider} needs both an account email and a password")
+    api_base_url = None
+    if provider == "shopify":
+        try:
+            external_shop_id = shopify.validate_shop_domain(external_shop_id)
+        except ValueError as exc:
+            raise ValidationProblem(str(exc)) from None
+        api_base_url = f"https://{external_shop_id}"
     warehouse = await inv_selectors.get_warehouse(
         session, ctx.organization_id, default_warehouse_id
     )
@@ -232,7 +257,13 @@ async def connect_channel(
     # can be sealed with its row's real id as AAD (`_aad`) in one pass — no insert-then-reseal.
     channel_id = uuid.uuid4()
     api_key_enc, api_key_masked = _sealed_credential(
-        ctx.organization_id, channel_id, kind=kind, api_key=api_key, api_secret=api_secret
+        ctx.organization_id,
+        channel_id,
+        provider=provider,
+        kind=kind,
+        api_key=api_key,
+        api_secret=api_secret,
+        webhook_secret=webhook_secret,
     )
     channel = Channel(
         id=channel_id,
@@ -243,6 +274,7 @@ async def connect_channel(
         name=name,
         status="connected",
         external_shop_id=external_shop_id,
+        api_base_url=api_base_url,
         api_key_enc=api_key_enc,
         api_key_masked=api_key_masked,
         default_warehouse_id=warehouse.id,
@@ -328,6 +360,7 @@ async def reconnect_channel(
     *,
     api_key: str,
     api_secret: str | None = None,
+    webhook_secret: str | None = None,
     request: Request | None = None,
 ) -> Channel:
     """Rotates the credential and clears an `error` status — the only way a connection leaves
@@ -344,9 +377,11 @@ async def reconnect_channel(
     channel.api_key_enc, channel.api_key_masked = _sealed_credential(
         ctx.organization_id,
         channel.id,
+        provider=channel.provider,
         kind=channel.kind,
         api_key=api_key,
         api_secret=api_secret,
+        webhook_secret=webhook_secret,
         webhook_token=webhook_token,
     )
     channel.status = "connected"

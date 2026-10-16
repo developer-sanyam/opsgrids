@@ -162,6 +162,7 @@ WEBHOOK_PUBLIC_PATHS: Mapping[str, frozenset[str]] = MappingProxyType(
         # A customer's own Delhivery account pushing scans (operations verifies the per-connection
         # `Authorization` token). Same 256 KiB cap in both route tables.
         "/api/v1/webhooks/operations/delhivery": frozenset({"POST"}),
+        "/api/v1/webhooks/operations/shopify": frozenset({"POST"}),
     }
 )
 

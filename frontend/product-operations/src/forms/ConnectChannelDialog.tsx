@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 import { connectChannel, listWarehouses } from "@/api/client";
-import type { ChannelOut, WarehouseOut } from "@/api/types";
+import type { ChannelOut, ChannelProvider, WarehouseOut } from "@/api/types";
 import { useAsync, useMutation } from "@opsgrids/client";
 import { formDialogError } from "@/lib/formError";
 import { FormDialog, Select, Switch, TextField } from "@/ui";
@@ -19,6 +19,8 @@ interface ConnectChannelDialogProps {
  * was seeded with, or a `curl -X POST http://localhost:8811/_admin/shops` call created).
  */
 export function ConnectChannelDialog({ onClose, onConnected }: ConnectChannelDialogProps) {
+  const [provider, setProvider] = useState<ChannelProvider>("shopify");
+  const [webhookSecret, setWebhookSecret] = useState("");
   const [name, setName] = useState("");
   const [nameError, setNameError] = useState<string | undefined>(undefined);
   const [externalShopId, setExternalShopId] = useState("");
@@ -35,15 +37,18 @@ export function ConnectChannelDialog({ onClose, onConnected }: ConnectChannelDia
 
   const connect = useMutation(
     (input: {
-      provider: "mock_marketplace";
+      provider: ChannelProvider;
       name: string;
       external_shop_id: string;
       api_key: string;
+      webhook_secret?: string;
       default_warehouse_id: string;
       auto_accept_orders: boolean;
     }) => connectChannel(input),
     { onSuccess: (saved) => onConnected(saved) },
   );
+
+  const shopify = provider === "shopify";
 
   function submit() {
     setNameError(undefined);
@@ -56,11 +61,15 @@ export function ConnectChannelDialog({ onClose, onConnected }: ConnectChannelDia
       ok = false;
     }
     if (externalShopId.trim().length < 1) {
-      setShopIdError("Name the sandbox shop id this connects to.");
+      setShopIdError(
+        shopify ? "Your store's address, like your-store.myshopify.com." : "Name the sandbox shop id this connects to.",
+      );
       ok = false;
     }
     if (apiKey.trim().length < 1) {
-      setApiKeyError("The shop's own API key — sealed at rest, never shown again.");
+      setApiKeyError(
+        shopify ? "The Admin API access token of your custom app — sealed at rest." : "The shop's own API key — sealed at rest, never shown again.",
+      );
       ok = false;
     }
     if (!warehouseId) {
@@ -69,8 +78,9 @@ export function ConnectChannelDialog({ onClose, onConnected }: ConnectChannelDia
     }
     if (!ok) return;
     void connect.mutate({
-      provider: "mock_marketplace",
+      provider,
       name: name.trim(),
+      ...(shopify && webhookSecret.trim() !== "" ? { webhook_secret: webhookSecret.trim() } : {}),
       external_shop_id: externalShopId.trim(),
       api_key: apiKey.trim(),
       default_warehouse_id: warehouseId,
@@ -84,7 +94,11 @@ export function ConnectChannelDialog({ onClose, onConnected }: ConnectChannelDia
       onClose={onClose}
       onSubmit={submit}
       title="Connect a channel"
-      description="Connects to this build's self-hosted sandbox marketplace — the real connector, proven end to end with no real Shopify/Amazon account available in this environment."
+      description={
+        shopify
+          ? "Connect your own Shopify store with a custom app's Admin API access token (read orders, read and write inventory, write fulfilments)."
+          : "Connects to this build's self-hosted sandbox marketplace."
+      }
       submitLabel="Connect"
       pendingLabel="Connecting…"
       pending={connect.pending}
@@ -92,10 +106,12 @@ export function ConnectChannelDialog({ onClose, onConnected }: ConnectChannelDia
     >
       <Select
         label="Provider"
-        value="mock_marketplace"
-        onChange={() => {}}
-        options={[{ value: "mock_marketplace", label: "Mock marketplace (sandbox)" }]}
-        disabled
+        value={provider}
+        onChange={(e) => setProvider(e.target.value as ChannelProvider)}
+        options={[
+          { value: "shopify", label: "Shopify" },
+          { value: "mock_marketplace", label: "Mock marketplace (sandbox)" },
+        ]}
       />
       <TextField
         label="Connection name"
@@ -107,16 +123,16 @@ export function ConnectChannelDialog({ onClose, onConnected }: ConnectChannelDia
         {...(nameError !== undefined ? { error: nameError } : {})}
       />
       <TextField
-        label="Sandbox shop id"
+        label={shopify ? "Shop domain" : "Sandbox shop id"}
         value={externalShopId}
         onChange={(e) => setExternalShopId(e.target.value)}
-        placeholder="shop-1"
+        placeholder={shopify ? "your-store.myshopify.com" : "shop-1"}
         maxLength={120}
         required
         {...(shopIdError !== undefined ? { error: shopIdError } : {})}
       />
       <TextField
-        label="API key"
+        label={shopify ? "Admin API access token" : "API key"}
         type="password"
         value={apiKey}
         onChange={(e) => setApiKey(e.target.value)}
@@ -125,6 +141,16 @@ export function ConnectChannelDialog({ onClose, onConnected }: ConnectChannelDia
         required
         {...(apiKeyError !== undefined ? { error: apiKeyError } : {})}
       />
+      {shopify ? (
+        <TextField
+          label="Webhook secret (optional)"
+          type="password"
+          value={webhookSecret}
+          onChange={(e) => setWebhookSecret(e.target.value)}
+          placeholder="The app's API secret key — needed to accept order webhooks"
+          maxLength={200}
+        />
+      ) : null}
       <Select
         label="Default warehouse"
         value={warehouseId}

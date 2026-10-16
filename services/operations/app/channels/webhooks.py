@@ -21,6 +21,7 @@ second, is what makes redelivery safe.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -34,6 +35,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
+from app.channels.shopify import unpack_credential
 from app.models import Channel, IntegrationEvent
 from platform_core.errors import PayloadTooLargeProblem, ProblemError
 from platform_core.logging import get_logger
@@ -114,8 +116,43 @@ class MockMarketplaceVerifier:
         return ParsedEvent(event_id=event_id, event_name=event_name, fields=data)
 
 
+class ShopifyVerifier:
+    """Shopify's scheme: base64 `HMAC-SHA256(webhook secret, body)` in `X-Shopify-Hmac-Sha256`,
+    the delivery id in `X-Shopify-Webhook-Id` (the same across Shopify's own retries), the topic in
+    `X-Shopify-Topic`. `secret` is the connection's opened credential; the webhook secret is its
+    second half, and a connection without one verifies nothing."""
+
+    provider = "shopify"
+    known_events = frozenset({"orders/create"})
+    #: The order id and its display number ("#1001") only -- never the buyer.
+    allowed_fields = frozenset({"id", "name"})
+
+    def verify(self, *, headers: Mapping[str, str], body: bytes, secret: str) -> bool:
+        signature = headers.get("x-shopify-hmac-sha256")
+        _, webhook_secret = unpack_credential(secret)
+        if not webhook_secret or not signature:
+            return False
+        digest = hmac.new(webhook_secret.encode(), body, hashlib.sha256).digest()
+        return hmac.compare_digest(base64.b64encode(digest).decode(), signature)
+
+    def parse(self, *, headers: Mapping[str, str], body: bytes) -> ParsedEvent | None:
+        event_id, topic = headers.get("x-shopify-webhook-id"), headers.get("x-shopify-topic")
+        if not event_id or not topic:
+            return None
+        try:
+            data = json.loads(body)
+        except ValueError:
+            return None
+        return ParsedEvent(
+            event_id=event_id, event_name=topic, fields=data if isinstance(data, dict) else {}
+        )
+
+
 #: Provider name -> verifier. A provider with no entry has no public webhook: its route answers 400.
-VERIFIERS: dict[str, WebhookVerifier] = {"mock_marketplace": MockMarketplaceVerifier()}
+VERIFIERS: dict[str, WebhookVerifier] = {
+    "mock_marketplace": MockMarketplaceVerifier(),
+    "shopify": ShopifyVerifier(),
+}
 
 
 def minimise(fields: Mapping[str, Any], allowed: frozenset[str]) -> dict[str, Any]:

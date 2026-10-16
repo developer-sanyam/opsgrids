@@ -2236,7 +2236,7 @@ class OrderRefundIn(BaseModel):
 
 # ------------------------------------------------------------------ channels (Fulfilment plan F11)
 
-ChannelProvider = Literal["mock_marketplace", "shiprocket", "delhivery"]
+ChannelProvider = Literal["mock_marketplace", "shopify", "shiprocket", "delhivery"]
 ChannelStatus = Literal["connected", "disconnected", "error"]
 ChannelSyncType = Literal["order_import", "inventory_push", "fulfilment_push", "health_check"]
 ChannelSyncStatus = Literal["success", "failed"]
@@ -2294,11 +2294,14 @@ class ChannelConnectIn(BaseModel):
     api_key: str = Field(min_length=1, max_length=500)
     #: The second half of a login (Shiprocket's password); carriers that need one only.
     api_secret: str | None = Field(default=None, min_length=1, max_length=200)
+    #: Shopify only: the custom app's API secret key, which signs `X-Shopify-Hmac-Sha256`.
+    #: Sealed with the access token; without it the channel polls but accepts no webhook.
+    webhook_secret: str | None = Field(default=None, min_length=1, max_length=200)
     default_warehouse_id: UUID
     default_currency: str = Field(default="INR", min_length=3, max_length=3)
     auto_accept_orders: bool = True
 
-    @field_validator("name", "external_shop_id", "api_key")
+    @field_validator("name", "external_shop_id", "api_key", "webhook_secret")
     @classmethod
     def _not_blank(cls, value: str) -> str:
         return _reject_blank_or_control(value, field_name="value")
@@ -2323,6 +2326,8 @@ class ChannelReconnectIn(BaseModel):
 
     api_key: str = Field(min_length=1, max_length=500)
     api_secret: str | None = Field(default=None, min_length=1, max_length=200)
+    #: Shopify only; omitting it on rotation drops the stored webhook secret.
+    webhook_secret: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class WebhookSetupOut(BaseModel):

@@ -325,6 +325,7 @@ class EgressGuard:
         *,
         headers: dict[str, str] | None = None,
         data: dict[str, Any] | None = None,
+        content: bytes | None = None,
     ) -> httpx.Response:
         """Vet `url`, then send exactly one request to it. No redirects, ever.
 
@@ -339,7 +340,9 @@ class EgressGuard:
             transport=transport, timeout=self._timeout, follow_redirects=False
         ) as client:
             upstream = await client.send(
-                client.build_request(method, target.url, headers=headers, data=data),
+                client.build_request(
+                    method, target.url, headers=headers, data=data, content=content
+                ),
                 stream=True,
             )
             try:
