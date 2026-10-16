@@ -148,3 +148,13 @@ other two reuse:
    (`ProviderSpec.signature_header` is None). The contract's two per-body-signature checks are replaced,
    for PhonePe only, by what that scheme can promise. PhonePe's HMAC option names no algorithm or signed
    string; adopting it is an open question for the owner's sandbox run.
+
+**PayU** (Hosted Checkout) follows: the same redirect handle (a form `POST` of the request and its
+hash to PayU's `_payment` page) and the same return page (PayU posts its response there; it is never
+read). PayU holds no Order until the customer posts the form, so `ensure_order` creates nothing — it
+asks `verify_payment` first and never hands out a transaction that is captured, authorised or pending.
+`txnid` is the collection id in base 36 (PayU allows 25 characters); the return URL must fit PayU's
+documented 50-character `surl`. Payment webhooks carry PayU's reverse hash (verified, failing closed;
+it covers `status`, `amount`, `txnid`, `key`, the udfs and the customer fields — not `mihpayid`).
+PayU's refund webhooks carry no hash, so they are refused: a PayU refund stays `created` here until a
+refund-status poll is built.

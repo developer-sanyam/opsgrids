@@ -12,6 +12,7 @@ export const PROVIDER_NAME: Record<CollectionsProvider, string> = {
   razorpay: "Razorpay",
   cashfree: "Cashfree",
   phonepe: "PhonePe",
+  payu: "PayU",
 };
 
 export function providerName(provider: string | null | undefined): string {
@@ -20,7 +21,7 @@ export function providerName(provider: string | null | undefined): string {
 
 /** Providers whose merchant chooses Sandbox or Production (the key does not say which). */
 export function choosesEnvironment(provider: string | null | undefined): boolean {
-  return provider === "cashfree" || provider === "phonepe";
+  return provider === "cashfree" || provider === "phonepe" || provider === "payu";
 }
 
 /** A mode as the provider's own dashboard names it: Razorpay Test / Live, Cashfree Sandbox /
@@ -49,6 +50,9 @@ export const CONNECTION_BADGE: Record<ConnectionState, { tone: StatusTone; label
 export function connectionErrorHint(provider: string | null | undefined, code: string | null | undefined): string {
   const name = providerName(provider);
   if (code === "credentials_rejected") {
+    if (provider === "payu") {
+      return `${name} did not accept the merchant key and salt. Check they are for the environment you chose (Sandbox or Production), then replace them.`;
+    }
     if (provider === "phonepe") {
       return `${name} did not accept the Client ID, Client Secret and client version. Check they are for the environment you chose (Sandbox or Production), then replace them.`;
     }

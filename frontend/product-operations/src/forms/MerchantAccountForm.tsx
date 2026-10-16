@@ -23,6 +23,7 @@ const LABELS: Record<CollectionsProvider, { keyId: string; keySecret: string }> 
   razorpay: { keyId: "Key id", keySecret: "Key secret" },
   cashfree: { keyId: "App ID", keySecret: "Secret Key" },
   phonepe: { keyId: "Client ID", keySecret: "Client Secret" },
+  payu: { keyId: "Merchant key", keySecret: "Salt" },
 };
 
 /**
@@ -56,7 +57,7 @@ export function MerchantAccountForm({
   const labels = LABELS[provider];
 
   function submit() {
-    if (provider === "cashfree") {
+    if (provider === "cashfree" || provider === "payu") {
       onSubmit({ provider, key_id: keyId.trim(), key_secret: keySecret, mode });
     } else if (provider === "phonepe") {
       onSubmit({
@@ -136,7 +137,7 @@ export function MerchantAccountForm({
           required
         />
       ) : null}
-      {provider !== "cashfree" ? (
+      {provider === "razorpay" || provider === "phonepe" ? (
         <TextField
           label={provider === "phonepe" ? "Webhook password" : "Webhook secret"}
           helper={

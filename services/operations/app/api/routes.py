@@ -2084,7 +2084,7 @@ def _checkout_session(
 ):
     if raw.get("provider") == "cashfree":
         return CashfreeOrderCheckoutSessionOut(**raw, order_number=order.number)
-    if raw.get("provider") == "phonepe":
+    if raw.get("provider") in ("phonepe", "payu"):
         return RedirectOrderCheckoutSessionOut(**raw, order_number=order.number)
     return RazorpayOrderCheckoutSessionOut(
         **raw,

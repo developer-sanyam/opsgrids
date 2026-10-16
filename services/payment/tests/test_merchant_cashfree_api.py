@@ -175,7 +175,12 @@ class TestConnect:
         base = settings().app_base_url.rstrip("/")
         assert saved["webhook_url"] == f"{base}{NEUTRAL}?account={saved['id']}"
         assert "PAYMENT_SUCCESS_WEBHOOK" in saved["webhook_events"]
-        assert saved["wires"] == {"razorpay": "stub", "cashfree": "stub", "phonepe": "stub"}
+        assert saved["wires"] == {
+            "razorpay": "stub",
+            "cashfree": "stub",
+            "phonepe": "stub",
+            "payu": "stub",
+        }
         assert SECRET not in json.dumps(saved)
         stored = await rows(
             admin_session,

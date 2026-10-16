@@ -45,6 +45,7 @@ from app.models import (
 )
 from app.providers import cashfree_codec
 from app.providers import cashfree_collections as cashfree
+from app.providers import payu_collections as payu
 from app.providers import phonepe_collections as phonepe
 from app.providers import razorpay_collections as razorpay
 from app.providers.base import PaymentSnapshot, valid_phone
@@ -62,7 +63,12 @@ REFERENCE_TYPES: frozenset[str] = frozenset({REFERENCE_OPERATIONS_ORDER})
 PROVIDER_RAZORPAY = "razorpay"
 PROVIDER_CASHFREE = "cashfree"
 PROVIDER_PHONEPE = "phonepe"
-PROVIDERS: frozenset[str] = frozenset({PROVIDER_RAZORPAY, PROVIDER_CASHFREE, PROVIDER_PHONEPE})
+PROVIDER_PAYU = "payu"
+PROVIDERS: frozenset[str] = frozenset(
+    {PROVIDER_RAZORPAY, PROVIDER_CASHFREE, PROVIDER_PHONEPE, PROVIDER_PAYU}
+)
+#: The providers whose checkout is their own page the browser is sent to (`OrderResult.redirect`).
+REDIRECT_PROVIDERS: frozenset[str] = frozenset({PROVIDER_PHONEPE, PROVIDER_PAYU})
 
 # --- the merchant webhook --------------------------------------------------------------------
 
@@ -167,10 +173,27 @@ PHONEPE = ProviderSpec(
     signature_header=None,
     webhook_path=WEBHOOK_PATH,
 )
+PAYU = ProviderSpec(
+    name=PROVIDER_PAYU,
+    display_name="PayU",
+    # The salt (the key secret) hashes every request and verifies every response.
+    has_webhook_secret=False,
+    # PayU's payment request requires the customer's phone (and name and email).
+    requires_payer=True,
+    # The form (with its request hash) is built afresh on every (re)open and never stored.
+    reopen_asks_provider=True,
+    # Nothing at PayU expires a form already handed out: a stale tab can still pay.
+    order_outlives_cancel=True,
+    webhook_events=payu.WEBHOOK_EVENTS,
+    refund_key=payu.refund_key,
+    signature_header=None,
+    webhook_path=WEBHOOK_PATH,
+)
 _SPECS: dict[str, ProviderSpec] = {
     RAZORPAY.name: RAZORPAY,
     CASHFREE.name: CASHFREE,
     PHONEPE.name: PHONEPE,
+    PAYU.name: PAYU,
 }
 
 
@@ -241,7 +264,9 @@ def validate_credentials(
       false-refuse, never a reason to let a key through).
     * **PhonePe** — Client ID, Client Secret, the client version and the webhook username
       (`config`), the webhook password as the webhook secret, and `sandbox` or `production`
-      chosen by the merchant; Production needs `allow_live`."""
+      chosen by the merchant; Production needs `allow_live`.
+    * **PayU** — the merchant key and salt (the salt signs requests and responses, so no webhook
+      secret), and `sandbox` or `production`; Production needs `allow_live`."""
     if provider not in PROVIDERS:
         raise CredentialProblem(f"{provider!r} is not a supported payment provider")
     if not valid_secret(key_secret):
@@ -264,6 +289,8 @@ def validate_credentials(
         return derived
     if provider == PROVIDER_PHONEPE:
         return _validate_phonepe(key_id, webhook_secret, mode, allow_live, config or {})
+    if provider == PROVIDER_PAYU:
+        return _validate_payu(key_id, webhook_secret, mode, allow_live)
     if not _APP_ID.fullmatch(key_id):
         raise CredentialProblem(
             "key_id must be a Cashfree App ID: 4-64 letters, digits, '_' or '-'"
@@ -324,6 +351,25 @@ def _validate_phonepe(
     if CASHFREE_MODES[mode] == MERCHANT_MODE_LIVE and not allow_live:
         raise CredentialProblem(
             "PhonePe Production is not enabled on this platform yet; connect a Sandbox account"
+        )
+    return CASHFREE_MODES[mode]
+
+
+_PAYU_KEY = re.compile(r"^[A-Za-z0-9]{4,20}$")
+
+
+def _validate_payu(
+    key_id: str, webhook_secret: str | None, mode: str | None, allow_live: bool
+) -> str:
+    if not _PAYU_KEY.fullmatch(key_id):
+        raise CredentialProblem("key_id must be a PayU merchant key: 4-20 letters or digits")
+    if webhook_secret is not None:
+        raise CredentialProblem("webhook_secret is not set for PayU: its salt signs every webhook")
+    if mode not in CASHFREE_MODES:
+        raise CredentialProblem("mode must be sandbox or production for PayU")
+    if CASHFREE_MODES[mode] == MERCHANT_MODE_LIVE and not allow_live:
+        raise CredentialProblem(
+            "PayU Production is not enabled on this platform yet; connect a Sandbox (test) account"
         )
     return CASHFREE_MODES[mode]
 

@@ -30,11 +30,12 @@ from app.providers.razorpay_wire import RazorpayHttpWire
 PROVIDER_RAZORPAY = "razorpay"
 PROVIDER_CASHFREE = "cashfree"
 PROVIDER_PHONEPE = "phonepe"
+PROVIDER_PAYU = "payu"
 #: The providers platform billing can run on (each has a `BUILDERS` entry).
 PROVIDER_NAMES: tuple[str, ...] = (PROVIDER_RAZORPAY, PROVIDER_CASHFREE)
 #: The providers a tenant may connect for collections (ADR-0033): every platform provider, and the
 #: merchant-only ones, which have a collections adapter (`app/deps.py`) and no platform builder.
-COLLECTIONS_PROVIDER_NAMES: tuple[str, ...] = (*PROVIDER_NAMES, PROVIDER_PHONEPE)
+COLLECTIONS_PROVIDER_NAMES: tuple[str, ...] = (*PROVIDER_NAMES, PROVIDER_PHONEPE, PROVIDER_PAYU)
 
 
 def _secret(value: Any) -> str | None:

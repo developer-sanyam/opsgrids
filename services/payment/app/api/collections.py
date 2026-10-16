@@ -101,6 +101,7 @@ def _wires() -> CollectionWiresOut:
         razorpay=cfg.collections_wire_for(domain.PROVIDER_RAZORPAY),
         cashfree=cfg.collections_wire_for(domain.PROVIDER_CASHFREE),
         phonepe=cfg.collections_wire_for(domain.PROVIDER_PHONEPE),
+        payu=cfg.collections_wire_for(domain.PROVIDER_PAYU),
     )
 
 
@@ -226,7 +227,7 @@ async def verify_merchant_account(
     if not outcome.accepted:
         hint = (
             " Check that the keys are for the environment you chose (Sandbox or Production)."
-            if account.provider in (domain.PROVIDER_CASHFREE, domain.PROVIDER_PHONEPE)
+            if account.provider != domain.PROVIDER_RAZORPAY
             else " Check that the key id and key secret are a pair, in the same mode."
         )
         raise services.CredentialsRejectedProblem(
