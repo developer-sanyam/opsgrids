@@ -525,6 +525,8 @@ def pick_task_line_settled(*, quantity_milli: int, picked_milli: int, short_mill
 #: `DELIVERED` and `RETURNED` are terminal; `FAILED` is not — a failed attempt can be retried
 #: (`-> IN_TRANSIT`) or sent back (`-> RETURNED`).
 SHIPMENT_STATUSES: tuple[str, ...] = (
+    "BOOKING",
+    "BOOKING_FAILED",
     "PICKUP_HANDOVER",
     "IN_TRANSIT",
     "DELIVERED",
@@ -542,7 +544,11 @@ SHIPMENT_TERMINAL_STATUSES: frozenset[str] = frozenset({"DELIVERED", "RETURNED"}
 #: track in transit is the counter path (`app.orders.services.hand_over_order`), not this one.
 #: `PICKUP_HANDOVER -> FAILED`/`-> RETURNED` are real edges (an attempt or a refusal can be
 #: recorded before any transit update ever lands); `FAILED -> IN_TRANSIT` is a retried attempt.
+#: `BOOKING` / `BOOKING_FAILED` belong to the claim -> call -> record split
+#: (`app.dispatch.booking`): the order is not handed over yet, so neither has a manual edge.
 SHIPMENT_TRANSITIONS: dict[str, frozenset[str]] = {
+    "BOOKING": frozenset(),
+    "BOOKING_FAILED": frozenset(),
     "PICKUP_HANDOVER": frozenset({"IN_TRANSIT", "FAILED", "RETURNED"}),
     "IN_TRANSIT": frozenset({"DELIVERED", "FAILED", "RETURNED"}),
     "FAILED": frozenset({"IN_TRANSIT", "RETURNED"}),
@@ -1013,7 +1019,7 @@ def shortest_walk_path(
 #: this environment (see `app/channels/mock_marketplace.py`). A real provider is a new
 #: `ChannelClient` (`app/channels/base.py`) plus a new entry here; nothing else about the module
 #: changes shape.
-CHANNEL_PROVIDERS: tuple[str, ...] = ("mock_marketplace",)
+CHANNEL_PROVIDERS: tuple[str, ...] = ("mock_marketplace", "shiprocket")
 
 #: `Channel.kind`'s vocabulary: what a connection is for. Only `sales` channels import orders.
 CHANNEL_KINDS: tuple[str, ...] = ("sales", "erp", "pos", "carrier")
@@ -1021,7 +1027,10 @@ CHANNEL_KINDS: tuple[str, ...] = ("sales", "erp", "pos", "carrier")
 #: The kind each provider's connection has. A provider is added here with its adapter; connecting
 #: refuses a `kind` that disagrees, so a carrier is never polled for orders nor a marketplace
 #: booked as a courier.
-CHANNEL_PROVIDER_KINDS: dict[str, str] = {"mock_marketplace": "sales"}
+CHANNEL_PROVIDER_KINDS: dict[str, str] = {"mock_marketplace": "sales", "shiprocket": "carrier"}
+
+#: Carriers whose account login is two values (an email and a password), not one token.
+CARRIER_NEEDS_SECRET: frozenset[str] = frozenset({"shiprocket"})
 
 #: `Channel.status`'s vocabulary. `error` means the last sync attempt hit an auth failure (an
 #: expired or revoked credential) — the row is still configured, but nothing syncs again until it

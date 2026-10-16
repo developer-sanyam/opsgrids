@@ -33,6 +33,7 @@ from app.channels.base import ChannelClient
 from app.config import settings
 from app.counting import selectors as counting_selectors
 from app.counting import services as counting_services
+from app.dispatch import booking as dispatch_booking
 from app.dispatch import selectors as dispatch_selectors
 from app.dispatch import services as dispatch_services
 from app.fulfilment import selectors as fulfilment_selectors
@@ -167,6 +168,7 @@ from app.schemas import (
     WarehouseMapOut,
     WarehouseOut,
     WarehousePatch,
+    WebhookSetupOut,
     WorkerIn,
     WorkerOut,
     WorkerPatch,
@@ -177,7 +179,7 @@ from app.schemas import (
 from app.warehouse import selectors as wh_selectors
 from app.warehouse import services as wh_services
 from platform_core.auth import Scope, ScopeContext, require, require_product
-from platform_core.db import get_session, get_tenant_session, set_tenant
+from platform_core.db import assert_tenant, get_session, get_tenant_session, set_tenant
 from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
 from platform_core.pagination import Page, PageQuery, paginate
 
@@ -2952,25 +2954,33 @@ async def read_shipment(
     dependencies=[Entitled],
 )
 async def dispatch_order(
-    payload: ShipmentIn, session: SessionDep, ctx: DispatchWrite, request: Request
+    payload: ShipmentIn, session: RawSessionDep, ctx: DispatchWrite, request: Request
 ) -> ShipmentOut:
-    order = await order_selectors.get_order(
-        session, ctx.organization_id, payload.order_id, for_update=True
-    )
-    if order is None:
-        raise NotFoundProblem("That order is not part of this organization")
-    shipment = await dispatch_services.dispatch_order(
-        session,
-        ctx,
-        order,
-        expected_version=payload.order_version,
-        carrier_name=payload.carrier_name,
-        channel_id=payload.channel_id,
-        tracking_reference=payload.tracking_reference,
-        payment_confirmed=payload.payment_confirmed,
-        request=request,
-    )
-    return dispatch_selectors.shipment_out(shipment)
+    # Live carrier booking owns its own three transactions (claim -> call -> record); everything
+    # else -- a manual carrier, or `log_only` -- is the one ordinary tenant transaction below.
+    if payload.channel_id is not None and settings().carrier_booking_mode == "live":
+        return await dispatch_booking.book_and_dispatch(session, ctx, payload, request=request)
+    async with session.begin():
+        await set_tenant(session, ctx.organization_id)
+        if not settings().is_production:
+            await assert_tenant(session, ctx.organization_id)
+        order = await order_selectors.get_order(
+            session, ctx.organization_id, payload.order_id, for_update=True
+        )
+        if order is None:
+            raise NotFoundProblem("That order is not part of this organization")
+        shipment = await dispatch_services.dispatch_order(
+            session,
+            ctx,
+            order,
+            expected_version=payload.order_version,
+            carrier_name=payload.carrier_name,
+            channel_id=payload.channel_id,
+            tracking_reference=payload.tracking_reference,
+            payment_confirmed=payload.payment_confirmed,
+            request=request,
+        )
+        return dispatch_selectors.shipment_out(shipment)
 
 
 async def _transition_shipment(
@@ -3379,6 +3389,7 @@ async def connect_channel(
         name=payload.name,
         external_shop_id=payload.external_shop_id,
         api_key=payload.api_key,
+        api_secret=payload.api_secret,
         default_warehouse_id=payload.default_warehouse_id,
         default_currency=payload.default_currency,
         auto_accept_orders=payload.auto_accept_orders,
@@ -3474,9 +3485,30 @@ async def reconnect_channel(
     if channel is None:
         raise NotFoundProblem("That channel is not part of this organization")
     channel = await channel_services.reconnect_channel(
-        session, ctx, channel, api_key=payload.api_key, request=request
+        session,
+        ctx,
+        channel,
+        api_key=payload.api_key,
+        api_secret=payload.api_secret,
+        request=request,
     )
     return channel_selectors.channel_out(channel)
+
+
+@router.get(
+    "/operations/channels/{channel_id}/webhook-setup",
+    response_model=WebhookSetupOut,
+    summary="The tracking-webhook path and token to register at a carrier (audited reveal)",
+    dependencies=[Entitled],
+)
+async def channel_webhook_setup(
+    channel_id: uuid.UUID, session: SessionDep, ctx: ChannelWrite, request: Request
+) -> WebhookSetupOut:
+    channel = await _get_channel_or_404(session, ctx, channel_id)
+    path, token = await channel_services.reveal_webhook_setup(
+        session, ctx, channel, request=request
+    )
+    return WebhookSetupOut(path=path, token=token)
 
 
 @router.post(

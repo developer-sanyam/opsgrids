@@ -21,6 +21,7 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
@@ -76,6 +77,57 @@ _TRANSITION_EVENTS: dict[str, str] = {
 }
 
 
+async def check_dispatchable(
+    session: AsyncSession,
+    ctx: ScopeContext,
+    order: Order,
+    *,
+    expected_version: int,
+    payment_confirmed: bool = False,
+) -> None:
+    """Everything that must hold before an order may go to a carrier -- version, `READY`, payment
+    attestation, billing gate, every line picked and packed -- shared by `dispatch_order` and the
+    booking claim (`app.dispatch.booking`), so a carrier is never called for an order the record
+    step would then refuse. `order` is locked by the caller. See `dispatch_order`, points 1-3."""
+    if order.version != expected_version:
+        raise ConflictProblem(
+            f"Order {order.number} is at version {order.version}, not {expected_version}; "
+            "reload it and try again"
+        )
+    if not domain.can_transition_order(order.status, "HANDED_OVER"):
+        raise ConflictProblem(f"Order {order.number} is {order.status} and cannot be dispatched")
+
+    # M3 (security review): the carrier-desk counterpart to `hand_over_order`'s own
+    # `payment_confirmed` handling — must run *before* the gate below, the same order the counter
+    # path uses, or a cash/prepaid order can never pass it on this path.
+    attest_payment_if_confirmed(order, payment_confirmed=payment_confirmed)
+    # `require_pickup_code` fails closed here on purpose (see this function's own docstring,
+    # point 2) — not an oversight, and not something to route around.
+    check_billing_gate(order)
+
+    org_id = ctx.organization_id
+    lines = await order_selectors.lines_for(session, org_id, order.id)
+    never_picked, partial_pack = await selectors.unfulfilled_order_lines(
+        session, org_id, order.id, lines
+    )
+    if never_picked or partial_pack:
+        problem_lines = never_picked or partial_pack
+        item_ids = [line.inventory_item_id for line, _ in problem_lines]
+        items = await order_selectors.items_for_lines(session, org_id, item_ids)
+        detail = ", ".join(
+            f"{items[line.inventory_item_id].sku if line.inventory_item_id in items else line.id}"
+            f" ({format_qty(qty)})"
+            for line, qty in problem_lines
+        )
+        if never_picked:
+            raise ConflictProblem(
+                f"Order {order.number} cannot be dispatched — never picked: {detail}"
+            )
+        raise ConflictProblem(
+            f"Order {order.number} cannot be dispatched — staged but not fully packed: {detail}"
+        )
+
+
 async def dispatch_order(
     session: AsyncSession,
     ctx: ScopeContext,
@@ -86,6 +138,7 @@ async def dispatch_order(
     tracking_reference: str | None,
     channel_id: uuid.UUID | None = None,
     booking: CarrierBooking | None = None,
+    claimed: Shipment | None = None,
     payment_confirmed: bool = False,
     request: Request | None = None,
 ) -> Shipment:
@@ -132,43 +185,14 @@ async def dispatch_order(
        crosses the e-Way value threshold, and the order is priced in INR — emits
        `operations.dispatch.shipment.eway_requested`, fire-and-forget.
     """
-    if order.version != expected_version:
-        raise ConflictProblem(
-            f"Order {order.number} is at version {order.version}, not {expected_version}; "
-            "reload it and try again"
-        )
-    if not domain.can_transition_order(order.status, "HANDED_OVER"):
-        raise ConflictProblem(f"Order {order.number} is {order.status} and cannot be dispatched")
-
-    # M3 (security review): the carrier-desk counterpart to `hand_over_order`'s own
-    # `payment_confirmed` handling — must run *before* the gate below, the same order the counter
-    # path uses, or a cash/prepaid order can never pass it on this path.
-    attest_payment_if_confirmed(order, payment_confirmed=payment_confirmed)
-    # `require_pickup_code` fails closed here on purpose (see this function's own docstring,
-    # point 2) — not an oversight, and not something to route around.
-    check_billing_gate(order)
-
-    org_id = ctx.organization_id
-    lines = await order_selectors.lines_for(session, org_id, order.id)
-    never_picked, partial_pack = await selectors.unfulfilled_order_lines(
-        session, org_id, order.id, lines
+    await check_dispatchable(
+        session,
+        ctx,
+        order,
+        expected_version=expected_version,
+        payment_confirmed=payment_confirmed,
     )
-    if never_picked or partial_pack:
-        problem_lines = never_picked or partial_pack
-        item_ids = [line.inventory_item_id for line, _ in problem_lines]
-        items = await order_selectors.items_for_lines(session, org_id, item_ids)
-        detail = ", ".join(
-            f"{items[line.inventory_item_id].sku if line.inventory_item_id in items else line.id}"
-            f" ({format_qty(qty)})"
-            for line, qty in problem_lines
-        )
-        if never_picked:
-            raise ConflictProblem(
-                f"Order {order.number} cannot be dispatched — never picked: {detail}"
-            )
-        raise ConflictProblem(
-            f"Order {order.number} cannot be dispatched — staged but not fully packed: {detail}"
-        )
+    org_id = ctx.organization_id
 
     external_shipment_id: str | None = None
     if channel_id is not None:
@@ -199,18 +223,31 @@ async def dispatch_order(
     if carrier_name is None:
         raise ValidationProblem("name a carrier: carrier_name or a connected carrier channel_id")
 
-    shipment = Shipment(
-        organization_id=org_id,
-        created_by=str(ctx.principal.sub),
-        order_id=order.id,
-        warehouse_id=order.warehouse_id,
-        status="PICKUP_HANDOVER",
-        carrier_name=carrier_name,
-        tracking_reference=tracking_reference,
-        channel_id=channel_id,
-        external_shipment_id=external_shipment_id,
-    )
-    session.add(shipment)
+    if claimed is not None:
+        # The record step of `app.dispatch.booking`: the row the claim made becomes the handover.
+        shipment = claimed
+        shipment.status = "PICKUP_HANDOVER"
+        shipment.failure_reason = None
+        shipment.carrier_name = carrier_name
+        shipment.tracking_reference = tracking_reference
+        shipment.external_shipment_id = external_shipment_id
+        shipment.updated_by = str(ctx.principal.sub)
+        shipment.updated_at = datetime.now(UTC)
+    else:
+        if await selectors.shipment_for_order(session, org_id, order.id) is not None:
+            raise ConflictProblem(f"Order {order.number} already has a shipment")
+        shipment = Shipment(
+            organization_id=org_id,
+            created_by=str(ctx.principal.sub),
+            order_id=order.id,
+            warehouse_id=order.warehouse_id,
+            status="PICKUP_HANDOVER",
+            carrier_name=carrier_name,
+            tracking_reference=tracking_reference,
+            channel_id=channel_id,
+            external_shipment_id=external_shipment_id,
+        )
+        session.add(shipment)
     await session.flush()
 
     # M2 (security review): the reservation-consuming `issue` move is now posted inside
@@ -372,3 +409,64 @@ async def transition_shipment(
         actor=actor_for(ctx),
     )
     return shipment
+
+
+#: Platform status -> the steps a carrier's report walks through `SHIPMENT_TRANSITIONS`; a parcel
+#: reported delivered straight from handover passes through `IN_TRANSIT`, the edge it needs.
+_TRACKING_PATHS: dict[str, tuple[str, ...]] = {
+    "IN_TRANSIT": ("IN_TRANSIT",),
+    "DELIVERED": ("IN_TRANSIT", "DELIVERED"),
+    "FAILED": ("FAILED",),
+    "RETURNED": ("RETURNED",),
+}
+
+
+async def apply_carrier_tracking(
+    session: AsyncSession,
+    organization_id: uuid.UUID,
+    channel_id: uuid.UUID,
+    *,
+    awb: str,
+    status: str,
+    reason: str,
+) -> bool:
+    """Moves the shipment a recorded carrier event is about, if it can move. The inbox row is
+    already written (`app.channels.webhooks.record_event`); this is the act, in the same
+    transaction. A stale or out-of-order report (the lifecycle has no such edge) is dropped and
+    logged -- the next event is the truth. Returns whether the shipment moved."""
+    # Local import: `app.channels.services` reaches the orders package, which reaches dispatch.
+    from app.channels.services import service_ctx
+
+    ctx = service_ctx(organization_id)
+    shipment_id = (
+        await session.execute(
+            select(Shipment.id).where(
+                Shipment.organization_id == organization_id,
+                Shipment.channel_id == channel_id,
+                Shipment.tracking_reference == awb,
+                Shipment.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if shipment_id is None:
+        log.info("carrier.tracking.unknown_awb", organization_id=str(organization_id))
+        return False
+    shipment = await selectors.get_shipment(session, organization_id, shipment_id, for_update=True)
+    if shipment is None:
+        return False
+    moved = False
+    for step in _TRACKING_PATHS[status]:
+        if shipment.status == step:
+            continue
+        if not domain.can_transition_shipment(shipment.status, step):
+            log.info(
+                "carrier.tracking.ignored",
+                organization_id=str(organization_id),
+                shipment_id=str(shipment.id),
+                from_status=shipment.status,
+                to_status=step,
+            )
+            break
+        await transition_shipment(session, ctx, shipment, to_status=step, reason=reason)
+        moved = True
+    return moved

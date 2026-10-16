@@ -340,7 +340,7 @@ class TestCarrierDispatch:
         )
         assert response.status_code == 403
 
-    async def test_live_mode_refuses_to_dispatch_without_a_booking_and_records_one_with(
+    async def test_live_mode_needs_booking_details_and_dispatch_records_a_made_booking(
         self, client, session, org_id, admin_session, floor, monkeypatch
     ) -> None:
         monkeypatch.setattr(settings(), "carrier_booking_mode", "live")
@@ -350,7 +350,7 @@ class TestCarrierDispatch:
         refused = await dispatch_order(
             client, org_id, order_id, version, carrier_name=None, channel_id=channel_id
         )
-        assert refused.status_code == 409, refused.text
+        assert refused.status_code == 422, refused.text
         assert await _no_shipment(session, org_id, order_id)
 
         ctx = ctx_for(org_id, "operations.dispatch.shipment.write", domain_scope())

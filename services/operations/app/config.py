@@ -63,10 +63,12 @@ class Settings(ServiceSettings):
     #: Whether dispatching through a carrier connection really books with the carrier.
     #: `log_only` (the default) logs the booking that would be made and calls nothing: the
     #: shipment is recorded with the manually-entered carrier details, exactly as before. `live`
-    #: expects the booking to have been made (outside the transaction) before dispatch records it,
-    #: and is refused at dispatch until a carrier adapter exists. The owner flips it after reading
+    #: books with the customer's own courier account: claim the shipment, call the carrier with no
+    #: transaction open, record the AWB (`app.dispatch.booking`). The owner flips it after reading
     #: the `carrier.booking.log_only` log lines.
     carrier_booking_mode: Literal["log_only", "live"] = "log_only"
+    #: Shiprocket's API base: a fixed host of the vendor, never a tenant-supplied value.
+    shiprocket_api_base: str = "https://apiv2.shiprocket.in/v1/external"
     #: The self-hosted sandbox marketplace's base URL (`app.channels.mock_marketplace`) —
     #: platform configuration, not a value a tenant supplies (`app.channels.mock_provider`'s own
     #: module docstring: the same "fixed, operator-configured base" reasoning

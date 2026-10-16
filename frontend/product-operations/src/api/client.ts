@@ -120,6 +120,7 @@ import type {
   ChannelRetryResultOut,
   ChannelSkuMappingIn,
   ChannelSkuMappingOut,
+  ChannelKind,
   ChannelStatus,
   ChannelSyncLogOut,
   ChannelSyncResultOut,
@@ -219,6 +220,7 @@ import type {
   WarehousePatch,
   WorkerWorkloadOut,
   ZoneBottleneckOut,
+  WebhookSetupOut,
 } from "./types";
 import type { CursorPage } from "./trackingTypes";
 
@@ -2635,6 +2637,8 @@ export async function getPaymentReconciliation(): Promise<ReconciliationOut> {
 
 export interface ListChannelsParams {
   status?: ChannelStatus | "all";
+  /** Defaults to sales channels; carriers, ERPs and POS get their own screens. */
+  kind?: ChannelKind;
   page?: number;
   size?: number;
 }
@@ -2645,8 +2649,7 @@ export async function listChannels(params: ListChannelsParams = {}): Promise<Pag
     page: params.page ?? 1,
     size: params.size ?? DEFAULT_PAGE_SIZE,
     status: params.status === "all" ? undefined : params.status,
-    // This page connects sales channels; carriers, ERPs and POS get their own screens.
-    kind: "sales",
+    kind: params.kind ?? "sales",
   });
   return apiRequest<Page<ChannelOut>>(`/operations/channels${query}`);
 }
@@ -2655,8 +2658,14 @@ export async function getChannel(id: string): Promise<ChannelOut> {
   return apiRequest<ChannelOut>(`/operations/channels/${encodeURIComponent(id)}`);
 }
 
-/** `POST /operations/channels` — `operations.channels.channel.write:ORG`. Connects a new channel;
- *  only `provider: "mock_marketplace"` exists in this build. */
+/** `GET /operations/channels/{id}/webhook-setup` — `operations.channels.channel.write:ORG`. The
+ *  path and token to register at the carrier; every call is audited server-side. */
+export async function getWebhookSetup(id: string): Promise<WebhookSetupOut> {
+  return apiRequest<WebhookSetupOut>(`/operations/channels/${encodeURIComponent(id)}/webhook-setup`);
+}
+
+/** `POST /operations/channels` — `operations.channels.channel.write:ORG`. Connects a new channel
+ *  (`mock_marketplace`, or a `shiprocket` carrier with `kind: "carrier"`). */
 export async function connectChannel(input: ChannelConnectIn): Promise<ChannelOut> {
   return apiRequest<ChannelOut>("/operations/channels", { method: "POST", body: input });
 }

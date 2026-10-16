@@ -55,6 +55,20 @@ def shipments_stmt(
     return stmt.order_by(Shipment.created_at.desc())
 
 
+async def shipment_for_order(
+    session: AsyncSession, org_id: uuid.UUID, order_id: uuid.UUID, *, for_update: bool = False
+) -> Shipment | None:
+    """The order's one shipment (`uq_shipments_org_order`), if any."""
+    stmt = select(Shipment).where(
+        Shipment.organization_id == org_id,
+        Shipment.order_id == order_id,
+        Shipment.deleted_at.is_(None),
+    )
+    if for_update:
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def get_shipment(
     session: AsyncSession, org_id: uuid.UUID, shipment_id: uuid.UUID, *, for_update: bool = False
 ) -> Shipment | None:

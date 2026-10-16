@@ -2491,6 +2491,9 @@ class Shipment(Base, TenantBase):
     transaction — the carrier physically taking the goods is what proves handover happened on
     this path, the same role the counter's pickup-code/payment attestation plays on the other.
 
+    A carrier booking in `live` mode first holds the row at `BOOKING` (or `BOOKING_FAILED`, the
+    retry state) while the carrier is called (`app.dispatch.booking`).
+
     `status` runs `PICKUP_HANDOVER -> IN_TRANSIT -> DELIVERED` (or `FAILED`/`RETURNED`) —
     `app.domain.SHIPMENT_TRANSITIONS` — a lifecycle of its own, deliberately apart from
     `orders.status` (ADR-0025 §1: everything but the order's own short commercial status lives on
@@ -2561,8 +2564,17 @@ class Shipment(Base, TenantBase):
             name="external_shipment_needs_channel",
         ),
         CheckConstraint(
-            "status IN ('PICKUP_HANDOVER', 'IN_TRANSIT', 'DELIVERED', 'FAILED', 'RETURNED')",
+            "status IN ('BOOKING', 'BOOKING_FAILED', 'PICKUP_HANDOVER', 'IN_TRANSIT', "
+            "'DELIVERED', 'FAILED', 'RETURNED')",
             name="status_known",
+        ),
+        # An inbound carrier tracking event names its parcel by AWB.
+        Index(
+            "ix_shipments_org_channel_awb",
+            "organization_id",
+            "channel_id",
+            "tracking_reference",
+            postgresql_where=text("channel_id IS NOT NULL AND deleted_at IS NULL"),
         ),
     )
 

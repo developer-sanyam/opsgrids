@@ -144,6 +144,7 @@ const InspectionDetailPage = lazy(() =>
 );
 const AutomationPage = lazy(() => import("./routes/Automation").then((m) => ({ default: m.AutomationPage })));
 const ChannelsPage = lazy(() => import("./routes/Channels").then((m) => ({ default: m.ChannelsPage })));
+const CarriersPage = lazy(() => import("./routes/Carriers").then((m) => ({ default: m.CarriersPage })));
 const JobWorkOrdersPage = lazy(() =>
   import("./routes/JobWorkOrders").then((m) => ({ default: m.JobWorkOrdersPage })),
 );
@@ -279,6 +280,7 @@ const router = createBrowserRouter([
           lazyRoute("settings/payments", <PaymentSettingsPage />),
           lazyRoute("settings/fulfilment", <FulfilmentSettingsPage />),
           lazyRoute("channels", <ChannelsPage />),
+          lazyRoute("carriers", <CarriersPage />),
           lazyRoute("jobwork/orders", <JobWorkOrdersPage />),
           lazyRoute("jobwork/orders/:id", <JobWorkOrderDetailPage />),
           lazyRoute("manufacturing/boms", <BomsPage />),
