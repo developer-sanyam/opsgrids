@@ -136,6 +136,7 @@
     { "prefix": "/api/v1/itsm", "upstream": "http://itsm:8000", "product": "itsm" },
 
     { "prefix": "/api/v1/operations/inventory/data/import", "upstream": "http://operations:8000", "product": "operations", "max_body_bytes": 8388608 },
+    { "prefix": "/api/v1/webhooks/operations/shopify", "upstream": "http://operations:8000", "max_body_bytes": 262144 },
     { "prefix": "/api/v1/webhooks/operations", "upstream": "http://operations:8000", "max_body_bytes": 262144 },
     { "prefix": "/api/v1/operations", "upstream": "http://operations:8000", "product": "operations" },
 

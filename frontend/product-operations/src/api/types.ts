@@ -1445,7 +1445,7 @@ export interface DiscrepancyTrendPointOut {
  * marketplace`): a `ChannelOut` row is the connector itself.
  */
 
-export type ChannelProvider = "mock_marketplace";
+export type ChannelProvider = "mock_marketplace" | "shopify";
 export type ChannelKind = "sales" | "erp" | "pos" | "carrier";
 export type ChannelStatus = "connected" | "disconnected" | "error";
 export type ChannelSyncType = "order_import" | "inventory_push" | "fulfilment_push" | "health_check";
@@ -1482,6 +1482,8 @@ export interface ChannelConnectIn {
   name: string;
   external_shop_id: string;
   api_key: string;
+  /** Shopify only: the custom app's API secret key; sealed with the access token. */
+  webhook_secret?: string;
   default_warehouse_id: string;
   default_currency?: string;
   auto_accept_orders?: boolean;
@@ -1498,6 +1500,7 @@ export interface ChannelConfigPatch {
 /** `POST /operations/channels/{id}/reconnect`. */
 export interface ChannelReconnectIn {
   api_key: string;
+  webhook_secret?: string;
 }
 
 export interface ChannelSkuMappingOut {

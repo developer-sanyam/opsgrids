@@ -2042,9 +2042,25 @@
             "type": "string"
           },
           "provider": {
-            "const": "mock_marketplace",
+            "enum": [
+              "mock_marketplace",
+              "shopify"
+            ],
             "title": "Provider",
             "type": "string"
+          },
+          "webhook_secret": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Secret"
           }
         },
         "required": [
@@ -2261,6 +2277,19 @@
             "minLength": 1,
             "title": "Api Key",
             "type": "string"
+          },
+          "webhook_secret": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Secret"
           }
         },
         "required": [

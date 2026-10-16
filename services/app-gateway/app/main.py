@@ -155,6 +155,7 @@ WEBHOOK_PUBLIC_PATHS: Mapping[str, frozenset[str]] = MappingProxyType(
         "/api/v1/webhooks/whatsapp/data-deletion-status": frozenset({"GET"}),
         "/api/v1/webhooks/razorpay/collections": frozenset({"POST"}),
         "/api/v1/webhooks/collections": frozenset({"POST"}),
+        "/api/v1/webhooks/operations/shopify": frozenset({"POST"}),
     }
 )
 

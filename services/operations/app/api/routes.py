@@ -3379,6 +3379,7 @@ async def connect_channel(
         name=payload.name,
         external_shop_id=payload.external_shop_id,
         api_key=payload.api_key,
+        webhook_secret=payload.webhook_secret,
         default_warehouse_id=payload.default_warehouse_id,
         default_currency=payload.default_currency,
         auto_accept_orders=payload.auto_accept_orders,
@@ -3474,7 +3475,12 @@ async def reconnect_channel(
     if channel is None:
         raise NotFoundProblem("That channel is not part of this organization")
     channel = await channel_services.reconnect_channel(
-        session, ctx, channel, api_key=payload.api_key, request=request
+        session,
+        ctx,
+        channel,
+        api_key=payload.api_key,
+        webhook_secret=payload.webhook_secret,
+        request=request,
     )
     return channel_selectors.channel_out(channel)
 

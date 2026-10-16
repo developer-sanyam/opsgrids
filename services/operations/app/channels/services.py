@@ -41,7 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import domain
-from app.channels import selectors
+from app.channels import selectors, shopify
 from app.channels.base import (
     ChannelAuthError,
     ChannelClient,
@@ -52,6 +52,7 @@ from app.channels.base import (
     ChannelUnavailable,
 )
 from app.channels.mock_provider import MockMarketplaceClient, parse_order
+from app.channels.shopify import ShopifyClient
 from app.config import settings
 from app.inventory import quantity as qty_lib
 from app.inventory import selectors as inv_selectors
@@ -123,7 +124,38 @@ def build_client(channel: Channel, *, api_key: str) -> ChannelClient:
         return MockMarketplaceClient(
             base_url=base_url, shop_id=channel.external_shop_id, api_key=api_key
         )
+    if channel.provider == "shopify":
+        token, _ = shopify.unpack_credential(api_key)
+        return ShopifyClient(shop_domain=channel.external_shop_id, access_token=token)
     raise ValidationProblem(f"{channel.provider!r} is not a channel provider this build supports")
+
+
+def _seal_credential(
+    provider: str,
+    api_key: str,
+    webhook_secret: str | None,
+    *,
+    organization_id: uuid.UUID,
+    channel_id: uuid.UUID,
+) -> tuple[bytes, str]:
+    """Seals the credential; Shopify's holds the access token and the webhook secret together, and
+    its mask shows only the token's tail (the sealed mask would run to the combined length)."""
+    if provider != "shopify":
+        if webhook_secret:
+            raise ValidationProblem(f"{provider!r} takes no webhook secret")
+        return seal(
+            api_key,
+            kind="secret",
+            settings=settings(),
+            aad=_aad(organization_id, channel_id),
+        )
+    enc, _ = seal(
+        shopify.pack_credential(api_key.strip(), webhook_secret),
+        kind="secret",
+        settings=settings(),
+        aad=_aad(organization_id, channel_id),
+    )
+    return enc, "••••" + api_key.strip()[-2:]
 
 
 async def open_channel_credential(channel: Channel) -> str:
@@ -174,6 +206,7 @@ async def connect_channel(
     default_warehouse_id: uuid.UUID,
     default_currency: str,
     auto_accept_orders: bool,
+    webhook_secret: str | None = None,
     kind: str = "sales",
     request: Request | None = None,
 ) -> Channel:
@@ -185,6 +218,13 @@ async def connect_channel(
         )
     if not api_key.strip():
         raise ValidationProblem("A channel connection needs a credential")
+    api_base_url = None
+    if provider == "shopify":
+        try:
+            external_shop_id = shopify.validate_shop_domain(external_shop_id)
+        except ValueError as exc:
+            raise ValidationProblem(str(exc)) from None
+        api_base_url = f"https://{external_shop_id}"
     warehouse = await inv_selectors.get_warehouse(
         session, ctx.organization_id, default_warehouse_id
     )
@@ -194,8 +234,12 @@ async def connect_channel(
     # Generated here rather than left to the column's own client-side default, so the credential
     # can be sealed with its row's real id as AAD (`_aad`) in one pass — no insert-then-reseal.
     channel_id = uuid.uuid4()
-    api_key_enc, api_key_masked = seal(
-        api_key, kind="secret", settings=settings(), aad=_aad(ctx.organization_id, channel_id)
+    api_key_enc, api_key_masked = _seal_credential(
+        provider,
+        api_key,
+        webhook_secret,
+        organization_id=ctx.organization_id,
+        channel_id=channel_id,
     )
     channel = Channel(
         id=channel_id,
@@ -206,6 +250,7 @@ async def connect_channel(
         name=name,
         status="connected",
         external_shop_id=external_shop_id,
+        api_base_url=api_base_url,
         api_key_enc=api_key_enc,
         api_key_masked=api_key_masked,
         default_warehouse_id=warehouse.id,
@@ -266,6 +311,7 @@ async def reconnect_channel(
     channel: Channel,
     *,
     api_key: str,
+    webhook_secret: str | None = None,
     request: Request | None = None,
 ) -> Channel:
     """Rotates the credential and clears an `error` status — the only way a connection leaves
@@ -273,8 +319,12 @@ async def reconnect_channel(
     the old one). Also the normal path back from a deliberate `disconnect`."""
     if not api_key.strip():
         raise ValidationProblem("A channel connection needs a credential")
-    channel.api_key_enc, channel.api_key_masked = seal(
-        api_key, kind="secret", settings=settings(), aad=_aad(ctx.organization_id, channel.id)
+    channel.api_key_enc, channel.api_key_masked = _seal_credential(
+        channel.provider,
+        api_key,
+        webhook_secret,
+        organization_id=ctx.organization_id,
+        channel_id=channel.id,
     )
     channel.status = "connected"
     channel.connected_at = datetime.now(UTC)
