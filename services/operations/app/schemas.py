@@ -1852,7 +1852,15 @@ class PackageIn(BaseModel):
 # ------------------------------------------------------------------ dispatch (ADR-0024 §6;
 # `docs/fulfilment/plan.md` F5)
 
-ShipmentStatus = Literal["PICKUP_HANDOVER", "IN_TRANSIT", "DELIVERED", "FAILED", "RETURNED"]
+ShipmentStatus = Literal[
+    "BOOKING",
+    "BOOKING_FAILED",
+    "PICKUP_HANDOVER",
+    "IN_TRANSIT",
+    "DELIVERED",
+    "FAILED",
+    "RETURNED",
+]
 
 
 class ShipmentOut(BaseModel):
@@ -1882,6 +1890,34 @@ def _reject_blank_or_control(value: str, *, field_name: str) -> str:
     if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in stripped):
         raise ValueError(f"{field_name} must not contain control characters")
     return stripped
+
+
+class CarrierBookingIn(BaseModel):
+    """Where and what to book when `POST /dispatch/shipments` ships through a carrier connection
+    in `live` mode. The order carries no address, so the dispatcher supplies it here."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    consignee_name: str = Field(min_length=1, max_length=120)
+    consignee_phone: str = Field(pattern=r"^\+?\d{10,15}$")
+    consignee_email: str | None = Field(default=None, max_length=120, pattern=r"^[^@\s]+@[^@\s]+$")
+    consignee_address: str = Field(min_length=1, max_length=300)
+    consignee_city: str = Field(min_length=1, max_length=80)
+    consignee_state: str = Field(min_length=1, max_length=80)
+    destination_pincode: str = Field(pattern=r"^\d{6}$")
+    weight_grams: int = Field(ge=1, le=500_000)
+    length_cm: int = Field(default=10, ge=1, le=200)
+    breadth_cm: int = Field(default=10, ge=1, le=200)
+    height_cm: int = Field(default=10, ge=1, le=200)
+    #: Cash to collect on delivery, integer minor units; 0 is prepaid.
+    cod_amount_minor: int = Field(default=0, ge=0)
+    #: The carrier's own service id (from its serviceability list); omitted, the carrier picks.
+    service_code: str | None = Field(default=None, pattern=r"^\d{1,10}$")
+
+    @field_validator("consignee_name", "consignee_address", "consignee_city", "consignee_state")
+    @classmethod
+    def _text_is_clean(cls, value: str) -> str:
+        return _reject_blank_or_control(value, field_name="value")
 
 
 class ShipmentIn(BaseModel):
@@ -1914,6 +1950,8 @@ class ShipmentIn(BaseModel):
     channel_id: UUID | None = None
     tracking_reference: str | None = Field(default=None, max_length=120)
     payment_confirmed: bool = False
+    #: Required to book with a carrier in `live` mode; ignored in `log_only`.
+    booking: CarrierBookingIn | None = None
 
     @field_validator("carrier_name")
     @classmethod
@@ -2198,7 +2236,7 @@ class OrderRefundIn(BaseModel):
 
 # ------------------------------------------------------------------ channels (Fulfilment plan F11)
 
-ChannelProvider = Literal["mock_marketplace"]
+ChannelProvider = Literal["mock_marketplace", "shiprocket"]
 ChannelStatus = Literal["connected", "disconnected", "error"]
 ChannelSyncType = Literal["order_import", "inventory_push", "fulfilment_push", "health_check"]
 ChannelSyncStatus = Literal["success", "failed"]
@@ -2254,6 +2292,8 @@ class ChannelConnectIn(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     external_shop_id: str = Field(min_length=1, max_length=120)
     api_key: str = Field(min_length=1, max_length=500)
+    #: The second half of a login (Shiprocket's password); carriers that need one only.
+    api_secret: str | None = Field(default=None, min_length=1, max_length=200)
     default_warehouse_id: UUID
     default_currency: str = Field(default="INR", min_length=3, max_length=3)
     auto_accept_orders: bool = True
@@ -2282,6 +2322,15 @@ class ChannelReconnectIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     api_key: str = Field(min_length=1, max_length=500)
+    api_secret: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class WebhookSetupOut(BaseModel):
+    """What the customer registers at their carrier for tracking: the public path (the dashboard
+    prefixes its own origin) and the token the carrier must present. The token is a secret."""
+
+    path: str
+    token: str
 
 
 class ChannelSkuMappingOut(BaseModel):

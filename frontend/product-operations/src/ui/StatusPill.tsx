@@ -276,6 +276,8 @@ export function AssignmentKindPill({ kind }: { kind: unknown }) {
  */
 
 const SHIPMENT_LABEL: Record<ShipmentStatus, string> = {
+  BOOKING: "Booking",
+  BOOKING_FAILED: "Booking failed",
   PICKUP_HANDOVER: "Pickup handover",
   IN_TRANSIT: "In transit",
   DELIVERED: "Delivered",
@@ -289,6 +291,8 @@ const SHIPMENT_REGISTERED: Partial<Record<ShipmentStatus, StatusWord>> = {
 };
 
 const SHIPMENT_EXPLICIT_TONE: Partial<Record<ShipmentStatus, StatusTone>> = {
+  BOOKING: "info",
+  BOOKING_FAILED: "danger",
   PICKUP_HANDOVER: "info",
   IN_TRANSIT: "info",
   RETURNED: "danger",

@@ -41,7 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import domain
-from app.channels import selectors
+from app.channels import registry, selectors
 from app.channels.base import (
     ChannelAuthError,
     ChannelClient,
@@ -51,6 +51,7 @@ from app.channels.base import (
     ChannelRejected,
     ChannelUnavailable,
 )
+from app.channels.carrier import CarrierCredential
 from app.channels.mock_provider import MockMarketplaceClient, parse_order
 from app.config import settings
 from app.inventory import quantity as qty_lib
@@ -70,7 +71,7 @@ from platform_core.auth import Principal, Scope, ScopeContext
 from platform_core.db import assert_tenant, set_tenant
 from platform_core.errors import ConflictProblem, NotFoundProblem, ValidationProblem
 from platform_core.logging import get_logger
-from platform_core.pii import open_sealed, seal
+from platform_core.pii import mask, open_sealed, seal
 
 log = get_logger("operations.channels")
 
@@ -139,6 +140,39 @@ async def open_channel_credential(channel: Channel) -> str:
     )
 
 
+async def open_carrier_credential(channel: Channel) -> CarrierCredential:
+    """A carrier connection's packed credential (`CarrierCredential`), opened. Same
+    not-a-reveal reasoning as `open_channel_credential`."""
+    credential = CarrierCredential.unpack(await open_channel_credential(channel))
+    if credential is None:
+        raise ValidationProblem(f"channel {channel.id} holds no carrier credential")
+    return credential
+
+
+def _sealed_credential(
+    organization_id: uuid.UUID,
+    channel_id: uuid.UUID,
+    *,
+    kind: str,
+    api_key: str,
+    api_secret: str | None,
+    webhook_token: str | None = None,
+) -> tuple[bytes, str]:
+    """`(ciphertext, mask)` for a connection's credential. A carrier's is packed with its second
+    half and webhook token (kept across a reconnect, so the URL the customer registered keeps
+    working); the mask is always of the account key alone."""
+    plaintext = api_key
+    if kind == "carrier":
+        packed = CarrierCredential.new(api_key, api_secret or "")
+        if webhook_token:
+            packed = CarrierCredential(packed.key, packed.secret, webhook_token)
+        plaintext = packed.pack()
+    enc, _ = seal(
+        plaintext, kind="secret", settings=settings(), aad=_aad(organization_id, channel_id)
+    )
+    return enc, mask(api_key, kind="secret")
+
+
 async def load_client_for_channel(
     session: AsyncSession, ctx: ScopeContext, channel_id: uuid.UUID
 ) -> tuple[Channel, ChannelClient]:
@@ -175,6 +209,7 @@ async def connect_channel(
     default_currency: str,
     auto_accept_orders: bool,
     kind: str = "sales",
+    api_secret: str | None = None,
     request: Request | None = None,
 ) -> Channel:
     if provider not in domain.CHANNEL_PROVIDERS:
@@ -185,6 +220,8 @@ async def connect_channel(
         )
     if not api_key.strip():
         raise ValidationProblem("A channel connection needs a credential")
+    if provider in domain.CARRIER_NEEDS_SECRET and not (api_secret or "").strip():
+        raise ValidationProblem(f"{provider} needs both an account email and a password")
     warehouse = await inv_selectors.get_warehouse(
         session, ctx.organization_id, default_warehouse_id
     )
@@ -194,8 +231,8 @@ async def connect_channel(
     # Generated here rather than left to the column's own client-side default, so the credential
     # can be sealed with its row's real id as AAD (`_aad`) in one pass — no insert-then-reseal.
     channel_id = uuid.uuid4()
-    api_key_enc, api_key_masked = seal(
-        api_key, kind="secret", settings=settings(), aad=_aad(ctx.organization_id, channel_id)
+    api_key_enc, api_key_masked = _sealed_credential(
+        ctx.organization_id, channel_id, kind=kind, api_key=api_key, api_secret=api_secret
     )
     channel = Channel(
         id=channel_id,
@@ -237,6 +274,30 @@ async def connect_channel(
     return channel
 
 
+async def reveal_webhook_setup(
+    session: AsyncSession, ctx: ScopeContext, channel: Channel, *, request: Request | None = None
+) -> tuple[str, str]:
+    """`(public path, token)` the customer registers at their carrier so tracking reaches us. The
+    token authenticates inbound calls, so every reveal writes an audit row (never the token)."""
+    if channel.kind != "carrier":
+        raise ValidationProblem("Only a carrier connection has a tracking webhook")
+    credential = await open_carrier_credential(channel)
+    slug = next((s for s, p in registry.WEBHOOK_SLUGS.items() if p == channel.provider), None)
+    record_audit(
+        session,
+        AuditLog,
+        organization_id=ctx.organization_id,
+        actor_id=ctx.principal.sub,
+        action="channel.webhook_setup.revealed",
+        entity="channel",
+        entity_id=channel.id,
+        after={"provider": channel.provider},
+        request=request,
+    )
+    path = f"/api/v1/webhooks/operations/{slug or channel.provider}?connection={channel.id}"
+    return path, credential.webhook_token
+
+
 async def disconnect_channel(
     session: AsyncSession, ctx: ScopeContext, channel: Channel, *, request: Request | None = None
 ) -> Channel:
@@ -266,6 +327,7 @@ async def reconnect_channel(
     channel: Channel,
     *,
     api_key: str,
+    api_secret: str | None = None,
     request: Request | None = None,
 ) -> Channel:
     """Rotates the credential and clears an `error` status — the only way a connection leaves
@@ -273,8 +335,19 @@ async def reconnect_channel(
     the old one). Also the normal path back from a deliberate `disconnect`."""
     if not api_key.strip():
         raise ValidationProblem("A channel connection needs a credential")
-    channel.api_key_enc, channel.api_key_masked = seal(
-        api_key, kind="secret", settings=settings(), aad=_aad(ctx.organization_id, channel.id)
+    webhook_token = None
+    if channel.kind == "carrier":
+        try:
+            webhook_token = (await open_carrier_credential(channel)).webhook_token
+        except ValidationProblem:
+            webhook_token = None
+    channel.api_key_enc, channel.api_key_masked = _sealed_credential(
+        ctx.organization_id,
+        channel.id,
+        kind=channel.kind,
+        api_key=api_key,
+        api_secret=api_secret,
+        webhook_token=webhook_token,
     )
     channel.status = "connected"
     channel.connected_at = datetime.now(UTC)
@@ -283,6 +356,7 @@ async def reconnect_channel(
     channel.last_error_code = None
     channel.last_error_message = None
     channel.updated_by = str(ctx.principal.sub)
+    channel.updated_at = datetime.now(UTC)
     await session.flush()
     record_audit(
         session,

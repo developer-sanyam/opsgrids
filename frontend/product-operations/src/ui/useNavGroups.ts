@@ -57,6 +57,7 @@ const GROUPS: NavGroup[] = [
       { to: "/dispatch", label: "Dispatch", icon: TruckIcon },
       { to: "/automation", label: "Automation", icon: AlertTriangleIcon },
       { to: "/channels", label: "Channels", icon: PlugIcon },
+      { to: "/carriers", label: "Carriers", icon: TruckIcon },
       { to: "/purchase-requisitions", label: "Requisitions", icon: FileTextIcon },
       { to: "/purchase-orders", label: "Purchase Orders", icon: ClipboardListIcon },
       { to: "/goods-receipts", label: "Goods Receipts", icon: ReceiptIcon },

@@ -273,6 +273,8 @@ class TestNothingElseIsPublic:
             ("GET", f"{WHATSAPP}/data-deletion-status"),
             ("POST", RAZORPAY_COLLECTIONS),
             ("POST", COLLECTIONS),
+            # A customer's Shiprocket account pushing tracking to operations.
+            ("POST", "/api/v1/webhooks/operations/parcel-track"),
         }
         assert ("POST", RAZORPAY) not in reached
 

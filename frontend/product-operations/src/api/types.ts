@@ -1077,7 +1077,14 @@ export interface TaskCancelIn {
 
 /** The carrier lifecycle (`app.domain.SHIPMENT_TRANSITIONS`). `DELIVERED` is reached only from
  *  `IN_TRANSIT` — build a status filter or badge set from exactly this list. */
-export type ShipmentStatus = "PICKUP_HANDOVER" | "IN_TRANSIT" | "DELIVERED" | "FAILED" | "RETURNED";
+export type ShipmentStatus =
+  | "BOOKING"
+  | "BOOKING_FAILED"
+  | "PICKUP_HANDOVER"
+  | "IN_TRANSIT"
+  | "DELIVERED"
+  | "FAILED"
+  | "RETURNED";
 
 /** Mirrors `ShipmentOut`. */
 export interface ShipmentOut {
@@ -1087,6 +1094,8 @@ export interface ShipmentOut {
   status: ShipmentStatus;
   carrier_name: string;
   tracking_reference: string | null;
+  channel_id?: string | null;
+  external_shipment_id?: string | null;
   failure_reason: string | null;
   delivered_at: string | null;
   created_at: string;
@@ -1099,8 +1108,31 @@ export interface ShipmentOut {
 export interface ShipmentIn {
   order_id: string;
   order_version: number;
-  carrier_name: string;
+  carrier_name?: string;
+  /** A connected carrier (`GET /operations/channels?kind=carrier`) to ship through. */
+  channel_id?: string;
   tracking_reference?: string;
+  /** Where and what to book; required by the server when live carrier booking is on. */
+  booking?: CarrierBookingIn;
+}
+
+/** `ShipmentIn.booking`. `cod_amount_minor` is integer paise; 0 is prepaid. */
+export interface CarrierBookingIn {
+  consignee_name: string;
+  consignee_phone: string;
+  consignee_email?: string;
+  consignee_address: string;
+  consignee_city: string;
+  consignee_state: string;
+  destination_pincode: string;
+  weight_grams: number;
+  cod_amount_minor?: number;
+}
+
+/** `GET /operations/channels/{id}/webhook-setup` — an audited reveal of the tracking webhook. */
+export interface WebhookSetupOut {
+  path: string;
+  token: string;
 }
 
 /** `POST /dispatch/shipments/{id}/in-transit` and `.../deliver`. No reason needed for a
@@ -1445,7 +1477,7 @@ export interface DiscrepancyTrendPointOut {
  * marketplace`): a `ChannelOut` row is the connector itself.
  */
 
-export type ChannelProvider = "mock_marketplace";
+export type ChannelProvider = "mock_marketplace" | "shiprocket";
 export type ChannelKind = "sales" | "erp" | "pos" | "carrier";
 export type ChannelStatus = "connected" | "disconnected" | "error";
 export type ChannelSyncType = "order_import" | "inventory_push" | "fulfilment_push" | "health_check";
@@ -1482,6 +1514,10 @@ export interface ChannelConnectIn {
   name: string;
   external_shop_id: string;
   api_key: string;
+  /** The second half of a login (Shiprocket's password). */
+  api_secret?: string;
+  /** Defaults to the provider's kind on the server; send `carrier` for a courier. */
+  kind?: ChannelKind;
   default_warehouse_id: string;
   default_currency?: string;
   auto_accept_orders?: boolean;
@@ -1498,6 +1534,7 @@ export interface ChannelConfigPatch {
 /** `POST /operations/channels/{id}/reconnect`. */
 export interface ChannelReconnectIn {
   api_key: string;
+  api_secret?: string;
 }
 
 export interface ChannelSkuMappingOut {

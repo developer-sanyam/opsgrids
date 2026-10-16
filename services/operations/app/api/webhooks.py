@@ -7,10 +7,10 @@ be wrong with a delivery before it is trusted -- an unknown provider, connection
 answers the same 400 and records nothing. An authentic delivery is recorded once and answered 200,
 a redelivery included.
 
-Routed by the gateway tables with a body cap but **deliberately not public on the app gateway yet**
-(the same decision as the platform's own `/webhooks/razorpay`): a provider's public path is added
-to `WEBHOOK_PUBLIC_PATHS` -- exact path, POST only -- with that provider's connector, which is also
-when the gateway's webhook rate-limit buckets start applying to it.
+Routed by the gateway tables with a body cap. Public per provider, by exact path and POST only
+(`WEBHOOK_PUBLIC_PATHS`): so far `/webhooks/operations/parcel-track`, Shiprocket's tracking
+push (the last segment is a slug, `app.channels.registry.WEBHOOK_SLUGS`, because Shiprocket
+forbids its own name in a webhook URL). A provider with no verifier or no public path answers 400.
 """
 
 from __future__ import annotations
@@ -26,13 +26,14 @@ from starlette.requests import Request
 
 from app.channels import selectors as channel_selectors
 from app.channels import services as channel_services
+from app.channels.registry import TRACKING_MAPPERS, VERIFIERS, WEBHOOK_SLUGS
 from app.channels.webhooks import (
-    VERIFIERS,
     IntegrationWebhookProblem,
     read_capped_body,
     record_event,
     webhook_channel,
 )
+from app.dispatch import services as dispatch_services
 from app.schemas import IntegrationWebhookAck
 from platform_core.db import get_outbox_sessionmaker, get_session, set_tenant
 from platform_core.errors import UpstreamUnavailableProblem, ValidationProblem
@@ -60,17 +61,18 @@ def _reject(reason: str, **context: object) -> IntegrationWebhookProblem:
 
 
 @router.post(
-    "/{provider}",
+    "/{slug}",
     response_model=IntegrationWebhookAck,
     summary="A connected channel's webhook -- per-connection signature, idempotent inbox",
 )
 async def integration_webhook(
-    provider: str,
+    slug: str,
     request: Request,
     session: RawSessionDep,
     connection: Annotated[str, Query(min_length=1, max_length=64)],
 ) -> IntegrationWebhookAck:
     body = await read_capped_body(request)
+    provider = WEBHOOK_SLUGS.get(slug, slug)
     verifier = VERIFIERS.get(provider)
     if verifier is None:
         raise _reject("no_verifier", provider=provider[:30])
@@ -103,6 +105,18 @@ async def integration_webhook(
                 body=body,
                 secret=secret,
             )
+            mapper = TRACKING_MAPPERS.get(provider)
+            update = mapper(recorded.payload) if mapper else None
+            if update and not recorded.duplicate and recorded.outcome == "received":
+                awb, new_status, occurred_at = update
+                await dispatch_services.apply_carrier_tracking(
+                    session,
+                    organization_id,
+                    channel_id,
+                    awb=awb,
+                    status=new_status,
+                    reason=f"carrier report {occurred_at.isoformat()}",
+                )
     except TRANSIENT_DATABASE_ERRORS as exc:
         log.error("integration_webhook.unavailable", error=type(exc).__name__)
         raise UpstreamUnavailableProblem("temporarily unable to record the webhook") from exc

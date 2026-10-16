@@ -30,6 +30,7 @@ type StatusFilter = ShipmentStatus | "all";
 /** `app.domain.SHIPMENT_TRANSITIONS`' exact vocabulary — the filter row offers exactly this set. */
 const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
   { value: "all", label: "All" },
+  { value: "BOOKING_FAILED", label: "Booking failed" },
   { value: "PICKUP_HANDOVER", label: "Pickup handover" },
   { value: "IN_TRANSIT", label: "In transit" },
   { value: "DELIVERED", label: "Delivered" },
@@ -123,7 +124,7 @@ export function DispatchShipmentsPage() {
       render: (s) => (
         <div className="flex flex-col gap-1">
           <ShipmentStatusPill status={s.status} />
-          {s.status === "FAILED" && s.failure_reason ? (
+          {(s.status === "FAILED" || s.status === "BOOKING_FAILED") && s.failure_reason ? (
             <span className="text-xs text-faint">{s.failure_reason}</span>
           ) : null}
         </div>
