@@ -45,6 +45,7 @@ from app.models import (
 )
 from app.providers import cashfree_codec
 from app.providers import cashfree_collections as cashfree
+from app.providers import paytm_collections as paytm
 from app.providers import payu_collections as payu
 from app.providers import phonepe_collections as phonepe
 from app.providers import razorpay_collections as razorpay
@@ -64,11 +65,12 @@ PROVIDER_RAZORPAY = "razorpay"
 PROVIDER_CASHFREE = "cashfree"
 PROVIDER_PHONEPE = "phonepe"
 PROVIDER_PAYU = "payu"
+PROVIDER_PAYTM = "paytm"
 PROVIDERS: frozenset[str] = frozenset(
-    {PROVIDER_RAZORPAY, PROVIDER_CASHFREE, PROVIDER_PHONEPE, PROVIDER_PAYU}
+    {PROVIDER_RAZORPAY, PROVIDER_CASHFREE, PROVIDER_PHONEPE, PROVIDER_PAYU, PROVIDER_PAYTM}
 )
 #: The providers whose checkout is their own page the browser is sent to (`OrderResult.redirect`).
-REDIRECT_PROVIDERS: frozenset[str] = frozenset({PROVIDER_PHONEPE, PROVIDER_PAYU})
+REDIRECT_PROVIDERS: frozenset[str] = frozenset({PROVIDER_PHONEPE, PROVIDER_PAYU, PROVIDER_PAYTM})
 
 # --- the merchant webhook --------------------------------------------------------------------
 
@@ -189,11 +191,27 @@ PAYU = ProviderSpec(
     signature_header=None,
     webhook_path=WEBHOOK_PATH,
 )
+PAYTM = ProviderSpec(
+    name=PROVIDER_PAYTM,
+    display_name="Paytm",
+    # The merchant key signs every request and verifies every webhook.
+    has_webhook_secret=False,
+    requires_payer=False,
+    # The `txnToken` is fetched afresh on every (re)open and never stored.
+    reopen_asks_provider=True,
+    # A Paytm Order can still be paid on a page already opened (its token lives 15 minutes).
+    order_outlives_cancel=True,
+    webhook_events=paytm.WEBHOOK_EVENTS,
+    refund_key=paytm.refund_key,
+    signature_header=None,
+    webhook_path=WEBHOOK_PATH,
+)
 _SPECS: dict[str, ProviderSpec] = {
     RAZORPAY.name: RAZORPAY,
     CASHFREE.name: CASHFREE,
     PHONEPE.name: PHONEPE,
     PAYU.name: PAYU,
+    PAYTM.name: PAYTM,
 }
 
 
@@ -266,7 +284,9 @@ def validate_credentials(
       (`config`), the webhook password as the webhook secret, and `sandbox` or `production`
       chosen by the merchant; Production needs `allow_live`.
     * **PayU** — the merchant key and salt (the salt signs requests and responses, so no webhook
-      secret), and `sandbox` or `production`; Production needs `allow_live`."""
+      secret), and `sandbox` or `production`; Production needs `allow_live`.
+    * **Paytm** — the MID and the merchant key (an AES key: 16, 24 or 32 characters; it signs
+      requests and webhooks, so no webhook secret), and `sandbox` or `production`."""
     if provider not in PROVIDERS:
         raise CredentialProblem(f"{provider!r} is not a supported payment provider")
     if not valid_secret(key_secret):
@@ -291,6 +311,8 @@ def validate_credentials(
         return _validate_phonepe(key_id, webhook_secret, mode, allow_live, config or {})
     if provider == PROVIDER_PAYU:
         return _validate_payu(key_id, webhook_secret, mode, allow_live)
+    if provider == PROVIDER_PAYTM:
+        return _validate_paytm(key_id, key_secret, webhook_secret, mode, allow_live)
     if not _APP_ID.fullmatch(key_id):
         raise CredentialProblem(
             "key_id must be a Cashfree App ID: 4-64 letters, digits, '_' or '-'"
@@ -370,6 +392,29 @@ def _validate_payu(
     if CASHFREE_MODES[mode] == MERCHANT_MODE_LIVE and not allow_live:
         raise CredentialProblem(
             "PayU Production is not enabled on this platform yet; connect a Sandbox (test) account"
+        )
+    return CASHFREE_MODES[mode]
+
+
+_PAYTM_MID = re.compile(r"^[A-Za-z0-9]{4,40}$")
+
+
+def _validate_paytm(
+    key_id: str, key_secret: str, webhook_secret: str | None, mode: str | None, allow_live: bool
+) -> str:
+    if not _PAYTM_MID.fullmatch(key_id):
+        raise CredentialProblem("key_id must be a Paytm MID: 4-40 letters or digits")
+    if len(key_secret.encode()) not in (16, 24, 32):
+        raise CredentialProblem("key_secret must be the Paytm merchant key (16 characters)")
+    if webhook_secret is not None:
+        raise CredentialProblem(
+            "webhook_secret is not set for Paytm: its merchant key signs every webhook"
+        )
+    if mode not in CASHFREE_MODES:
+        raise CredentialProblem("mode must be sandbox or production for Paytm")
+    if CASHFREE_MODES[mode] == MERCHANT_MODE_LIVE and not allow_live:
+        raise CredentialProblem(
+            "Paytm Production is not enabled on this platform yet; connect a Staging account"
         )
     return CASHFREE_MODES[mode]
 

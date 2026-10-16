@@ -180,6 +180,7 @@ class TestConnect:
             "cashfree": "stub",
             "phonepe": "stub",
             "payu": "stub",
+            "paytm": "stub",
         }
         assert SECRET not in json.dumps(saved)
         stored = await rows(

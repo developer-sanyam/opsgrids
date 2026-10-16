@@ -1377,7 +1377,8 @@ session and sends a customer phone only when payment asks for one.
 | `COLLECTIONS_CASHFREE_WIRE` | `stub` (default): a merchant's Cashfree account runs on the fake; a checkout cannot be paid for real (the UI says so). `live`: calls `sandbox.cashfree.com` or `api.cashfree.com`, as the merchant chose when connecting, with that merchant's own keys. **Sandbox first.** |
 | `COLLECTIONS_PHONEPE_WIRE` | `stub` (default): a merchant's PhonePe account runs on the fake. `live`: calls PhonePe's Standard Checkout V2 (`api-preprod.phonepe.com` or `api.phonepe.com`, as the merchant chose) with that merchant's own Client ID, Client Secret and client version. **Sandbox first.** |
 | `COLLECTIONS_PAYU_WIRE` | `stub` (default): a merchant's PayU account runs on the fake. `live`: calls PayU's merchant API (`test.payu.in` or `info.payu.in`, as the merchant chose) with that merchant's own key and salt; customers pay on PayU's hosted page. **Sandbox first.** |
-| `COLLECTIONS_ALLOW_LIVE_KEYS` | Also covers Cashfree, PhonePe and PayU **Production** (and, as before, `rzp_live_…`). |
+| `COLLECTIONS_PAYTM_WIRE` | `stub` (default): a merchant's Paytm account runs on the fake. `live`: calls Paytm (Staging or Production, as the merchant chose) with that merchant's own MID and merchant key; customers pay on Paytm's hosted page. **Staging first.** |
+| `COLLECTIONS_ALLOW_LIVE_KEYS` | Also covers Cashfree, PhonePe, PayU and Paytm **Production** (and, as before, `rzp_live_…`). |
 
 `COLLECTIONS_WIRE=razorpay` keeps meaning exactly what it meant (Razorpay live); it says nothing about
 Cashfree. No prod config change without the owner's approval.

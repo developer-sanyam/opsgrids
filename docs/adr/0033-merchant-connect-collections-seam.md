@@ -158,3 +158,10 @@ documented 50-character `surl`. Payment webhooks carry PayU's reverse hash (veri
 it covers `status`, `amount`, `txnid`, `key`, the udfs and the customer fields — not `mihpayid`).
 PayU's refund webhooks carry no hash, so they are refused: a PayU refund stays `created` here until a
 refund-status poll is built.
+
+**Paytm** follows the same shape: Initiate Transaction (looked up first with Transaction Status) gives a
+`txnToken`, and the redirect handle is a form `POST` of `mid`, `orderId` and `txnToken` to Paytm's
+`showPaymentPage`; Paytm's callback goes to the same return page. Requests and webhooks are signed with
+Paytm's checksum (its `paytmchecksum` library's AES-CBC scheme, reproduced and pinned by tests); the
+Payment Status webhook's `CHECKSUMHASH` covers every field. Paytm's refund webhooks (JSON, a signature
+over a re-serialised body, none at all on its failure sample) are refused like PayU's.

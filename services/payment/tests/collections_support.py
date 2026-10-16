@@ -26,6 +26,8 @@ from app.main import app
 from app.providers.base import PaymentSnapshot
 from app.providers.cashfree_collections import CashfreeCollectionsProvider
 from app.providers.cashfree_fake import CashfreeFakeWire
+from app.providers.paytm_collections import PaytmCollectionsProvider
+from app.providers.paytm_fake import PaytmFakeWire
 from app.providers.payu_collections import PayUCollectionsProvider
 from app.providers.payu_fake import PayUFakeWire
 from app.providers.phonepe_collections import PhonePeCollectionsProvider
@@ -73,6 +75,8 @@ class MerchantProviders:
     phonepe_wires: dict[str, PhonePeFakeWire] = field(default_factory=dict)
     #: One stateful `PayUFakeWire` per merchant key, as `COLLECTIONS_PAYU_WIRE=stub` runs.
     payu_wires: dict[str, PayUFakeWire] = field(default_factory=dict)
+    #: One stateful `PaytmFakeWire` per MID, as `COLLECTIONS_PAYTM_WIRE=stub` runs.
+    paytm_wires: dict[str, PaytmFakeWire] = field(default_factory=dict)
     #: The non-secret config of every adapter built, in order.
     configs: list[dict[str, Any]] = field(default_factory=list)
 
@@ -90,6 +94,13 @@ class MerchantProviders:
             self.key_secrets_seen.append(key_secret)
         self.built.append((provider, mode))
         self.configs.append(dict(config or {}))
+        if provider == "paytm":
+            return PaytmCollectionsProvider(
+                wire=self.paytm_wires.setdefault(key_id, PaytmFakeWire()),
+                mid=key_id,
+                merchant_key=key_secret,
+                mode="stub",
+            )
         if provider == "payu":
             return PayUCollectionsProvider(
                 wire=self.payu_wires.setdefault(key_id, PayUFakeWire()),

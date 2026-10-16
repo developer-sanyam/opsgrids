@@ -45,6 +45,7 @@ for _name, _value in (
     ("COLLECTIONS_CASHFREE_WIRE", "stub"),
     ("COLLECTIONS_PHONEPE_WIRE", "stub"),
     ("COLLECTIONS_PAYU_WIRE", "stub"),
+    ("COLLECTIONS_PAYTM_WIRE", "stub"),
 ):
     os.environ[_name] = _value
 
