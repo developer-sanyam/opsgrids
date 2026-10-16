@@ -748,7 +748,7 @@ export interface OrderPaymentsOut {
 }
 
 /** The payment providers a merchant can connect (ADR-0033). */
-export type CollectionsProvider = "razorpay" | "cashfree" | "phonepe" | "payu";
+export type CollectionsProvider = "razorpay" | "cashfree" | "phonepe" | "payu" | "paytm";
 
 /** What the browser needs to open Razorpay's hosted Checkout — the **public** key id and the
  *  provider Order id. There is no secret here, and there never will be. */
@@ -781,10 +781,10 @@ export interface CashfreeOrderCheckoutSessionOut {
   prefill?: never;
 }
 
-/** A redirect-checkout provider (PhonePe, PayU): the browser opens `url` (`GET`) or posts `fields` to it
+/** A redirect-checkout provider (PhonePe, PayU, Paytm): the browser opens `url` (`GET`) or posts `fields` to it
  *  (`POST`), in a new tab. Token-bearing, fetched for this one response and never stored. */
 export interface RedirectOrderCheckoutSessionOut {
-  provider: "phonepe" | "payu";
+  provider: "phonepe" | "payu" | "paytm";
   method: "GET" | "POST";
   url: string;
   fields: Record<string, string>;
@@ -864,7 +864,7 @@ export type MerchantAccountIn =
       mode: "sandbox" | "production";
       config: { client_version: number; webhook_username: string };
     }
-  | { provider: "payu"; key_id: string; key_secret: string; mode: "sandbox" | "production" };
+  | { provider: "payu" | "paytm"; key_id: string; key_secret: string; mode: "sandbox" | "production" };
 
 export interface ReconciliationRowOut {
   charge_id: string;

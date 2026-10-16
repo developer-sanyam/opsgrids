@@ -24,6 +24,7 @@ const LABELS: Record<CollectionsProvider, { keyId: string; keySecret: string }> 
   cashfree: { keyId: "App ID", keySecret: "Secret Key" },
   phonepe: { keyId: "Client ID", keySecret: "Client Secret" },
   payu: { keyId: "Merchant key", keySecret: "Salt" },
+  paytm: { keyId: "MID", keySecret: "Merchant key" },
 };
 
 /**
@@ -57,7 +58,7 @@ export function MerchantAccountForm({
   const labels = LABELS[provider];
 
   function submit() {
-    if (provider === "cashfree" || provider === "payu") {
+    if (provider === "cashfree" || provider === "payu" || provider === "paytm") {
       onSubmit({ provider, key_id: keyId.trim(), key_secret: keySecret, mode });
     } else if (provider === "phonepe") {
       onSubmit({

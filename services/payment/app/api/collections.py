@@ -102,6 +102,7 @@ def _wires() -> CollectionWiresOut:
         cashfree=cfg.collections_wire_for(domain.PROVIDER_CASHFREE),
         phonepe=cfg.collections_wire_for(domain.PROVIDER_PHONEPE),
         payu=cfg.collections_wire_for(domain.PROVIDER_PAYU),
+        paytm=cfg.collections_wire_for(domain.PROVIDER_PAYTM),
     )
 
 
