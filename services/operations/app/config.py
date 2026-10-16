@@ -69,6 +69,8 @@ class Settings(ServiceSettings):
     carrier_booking_mode: Literal["log_only", "live"] = "log_only"
     #: Shiprocket's API base: a fixed host of the vendor, never a tenant-supplied value.
     shiprocket_api_base: str = "https://apiv2.shiprocket.in/v1/external"
+    #: Delhivery Express's API host (production); staging is https://staging-express.delhivery.com.
+    delhivery_api_base: str = "https://track.delhivery.com"
     #: The self-hosted sandbox marketplace's base URL (`app.channels.mock_marketplace`) —
     #: platform configuration, not a value a tenant supplies (`app.channels.mock_provider`'s own
     #: module docstring: the same "fixed, operator-configured base" reasoning

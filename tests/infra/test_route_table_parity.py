@@ -108,6 +108,8 @@ OPERATIONS_WEBHOOKS = "/api/v1/webhooks/operations"
 OPERATIONS_WEBHOOK_BODY_CAP = 256 * 1024
 #: Shiprocket's tracking push to a customer's connection (public; its own `x-api-key` token).
 SHIPROCKET_TRACKING = "/api/v1/webhooks/operations/parcel-track"
+#: Delhivery's scan push to a customer's connection (public; its own `Authorization` token).
+DELHIVERY_TRACKING = "/api/v1/webhooks/operations/delhivery"
 
 #: Meta documents WhatsApp Business Platform webhook payloads up to 3 MB. Above the gateway's
 #: 2 MiB default, so the route has to say so, and the same figure is notification's own ceiling on
@@ -132,6 +134,7 @@ EXPECTED_WEBHOOK_PATHS: dict[str, list[str]] = {
     RAZORPAY_COLLECTIONS: ["POST"],
     COLLECTIONS: ["POST"],
     SHIPROCKET_TRACKING: ["POST"],
+    DELHIVERY_TRACKING: ["POST"],
 }
 #: The body cap every public webhook route above must carry, in both route tables.
 EXPECTED_BODY_CAPS: dict[str, int] = {
@@ -142,6 +145,7 @@ EXPECTED_BODY_CAPS: dict[str, int] = {
     RAZORPAY_COLLECTIONS: RAZORPAY_COLLECTIONS_BODY_CAP,
     COLLECTIONS: RAZORPAY_COLLECTIONS_BODY_CAP,
     SHIPROCKET_TRACKING: OPERATIONS_WEBHOOK_BODY_CAP,
+    DELHIVERY_TRACKING: OPERATIONS_WEBHOOK_BODY_CAP,
 }
 #: Which service serves each public webhook — the upstream both tables must route it to, named by
 #: another prefix of the same service in that table (a host/port a hand-edit could get wrong).
@@ -153,6 +157,7 @@ WEBHOOK_SERVICE_PREFIX: dict[str, str] = {
     RAZORPAY_COLLECTIONS: "/api/v1/payment",
     COLLECTIONS: "/api/v1/payment",
     SHIPROCKET_TRACKING: "/api/v1/operations",
+    DELHIVERY_TRACKING: "/api/v1/operations",
 }
 NOTIFICATION_WEBHOOKS = [
     p for p, prefix in WEBHOOK_SERVICE_PREFIX.items() if "notifications" in prefix

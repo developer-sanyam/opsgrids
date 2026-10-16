@@ -15,10 +15,19 @@ interface ConnectCarrierDialogProps {
  * `POST /operations/channels` with `kind: "carrier"` — `operations.channels.channel.write:ORG`.
  * The business connects its **own** courier account; the platform books and tracks on it and never
  * holds the shipping money. Shiprocket signs in with the email and password of an API user created
- * in its panel (Settings → API → Create API user); both are sealed at rest and never shown again.
- * The pickup location must be named exactly as it is registered in the Shiprocket account.
+ * in its panel (Settings → API → Create API user); Delhivery takes the API token from the One Panel
+ * (Settings → API Setup). Credentials are sealed at rest and never shown again. The pickup location
+ * must be named exactly as it is registered at the courier.
  */
+type Courier = "shiprocket" | "delhivery";
+
+const COURIERS: { value: Courier; label: string }[] = [
+  { value: "shiprocket", label: "Shiprocket" },
+  { value: "delhivery", label: "Delhivery" },
+];
+
 export function ConnectCarrierDialog({ onClose, onConnected }: ConnectCarrierDialogProps) {
+  const [courier, setCourier] = useState<Courier>("shiprocket");
   const [name, setName] = useState("");
   const [pickup, setPickup] = useState("");
   const [email, setEmail] = useState("");
@@ -35,19 +44,21 @@ export function ConnectCarrierDialog({ onClose, onConnected }: ConnectCarrierDia
   function submit() {
     const next: Record<string, string> = {};
     if (name.trim().length < 1) next.name = "Give this connection a name you'll recognise.";
-    if (pickup.trim().length < 1) next.pickup = "Name the pickup location exactly as it appears in Shiprocket.";
-    if (email.trim().length < 1) next.email = "The API user's email.";
-    if (password.length < 1) next.password = "The API user's password — sealed at rest, never shown again.";
+    const courierName = COURIERS.find((c) => c.value === courier)?.label ?? "the courier";
+    if (pickup.trim().length < 1) next.pickup = `Name the pickup location exactly as it appears in ${courierName}.`;
+    if (email.trim().length < 1) next.email = courier === "delhivery" ? "The API token from the One Panel." : "The API user's email.";
+    if (courier === "shiprocket" && password.length < 1)
+      next.password = "The API user's password — sealed at rest, never shown again.";
     if (!warehouseId) next.warehouse = "Choose the warehouse these shipments leave from.";
     setErrors(next);
     if (Object.keys(next).length > 0) return;
     void connect.mutate({
-      provider: "shiprocket",
+      provider: courier,
       kind: "carrier",
       name: name.trim(),
       external_shop_id: pickup.trim(),
       api_key: email.trim(),
-      api_secret: password,
+      ...(courier === "shiprocket" ? { api_secret: password } : {}),
       default_warehouse_id: warehouseId,
       auto_accept_orders: false,
     });
@@ -67,16 +78,15 @@ export function ConnectCarrierDialog({ onClose, onConnected }: ConnectCarrierDia
     >
       <Select
         label="Courier"
-        value="shiprocket"
-        onChange={() => {}}
-        options={[{ value: "shiprocket", label: "Shiprocket" }]}
-        disabled
+        value={courier}
+        onChange={(e) => setCourier(e.target.value as Courier)}
+        options={COURIERS}
       />
       <TextField
         label="Connection name"
         value={name}
         onChange={(e) => setName(e.target.value)}
-        placeholder="Shiprocket — Pune"
+        placeholder="Courier — Pune"
         maxLength={120}
         required
         {...(errors.name !== undefined ? { error: errors.name } : {})}
@@ -90,26 +100,41 @@ export function ConnectCarrierDialog({ onClose, onConnected }: ConnectCarrierDia
         required
         {...(errors.pickup !== undefined ? { error: errors.pickup } : {})}
       />
-      <TextField
-        label="API user email"
-        type="email"
-        value={email}
-        onChange={(e) => setEmail(e.target.value)}
-        maxLength={500}
-        autoComplete="off"
-        required
-        {...(errors.email !== undefined ? { error: errors.email } : {})}
-      />
-      <TextField
-        label="API user password"
-        type="password"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        maxLength={200}
-        autoComplete="new-password"
-        required
-        {...(errors.password !== undefined ? { error: errors.password } : {})}
-      />
+      {courier === "delhivery" ? (
+        <TextField
+          label="API token"
+          type="password"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          maxLength={500}
+          autoComplete="off"
+          required
+          {...(errors.email !== undefined ? { error: errors.email } : {})}
+        />
+      ) : (
+        <>
+          <TextField
+            label="API user email"
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            maxLength={500}
+            autoComplete="off"
+            required
+            {...(errors.email !== undefined ? { error: errors.email } : {})}
+          />
+          <TextField
+            label="API user password"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            maxLength={200}
+            autoComplete="new-password"
+            required
+            {...(errors.password !== undefined ? { error: errors.password } : {})}
+          />
+        </>
+      )}
       <Select
         label="Warehouse"
         value={warehouseId}

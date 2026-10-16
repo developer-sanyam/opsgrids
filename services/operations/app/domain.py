@@ -1019,7 +1019,7 @@ def shortest_walk_path(
 #: this environment (see `app/channels/mock_marketplace.py`). A real provider is a new
 #: `ChannelClient` (`app/channels/base.py`) plus a new entry here; nothing else about the module
 #: changes shape.
-CHANNEL_PROVIDERS: tuple[str, ...] = ("mock_marketplace", "shiprocket")
+CHANNEL_PROVIDERS: tuple[str, ...] = ("mock_marketplace", "shiprocket", "delhivery")
 
 #: `Channel.kind`'s vocabulary: what a connection is for. Only `sales` channels import orders.
 CHANNEL_KINDS: tuple[str, ...] = ("sales", "erp", "pos", "carrier")
@@ -1027,7 +1027,11 @@ CHANNEL_KINDS: tuple[str, ...] = ("sales", "erp", "pos", "carrier")
 #: The kind each provider's connection has. A provider is added here with its adapter; connecting
 #: refuses a `kind` that disagrees, so a carrier is never polled for orders nor a marketplace
 #: booked as a courier.
-CHANNEL_PROVIDER_KINDS: dict[str, str] = {"mock_marketplace": "sales", "shiprocket": "carrier"}
+CHANNEL_PROVIDER_KINDS: dict[str, str] = {
+    "mock_marketplace": "sales",
+    "shiprocket": "carrier",
+    "delhivery": "carrier",
+}
 
 #: Carriers whose account login is two values (an email and a password), not one token.
 CARRIER_NEEDS_SECRET: frozenset[str] = frozenset({"shiprocket"})

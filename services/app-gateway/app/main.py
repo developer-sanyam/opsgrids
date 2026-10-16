@@ -159,6 +159,9 @@ WEBHOOK_PUBLIC_PATHS: Mapping[str, frozenset[str]] = MappingProxyType(
         # per-connection `x-api-key` token). Shiprocket forbids "shiprocket"/"sr"/"kr" in a webhook
         # URL, hence the neutral slug. Body cap 256 KiB in both route tables.
         "/api/v1/webhooks/operations/parcel-track": frozenset({"POST"}),
+        # A customer's own Delhivery account pushing scans (operations verifies the per-connection
+        # `Authorization` token). Same 256 KiB cap in both route tables.
+        "/api/v1/webhooks/operations/delhivery": frozenset({"POST"}),
     }
 )
 

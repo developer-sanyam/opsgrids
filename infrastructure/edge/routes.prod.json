@@ -64,7 +64,8 @@
     "(the same ceiling operations enforces behind it). The gateway's public webhook list is exact",
     "paths, so each provider's public path is its own entry here and in `WEBHOOK_PUBLIC_PATHS`",
     "(POST only), added with that provider's connector: `/api/v1/webhooks/operations/parcel-track`",
-    "is Shiprocket's tracking push (the slug avoids Shiprocket's banned words in a webhook URL).",
+    "is Shiprocket's tracking push (the slug avoids Shiprocket's banned words in a webhook URL) and",
+    "`/api/v1/webhooks/operations/delhivery` is Delhivery's scan push.",
     "Any other `/api/v1/webhooks/operations/*` stays routed but not public.",
     "",
     "`/api/v1/audit/<service>` is one source of the organization audit log each (ADR-0044): the",
@@ -138,6 +139,7 @@
 
     { "prefix": "/api/v1/operations/inventory/data/import", "upstream": "http://operations:8000", "product": "operations", "max_body_bytes": 8388608 },
     { "prefix": "/api/v1/webhooks/operations/parcel-track", "upstream": "http://operations:8000", "max_body_bytes": 262144 },
+    { "prefix": "/api/v1/webhooks/operations/delhivery", "upstream": "http://operations:8000", "max_body_bytes": 262144 },
     { "prefix": "/api/v1/webhooks/operations", "upstream": "http://operations:8000", "max_body_bytes": 262144 },
     { "prefix": "/api/v1/operations", "upstream": "http://operations:8000", "product": "operations" },
 

@@ -1477,7 +1477,7 @@ export interface DiscrepancyTrendPointOut {
  * marketplace`): a `ChannelOut` row is the connector itself.
  */
 
-export type ChannelProvider = "mock_marketplace" | "shiprocket";
+export type ChannelProvider = "mock_marketplace" | "shiprocket" | "delhivery";
 export type ChannelKind = "sales" | "erp" | "pos" | "carrier";
 export type ChannelStatus = "connected" | "disconnected" | "error";
 export type ChannelSyncType = "order_import" | "inventory_push" | "fulfilment_push" | "health_check";
