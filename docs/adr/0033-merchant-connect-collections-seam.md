@@ -126,3 +126,25 @@ that only worked because there had been one:
 The real timestamp format and a dashboard test delivery; the delivery-id header name; `notify_url` with no
 dashboard endpoint; the probe's 404 vs 401; whether Get Order returns `payment_session_id`; `refund_id` charset;
 `x-api-version`; fee-bearing amounts; the `_modal` checkout and domain whitelisting; international phones.
+
+## Addendum (2026-10-16): redirect-checkout providers — PhonePe first
+
+Wave 1 of the integrations plan adds tenant collections adapters for PhonePe, PayU and Paytm, one PR
+each. PhonePe (Standard Checkout **V2**, OAuth client credentials) is the first and settles what the
+other two reuse:
+
+1. **A redirect handle.** `OrderResult.redirect` (`CheckoutRedirect`: a URL, `GET` or `POST`, and form
+   fields) is the browser's handle for a provider whose checkout is its own page. In memory only, like
+   Cashfree's `payment_session_id`; fetched again on every (re)open. The Operations app opens it in a
+   **new tab** on a real click, so the order page stays open and keeps asking the provider.
+2. **One return page.** `GET|POST /api/v1/pay/return` is a static "you can close this
+   tab" page — public on the app gateway for exactly those two methods. It reads nothing from the
+   request: a browser return is never evidence, and the page cannot be steered (no redirect target).
+3. **`config` carries the non-secret settings** (PhonePe: `client_version`, `webhook_username`), and the
+   factory hands it to the adapter. The webhook password is the account's sealed webhook secret.
+4. **PhonePe's webhook credential does not sign the body.** Its documented scheme (and its SDK) is an
+   `Authorization` header equal to `hex(SHA256(username:password))` — a static shared credential over
+   TLS. It is checked in constant time and fails closed, and it is **never stored**
+   (`ProviderSpec.signature_header` is None). The contract's two per-body-signature checks are replaced,
+   for PhonePe only, by what that scheme can promise. PhonePe's HMAC option names no algorithm or signed
+   string; adopting it is an open question for the owner's sandbox run.

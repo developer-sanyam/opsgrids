@@ -101,6 +101,9 @@ RAZORPAY_COLLECTIONS = "/api/v1/webhooks/razorpay/collections"
 #: it, a Cashfree Order names it as `notify_url`, and payment takes the provider from the account
 #: row, so the Razorpay path above stays as an alias of it forever.
 COLLECTIONS = "/api/v1/webhooks/collections"
+#: The static page a redirect-checkout provider (PhonePe, PayU, Paytm) returns the customer's
+#: browser to: GET (PhonePe's redirect) and POST (PayU's and Paytm's form). Reads nothing.
+COLLECTIONS_RETURN = "/api/v1/pay/return"
 WEBHOOK_PREFIX = "/api/v1/webhooks/"
 #: A connected channel's webhook (operations): routed in both tables with a body cap, public per
 #: provider (exact path) when that provider's connector lands.
@@ -129,6 +132,7 @@ EXPECTED_WEBHOOK_PATHS: dict[str, list[str]] = {
     DATA_DELETION_STATUS: ["GET"],
     RAZORPAY_COLLECTIONS: ["POST"],
     COLLECTIONS: ["POST"],
+    COLLECTIONS_RETURN: ["GET", "POST"],
 }
 #: The body cap every public webhook route above must carry, in both route tables.
 EXPECTED_BODY_CAPS: dict[str, int] = {
@@ -138,6 +142,7 @@ EXPECTED_BODY_CAPS: dict[str, int] = {
     DATA_DELETION_STATUS: META_PRIVACY_BODY_CAP,
     RAZORPAY_COLLECTIONS: RAZORPAY_COLLECTIONS_BODY_CAP,
     COLLECTIONS: RAZORPAY_COLLECTIONS_BODY_CAP,
+    COLLECTIONS_RETURN: RAZORPAY_COLLECTIONS_BODY_CAP,
 }
 #: Which service serves each public webhook — the upstream both tables must route it to, named by
 #: another prefix of the same service in that table (a host/port a hand-edit could get wrong).
@@ -148,6 +153,7 @@ WEBHOOK_SERVICE_PREFIX: dict[str, str] = {
     DATA_DELETION_STATUS: "/api/v1/notifications",
     RAZORPAY_COLLECTIONS: "/api/v1/payment",
     COLLECTIONS: "/api/v1/payment",
+    COLLECTIONS_RETURN: "/api/v1/payment",
 }
 NOTIFICATION_WEBHOOKS = [
     p for p, prefix in WEBHOOK_SERVICE_PREFIX.items() if "notifications" in prefix
@@ -265,7 +271,10 @@ def _webhook_routes(path: Path) -> dict[str, dict[str, object]]:
     return {
         str(route["prefix"]): route
         for route in _routes(path)
+        # The return page is public like a webhook but lives outside `/webhooks/` (its URL must
+        # fit PayU's 50-character `surl`), so it is named here explicitly.
         if str(route["prefix"]).startswith(WEBHOOK_PREFIX)
+        or str(route["prefix"]) in EXPECTED_WEBHOOK_PATHS
     }
 
 

@@ -748,7 +748,7 @@ export interface OrderPaymentsOut {
 }
 
 /** The payment providers a merchant can connect (ADR-0033). */
-export type CollectionsProvider = "razorpay" | "cashfree";
+export type CollectionsProvider = "razorpay" | "cashfree" | "phonepe";
 
 /** What the browser needs to open Razorpay's hosted Checkout — the **public** key id and the
  *  provider Order id. There is no secret here, and there never will be. */
@@ -781,8 +781,28 @@ export interface CashfreeOrderCheckoutSessionOut {
   prefill?: never;
 }
 
+/** A redirect-checkout provider (PhonePe): the browser opens `url` (`GET`) or posts `fields` to it
+ *  (`POST`), in a new tab. Token-bearing, fetched for this one response and never stored. */
+export interface RedirectOrderCheckoutSessionOut {
+  provider: "phonepe";
+  method: "GET" | "POST";
+  url: string;
+  fields: Record<string, string>;
+  provider_order_id: string;
+  amount_minor: number;
+  currency: string;
+  openable: boolean;
+  order_number: string;
+  /** Never sent: no key reaches the browser, and nothing is prefilled. */
+  key_id?: never;
+  prefill?: never;
+}
+
 /** The browser's handle, by provider. */
-export type OrderCheckoutSessionOut = RazorpayOrderCheckoutSessionOut | CashfreeOrderCheckoutSessionOut;
+export type OrderCheckoutSessionOut =
+  | RazorpayOrderCheckoutSessionOut
+  | CashfreeOrderCheckoutSessionOut
+  | RedirectOrderCheckoutSessionOut;
 
 export interface OrderCheckoutOut {
   collection: OrderCollectionOut;
@@ -826,14 +846,24 @@ export interface MerchantAccountOut {
   live_keys_allowed: boolean;
   wire: "stub" | "razorpay";
   /** Per provider: whether a merchant's checkout can be paid for real (`live`) or only on the stub. */
-  wires?: Record<CollectionsProvider, "stub" | "live">;
+  wires?: Partial<Record<CollectionsProvider, "stub" | "live">>;
+  /** Non-secret provider settings (PhonePe: `client_version`, `webhook_username`). */
+  config?: Record<string, string | number | boolean>;
 }
 
 /** `PUT /payment/collections/merchant-account` — Razorpay's shape or Cashfree's. Needs a session
  *  that signed in with a one-time code. */
 export type MerchantAccountIn =
   | { provider: "razorpay"; key_id: string; key_secret: string; webhook_secret: string }
-  | { provider: "cashfree"; key_id: string; key_secret: string; mode: "sandbox" | "production" };
+  | { provider: "cashfree"; key_id: string; key_secret: string; mode: "sandbox" | "production" }
+  | {
+      provider: "phonepe";
+      key_id: string;
+      key_secret: string;
+      webhook_secret: string;
+      mode: "sandbox" | "production";
+      config: { client_version: number; webhook_username: string };
+    };
 
 export interface ReconciliationRowOut {
   charge_id: string;

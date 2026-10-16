@@ -7,7 +7,14 @@ import {
   startOrderCheckout,
   syncOrderPayment,
 } from "@/api/client";
-import type { OrderCheckoutSessionOut, OrderCollectionOut, OrderOut } from "@/api/types";
+import type {
+  CashfreeOrderCheckoutSessionOut,
+  OrderCollectionOut,
+  OrderOut,
+  RazorpayOrderCheckoutSessionOut,
+  RedirectOrderCheckoutSessionOut,
+} from "@/api/types";
+import { RedirectCheckout } from "@/forms/RedirectCheckout";
 import { usePaymentStatusPoll } from "@/forms/usePaymentStatusPoll";
 import type { PollOutcome } from "@/forms/usePaymentStatusPoll";
 import { openCashfreeCheckout } from "@/lib/cashfreeCheckout";
@@ -52,7 +59,10 @@ function refundable(c: OrderCollectionOut): number {
 
 /** Open the provider's own checkout for `session` and resolve when it closes — with nothing but
  *  that it closed. Dispatched on the provider the server named, never guessed. */
-function openCheckout(session: OrderCheckoutSessionOut, businessName: string) {
+function openCheckout(
+  session: RazorpayOrderCheckoutSessionOut | CashfreeOrderCheckoutSessionOut,
+  businessName: string,
+) {
   return session.provider === "cashfree"
     ? openCashfreeCheckout(session)
     : openRazorpayCheckout(session, { businessName });
@@ -82,9 +92,12 @@ export function OrderPaymentCard({ order, onOrderChanged }: { order: OrderOut; o
   const state = useAsync(() => getOrderPayments(order.id), [order.id, order.version]);
   const [notice, setNotice] = useState<string | null>(null);
   const [pendingProvider, setPendingProvider] = useState<string | null>(null);
+  /** A redirect-checkout provider's page to open in a new tab (PhonePe), until the payment settles. */
+  const [redirect, setRedirect] = useState<RedirectOrderCheckoutSessionOut | null>(null);
   const poll = usePaymentStatusPoll(
     (chargeId) => syncOrderPayment(order.id, chargeId),
     (outcome: PollOutcome) => {
+      setRedirect(null);
       if (outcome.kind === "settled" && outcome.collection.state === "captured") {
         toast.success("Payment received — confirmed with the provider.");
       } else if (outcome.kind === "gave_up") {
@@ -121,6 +134,14 @@ export function OrderPaymentCard({ order, onOrderChanged }: { order: OrderOut; o
         );
         return opened;
       }
+      if (opened.checkout.provider === "phonepe") {
+        // The customer pays in another tab; this page keeps asking the provider meanwhile.
+        setRedirect(opened.checkout);
+        setPendingProvider(opened.checkout.provider);
+        poll.start(opened.collection.id);
+        return opened;
+      }
+      setRedirect(null);
       await openCheckout(opened.checkout, businessName);
       // However the checkout closed, ask the provider (through the server) what really happened.
       const checked = await syncOrderPayment(order.id, opened.collection.id);
@@ -196,6 +217,7 @@ export function OrderPaymentCard({ order, onOrderChanged }: { order: OrderOut; o
   const messages = (
     <>
       {notice ? <InlineAlert tone="warning" title={notice} /> : null}
+      {redirect ? <RedirectCheckout session={redirect} /> : null}
       <div aria-live="polite">
         {poll.watching !== null ? (
           <InlineAlert tone="info" live="off" title="Payment pending — don't take payment again">

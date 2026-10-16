@@ -11,6 +11,15 @@ function webhookUrl(account: MerchantAccountOut): string | null {
 }
 
 function Steps({ account }: { account: MerchantAccountOut }) {
+  if (account.provider === "phonepe") {
+    return (
+      <ol className="flex list-decimal flex-col gap-1 pl-4 text-sm text-ink-soft">
+        <li>In PhonePe's business dashboard, open Developer Settings → Webhooks and create a webhook with this URL.</li>
+        <li>Set its username and password to the webhook username and password you saved here.</li>
+        <li>Subscribe to the events below.</li>
+      </ol>
+    );
+  }
   if (account.provider === "cashfree") {
     return (
       <ol className="flex list-decimal flex-col gap-1 pl-4 text-sm text-ink-soft">

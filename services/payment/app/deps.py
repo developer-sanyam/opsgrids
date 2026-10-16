@@ -23,7 +23,7 @@ from __future__ import annotations
 import hashlib
 import threading
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from functools import cache, lru_cache
 from typing import Annotated, Any, Literal, Protocol
 
@@ -35,6 +35,8 @@ from app.providers.base import CollectionsProvider, PaymentProvider
 from app.providers.cashfree_collections import CashfreeCollectionsProvider
 from app.providers.cashfree_fake import CashfreeFakeWire
 from app.providers.cashfree_wire import CashfreeHttpWire
+from app.providers.phonepe_collections import PhonePeCollectionsProvider, PhonePeHttpWire
+from app.providers.phonepe_fake import PhonePeFakeWire
 from app.providers.razorpay_collections import build_collections_provider
 from app.providers.razorpay_wire import RazorpayHttpWire
 
@@ -53,6 +55,7 @@ class CollectionsProviderFactory(Protocol):
         *,
         provider: str = ...,
         mode: str = ...,
+        config: Mapping[str, Any] | None = ...,
     ) -> CollectionsProvider: ...
 
 
@@ -161,6 +164,49 @@ def _cashfree_stub_wire(app_id: str, secret_key: str) -> CashfreeFakeWire:
         return wire
 
 
+#: The in-process stub accounts of the merchant-only providers (PhonePe), keyed like Cashfree's:
+#: the provider, the key id **and a digest of the secret**, never the key id alone. Bounded the
+#: same way; each fake bounds its own request log.
+_STUB_WIRES: OrderedDict[tuple[str, str, str], Any] = OrderedDict()
+_STUB_WIRES_LOCK = threading.Lock()
+
+
+def _stub_wire(provider: str, key_id: str, secret: str, make: Callable[[], Any]) -> Any:
+    key = (provider, key_id, hashlib.sha256(secret.encode()).hexdigest())
+    with _STUB_WIRES_LOCK:
+        wire = _STUB_WIRES.get(key)
+        if wire is None:
+            wire = _STUB_WIRES[key] = make()
+            while len(_STUB_WIRES) > _STUB_WIRES_MAX:
+                _STUB_WIRES.popitem(last=False)
+        else:
+            _STUB_WIRES.move_to_end(key)
+        return wire
+
+
+def _phonepe(
+    key_id: str, key_secret: str, webhook_secret: str, mode: str, config: Mapping[str, Any]
+) -> CollectionsProvider:
+    env: Literal["sandbox", "production"] = "production" if mode == "live" else "sandbox"
+    username = str(config.get("webhook_username") or "")
+    if _collections_wire_live(settings(), registry.PROVIDER_PHONEPE):
+        wire: Any = PhonePeHttpWire(
+            client_id=key_id,
+            client_secret=key_secret,
+            client_version=str(config.get("client_version") or ""),
+            env=env,
+        )
+        return PhonePeCollectionsProvider(
+            wire=wire, mode=env, webhook_username=username, webhook_password=webhook_secret
+        )
+    # The webhook adapter is built without the client secret: the stub account is keyed by the
+    # client id alone then, which only ever reads a webhook, never an Order.
+    wire = _stub_wire(registry.PROVIDER_PHONEPE, key_id, key_secret, PhonePeFakeWire)
+    return PhonePeCollectionsProvider(
+        wire=wire, mode="stub", webhook_username=username, webhook_password=webhook_secret
+    )
+
+
 def _collections_provider(
     key_id: str,
     key_secret: str,
@@ -168,6 +214,7 @@ def _collections_provider(
     *,
     provider: str = registry.PROVIDER_RAZORPAY,
     mode: str = "test",
+    config: Mapping[str, Any] | None = None,
 ) -> CollectionsProvider:
     """A merchant's adapter, built per call from that merchant's opened keys and never cached —
     a cached adapter would hold a tenant's plaintext key secret in memory past the one call it
@@ -195,6 +242,8 @@ def _collections_provider(
         return CashfreeCollectionsProvider(
             wire=_cashfree_stub_wire(key_id, key_secret), secret_key=key_secret, mode="stub"
         )
+    if provider == registry.PROVIDER_PHONEPE:
+        return _phonepe(key_id, key_secret, webhook_secret, mode, config or {})
     raise ValueError(f"{provider!r} is not a collections provider")
 
 

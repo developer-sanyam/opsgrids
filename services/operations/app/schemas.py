@@ -2173,9 +2173,27 @@ class CashfreeOrderCheckoutSessionOut(BaseModel):
     order_number: str
 
 
+class RedirectOrderCheckoutSessionOut(BaseModel):
+    """Where the browser goes to pay with a redirect-checkout provider (PhonePe): a `GET` of `url`
+    or a form `POST` of `fields` to it, opened in a new tab. Fetched from the provider by payment
+    for this response and never stored; reopening asks again. No credential."""
+
+    provider: Literal["phonepe"]
+    method: Literal["GET", "POST"]
+    url: str
+    fields: dict[str, str] = Field(default_factory=dict)
+    provider_order_id: str
+    amount_minor: int
+    currency: str
+    openable: bool
+    order_number: str
+
+
 #: The browser's handle, by provider.
 OrderCheckoutSessionOut = Annotated[
-    RazorpayOrderCheckoutSessionOut | CashfreeOrderCheckoutSessionOut,
+    RazorpayOrderCheckoutSessionOut
+    | CashfreeOrderCheckoutSessionOut
+    | RedirectOrderCheckoutSessionOut,
     Field(discriminator="provider"),
 ]
 

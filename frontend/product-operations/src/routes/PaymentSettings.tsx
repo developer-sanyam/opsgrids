@@ -15,6 +15,7 @@ import { formatDate, formatDateTime, formatMoney } from "@/lib/format";
 import { needsOneTimeCodeSession } from "@/lib/oneTimeCode";
 import {
   CONNECTION_BADGE,
+  choosesEnvironment,
   connectionErrorHint,
   mismatchLabel,
   modeLabel,
@@ -61,7 +62,23 @@ const PROVIDER_OPTIONS = [
     label: PROVIDER_NAME.cashfree,
     description: "Customers pay in Cashfree's checkout; you connect your App ID and Secret Key. Each order needs the customer's phone.",
   },
+  {
+    value: "phonepe",
+    label: PROVIDER_NAME.phonepe,
+    description:
+      "Customers pay on PhonePe's checkout page, opened in a new tab; you connect your Client ID, Client Secret, client version and a webhook username and password.",
+  },
 ];
+
+const KEY_LABELS: Record<CollectionsProvider, { keyId: string; keySecret: string }> = {
+  razorpay: { keyId: "Key id", keySecret: "Key secret" },
+  cashfree: { keyId: "App ID", keySecret: "Secret Key" },
+  phonepe: { keyId: "Client ID", keySecret: "Client Secret" },
+};
+
+function asProvider(value: string): CollectionsProvider {
+  return value === "cashfree" || value === "phonepe" ? value : "razorpay";
+}
 
 function Detail({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -73,23 +90,34 @@ function Detail({ label, children }: { label: string; children: ReactNode }) {
 }
 
 function AccountDetails({ account }: { account: MerchantAccountOut }) {
-  const cashfree = account.provider === "cashfree";
+  const provider = asProvider(account.provider ?? "razorpay");
+  const labels = KEY_LABELS[provider];
   return (
     <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
-      <Detail label={cashfree ? "App ID" : "Key id"}>
+      <Detail label={labels.keyId}>
         <span className="font-mono text-ink break-all">{account.key_id}</span>
       </Detail>
-      <Detail label={cashfree ? "Environment" : "Mode"}>
+      <Detail label={choosesEnvironment(provider) ? "Environment" : "Mode"}>
         <StatusBadge
           tone={account.mode === "live" ? "success" : "warning"}
           label={modeLabel(account.provider, account.mode)}
         />
       </Detail>
-      <Detail label={cashfree ? "Secret Key" : "Key secret"}>
+      <Detail label={labels.keySecret}>
         <span className="font-mono text-ink">{account.key_secret_masked}</span>
       </Detail>
-      {cashfree ? null : (
-        <Detail label="Webhook secret">
+      {provider === "phonepe" ? (
+        <>
+          <Detail label="Client version">
+            <span className="font-mono text-ink">{String(account.config?.client_version ?? "")}</span>
+          </Detail>
+          <Detail label="Webhook username">
+            <span className="font-mono text-ink break-all">{String(account.config?.webhook_username ?? "")}</span>
+          </Detail>
+        </>
+      ) : null}
+      {provider === "cashfree" ? null : (
+        <Detail label={provider === "phonepe" ? "Webhook password" : "Webhook secret"}>
           <span className="font-mono text-ink">{account.webhook_secret_masked}</span>
         </Detail>
       )}
@@ -245,7 +273,8 @@ export function PaymentSettingsPage() {
   const account = state.data;
   const provider: CollectionsProvider = account.configured && account.provider ? account.provider : chosen;
   const name = PROVIDER_NAME[provider];
-  const fixedMode = account.configured && provider === "cashfree" ? (account.mode === "live" ? "production" : "sandbox") : null;
+  const fixedMode =
+    account.configured && choosesEnvironment(provider) ? (account.mode === "live" ? "production" : "sandbox") : null;
 
   return (
     <div className="rise flex flex-col gap-6">
@@ -269,7 +298,7 @@ export function PaymentSettingsPage() {
           name="payment-provider"
           value={provider}
           onChange={(value) => {
-            setChosen(value === "cashfree" ? "cashfree" : "razorpay");
+            setChosen(asProvider(value));
             setEditing(false);
           }}
           {...(account.configured
@@ -294,7 +323,7 @@ export function PaymentSettingsPage() {
             Connect a {name} account to let customers pay orders online.{" "}
             {account.live_keys_allowed
               ? ""
-              : provider === "cashfree"
+              : choosesEnvironment(provider)
                 ? "Only Sandbox accounts can be connected on this platform for now."
                 : "Only test-mode keys (rzp_test_…) can be connected on this platform for now."}
           </p>
@@ -304,6 +333,7 @@ export function PaymentSettingsPage() {
           <MerchantAccountForm
             provider={provider}
             initialKeyId={account.configured ? (account.key_id ?? "") : ""}
+            initialConfig={account.configured ? account.config : undefined}
             fixedMode={fixedMode}
             liveAllowed={account.live_keys_allowed}
             pending={save.pending}

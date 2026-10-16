@@ -57,6 +57,8 @@ log = get_logger("payment.collections.api")
 
 router = APIRouter(prefix="/payment/collections", tags=["collections"])
 webhook_router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+#: The return page a redirect-checkout provider sends the paying customer's browser to.
+return_router = APIRouter(prefix="/pay", tags=["webhooks"])
 
 TenantSessionDep = Annotated[AsyncSession, Depends(get_tenant_session, scope="function")]
 #: The reconciliation report and the verification call the provider, so they must not run inside
@@ -98,6 +100,7 @@ def _wires() -> CollectionWiresOut:
     return CollectionWiresOut(
         razorpay=cfg.collections_wire_for(domain.PROVIDER_RAZORPAY),
         cashfree=cfg.collections_wire_for(domain.PROVIDER_CASHFREE),
+        phonepe=cfg.collections_wire_for(domain.PROVIDER_PHONEPE),
     )
 
 
@@ -223,7 +226,7 @@ async def verify_merchant_account(
     if not outcome.accepted:
         hint = (
             " Check that the keys are for the environment you chose (Sandbox or Production)."
-            if account.provider == domain.PROVIDER_CASHFREE
+            if account.provider in (domain.PROVIDER_CASHFREE, domain.PROVIDER_PHONEPE)
             else " Check that the key id and key secret are a pair, in the same mode."
         )
         raise services.CredentialsRejectedProblem(
@@ -314,6 +317,45 @@ async def reconciliation(
         mismatched=mismatched,
         unchecked=unchecked,
         rows=out,
+    )
+
+
+# ============================================================================ return page
+
+#: What the customer's browser sees when a redirect-checkout provider sends it back. Static: it
+#: reads nothing from the request (a POSTed form from the provider is never parsed, logged or
+#: trusted), so it can neither be steered nor leak anything, and the staff screen that opened the
+#: checkout asks the provider what happened.
+_RETURN_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Payment</title></head>
+<body style="font-family: system-ui, sans-serif; max-width: 32rem; margin: 3rem auto;
+ padding: 0 1rem">
+<h1 style="font-size: 1.25rem">Thank you</h1>
+<p>You can close this tab. The business you are paying will see the result of your payment
+in a moment.</p>
+</body></html>
+"""
+
+
+@return_router.api_route(
+    "/return",
+    methods=["GET", "POST"],
+    include_in_schema=False,
+)
+async def collections_return() -> Response:
+    """Where PhonePe (and the form-POST providers) send the customer's browser afterwards."""
+    return Response(
+        content=_RETURN_PAGE,
+        media_type="text/html; charset=utf-8",
+        headers={
+            "cache-control": "no-store",
+            "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'",
+            "referrer-policy": "no-referrer",
+            "x-content-type-options": "nosniff",
+        },
     )
 
 

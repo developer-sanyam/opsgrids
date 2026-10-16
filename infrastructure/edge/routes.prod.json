@@ -58,6 +58,9 @@
     "Cashfree merchants register it and Cashfree Orders name it as `notify_url`. Public in",
     "`WEBHOOK_PUBLIC_PATHS` for POST only, the same 256 KiB cap; payment takes the provider from",
     "the account row, never from the path.",
+    "`/api/v1/pay/return` is the static page a redirect-checkout provider",
+    "(PhonePe, PayU, Paytm) returns the paying customer's browser to. Public in",
+    "`WEBHOOK_PUBLIC_PATHS` for GET and POST, same cap; payment reads nothing from the request.",
     "",
     "`/api/v1/webhooks/operations/<provider>?connection=<channel id>` is a connected channel's",
     "webhook (a carrier, ERP, POS or marketplace calling operations). Routed with a 256 KiB cap",
@@ -101,6 +104,7 @@
     { "prefix": "/api/v1/webhooks/razorpay", "upstream": "http://payment:8000" },
     { "prefix": "/api/v1/webhooks/razorpay/collections", "upstream": "http://payment:8000", "max_body_bytes": 262144 },
     { "prefix": "/api/v1/webhooks/collections", "upstream": "http://payment:8000", "max_body_bytes": 262144 },
+    { "prefix": "/api/v1/pay/return", "upstream": "http://payment:8000", "max_body_bytes": 262144 },
 
     { "prefix": "/api/v1/notifications", "upstream": "http://notification:8000", "product": "notification" },
     { "prefix": "/api/v1/engage", "upstream": "http://notification:8000", "product": "engage" },
