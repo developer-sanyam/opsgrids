@@ -1477,3 +1477,94 @@ async def test_another_tenants_lists_and_campaigns_are_invisible(
                 await admin_session.execute(
                     model.__table__.delete().where(model.organization_id == other)
                 )
+
+
+# --------------------------------------------------------------------- merge fields
+
+
+async def test_campaign_fills_merge_fields_per_recipient(session, org_id, worker_engine):
+    sender_id = await _seed_identity(session, org_id)
+    write = ctx_for(org_id, C_WRITE, Scope.ORG)
+    async with session.begin():
+        await services.create_contact(
+            session, write, email="a@example.com", name="Ada Lovelace",
+            attributes={"plan": "Pro"}, **OPTED_IN,
+        )  # fmt: skip
+        await services.create_contact(
+            session, write, email="b@example.com", name="Bob <i>Ng</i>", **OPTED_IN
+        )
+        await services.create_contact(session, write, email="c@example.com", **OPTED_IN)
+    async with session.begin():
+        row = await services.create_campaign(
+            session,
+            ctx_for(org_id, K_WRITE, Scope.ORG),
+            fields={
+                "name": "Merge",
+                "sender_id": sender_id,
+                "subject": "Hi {{first_name|there}}",
+                "html_body": "<p>Hello {{first_name|there}} {{last_name}} on {{plan|Free}}</p>",
+                "text_body": "Hello {{ First_Name|there }}, {{EMAIL}}, {{plan}}.",
+                "audience": "all_sendable",
+                "list_id": None,
+                "scheduled_at": None,
+            },
+        )
+    await _send(session, org_id, row.id)
+    wire = RecordingTransport()
+    assert await _drain(session, org_id, row.id, transport=wire) == "done"
+
+    by_to = {m.to_address: m for m in wire.sent}
+    ada, bob, anon = by_to["a@example.com"], by_to["b@example.com"], by_to["c@example.com"]
+    assert ada.subject == "Hi Ada"
+    assert "Hello Ada, a@example.com, Pro." in ada.body
+    assert "Hello Ada Lovelace on Pro" in ada.html
+    assert bob.subject == "Hi Bob"
+    # Missing values: fallback when given, empty otherwise; nothing is left literal.
+    assert anon.subject == "Hi there"
+    assert "Hello there, c@example.com,." in anon.body
+    assert "on Free" in anon.html
+    # HTML parts escape values; the plain-text part does not.
+    assert "Hello Bob &lt;i&gt;Ng&lt;/i&gt; on Free" in bob.html
+    assert "<i>" not in bob.html
+    assert all("{{" not in (m.html or "") + m.body + m.subject for m in wire.sent)
+
+
+async def test_aliases_company_fallback_tidy_and_unknown_field_blocks(
+    session, org_id, worker_engine
+):
+    sender_id = await _seed_identity(session, org_id)
+    write = ctx_for(org_id, C_WRITE, Scope.ORG)
+    async with session.begin():
+        await services.create_contact(
+            session, write, email="a@example.com", name="Ada Lovelace",
+            attributes={"crm_company_name": "Acme"}, **OPTED_IN,
+        )  # fmt: skip
+        await services.create_contact(session, write, email="b@example.com", name="Bob", **OPTED_IN)
+
+    async def draft(subject: str, text: str) -> uuid.UUID:
+        async with session.begin():
+            row = await services.create_campaign(
+                session,
+                ctx_for(org_id, K_WRITE, Scope.ORG),
+                fields={
+                    "name": "X", "sender_id": sender_id, "subject": subject, "html_body": "",
+                    "text_body": text, "audience": "all_sendable", "list_id": None,
+                    "scheduled_at": None,
+                },
+            )  # fmt: skip
+        return row.id
+
+    # A typo'd field is refused at the gate, before anything is queued.
+    typo = await draft("For {{compny_name}}", "Hi")
+    with pytest.raises(services.BusinessRuleProblem, match="compny_name"):
+        await _send(session, org_id, typo)
+
+    good = await draft("For {{company_name|your business}}", "Hi {{customer_name}}, {{Last_Name}}!")
+    await _send(session, org_id, good)
+    wire = RecordingTransport()
+    assert await _drain(session, org_id, good, transport=wire) == "done"
+    by_to = {m.to_address: m for m in wire.sent}
+    assert by_to["a@example.com"].subject == "For Acme"
+    assert by_to["a@example.com"].body.startswith("Hi Ada Lovelace, Lovelace!")
+    assert by_to["b@example.com"].subject == "For your business"
+    assert by_to["b@example.com"].body.startswith("Hi Bob,!")

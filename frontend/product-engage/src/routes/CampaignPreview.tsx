@@ -2,7 +2,9 @@ import { useState } from "react";
 
 import { Switch } from "@opsgrids/ui";
 
+import { nonStandardFields, sampleFill } from "@/lib/mergeFields";
 import { framePolicy } from "@/lib/previewPolicy";
+import { InlineAlert } from "@/ui";
 
 /**
  * What a recipient will see, without ever running what the author wrote.
@@ -30,8 +32,9 @@ import { framePolicy } from "@/lib/previewPolicy";
  *
  * The plain-text body and the subject are rendered as React text children, which escape.
  *
- * The service sends both bodies **exactly as written** (`services.campaign_message`): there is no
- * merge-field substitution, so `{{first_name}}` would arrive as those characters. It also appends an
+ * The service fills merge fields per recipient (`services.campaign_message`) — `{{first_name}}`,
+ * `last_name`, `name`, `email` and any contact attribute, with `{{first_name|there}}` as the
+ * fallback form — and this preview does not, so it shows the tags as written. It also appends an
  * unsubscribe link to every message, which is why the note below says so rather than the preview
  * pretending to draw it.
  */
@@ -52,6 +55,7 @@ export function CampaignPreview({
   const [remoteImages, setRemoteImages] = useState(false);
   const hasHtml = html.trim() !== "";
   const hasText = text.trim() !== "";
+  const custom = nonStandardFields(subject, html, text);
 
   return (
     <section aria-labelledby="campaign-preview-heading" className="flex flex-col gap-4">
@@ -65,6 +69,20 @@ export function CampaignPreview({
           {subject.trim() === "" ? <span className="font-normal text-muted">No subject yet</span> : subject}
         </p>
       </div>
+
+      {custom.length > 0 ? (
+        <InlineAlert tone="warning" title="Check these merge fields" className="break-words">
+          {custom.map((n) => `{{${n}}}`).join(", ")} {custom.length === 1 ? "is" : "are"} not a
+          standard field. It fills only if your contacts have an attribute with that name;
+          otherwise Send and Schedule are refused.
+        </InlineAlert>
+      ) : null}
+
+      {sampleFill(subject) !== subject ? (
+        <p className="break-words text-xs text-muted">
+          Sample recipient (Priya Sharma, Acme Traders): <strong>{sampleFill(subject)}</strong>
+        </p>
+      ) : null}
 
       {hasHtml ? (
         <div className="flex flex-col gap-2">
@@ -106,8 +124,9 @@ export function CampaignPreview({
       ) : null}
 
       <p className="text-xs text-muted">
-        Sent exactly as written: merge fields such as {"{{first_name}}"} are not filled in. An
-        unsubscribe link is added to the foot of every message automatically. Remote images are
+        Merge fields are filled in for each recipient when the campaign is sent, so{" "}
+        {"Hello {{first_name|there}}"} arrives as &ldquo;Hello Priya&rdquo;, or &ldquo;Hello
+        there&rdquo; if we have no first name. This preview shows them as written. An unsubscribe link is added to the foot of every message automatically. Remote images are
         blocked here unless you turn them on above. Prefetch, preconnect and DNS-prefetch hints in
         the markup are not something this preview can block, so a body that contains them may still
         contact those hosts. What a recipient&rsquo;s mail app shows is up to that app.

@@ -14,6 +14,7 @@ import hmac
 import re
 import uuid
 from dataclasses import dataclass
+from html import escape as html_escape
 from typing import Any, Final
 
 #: The channels this service can actually reach. A rule naming anything else is refused at
@@ -307,6 +308,55 @@ def render(text: str, payload: dict[str, Any]) -> str:
     if missing:
         raise RenderError(f"Unresolved placeholders: {', '.join(sorted(set(missing)))}")
     return result
+
+
+_MERGE = re.compile(r"\{\{\s*([a-zA-Z0-9_.]+)\s*(?:\|([^{}]*))?\}\}")
+
+
+#: Field names every contact can answer (see `services._merge_values`); any other name must be an
+#: attribute key some contact in the organization carries.
+MERGE_BUILTINS: Final = frozenset(
+    {"first_name", "last_name", "name", "full_name", "customer_name", "email",
+     "company", "company_name"}
+)  # fmt: skip
+
+#: What a test send fills in, the same sample the editor preview shows (`mergeFields.ts`).
+MERGE_SAMPLE: Final = {
+    "first_name": "Priya", "last_name": "Sharma", "name": "Priya Sharma",
+    "full_name": "Priya Sharma", "customer_name": "Priya Sharma",
+    "company": "Acme Traders", "company_name": "Acme Traders",
+}  # fmt: skip
+
+#: Marks where a field filled to nothing, so the tidy below touches only those spots.
+_EMPTY = "\x00"
+_EMPTY_BEFORE_PUNCT = re.compile(r"[ \t]*\x00(?=[,.;:!?])")
+_EMPTY_BETWEEN_SPACES = re.compile(r"(?<=[ \t])\x00[ \t]+")
+
+
+def merge_names(text: str) -> set[str]:
+    """Lower-cased `{{field}}` / `{{field|fallback}}` names a campaign text refers to."""
+    return {m.group(1).lower() for m in _MERGE.finditer(text)}
+
+
+def merge_fields(text: str, values: dict[str, Any], *, escape: bool = False) -> str:
+    """Lenient `{{field}}` / `{{field|fallback}}` fill for campaigns: names are case-insensitive
+    (`values` keys must be lower-case), spaces inside the braces are fine. Unlike `render`, a
+    missing or empty value becomes the fallback or nothing, so a placeholder is never sent
+    literally and one recipient is never failed for want of a last name. An empty fill tidies
+    the space it leaves ("Hi ," -> "Hi,") and nothing else in the text. `escape` HTML-escapes
+    values and fallbacks."""
+
+    def substitute(match: re.Match[str]) -> str:
+        value = resolve_path(values, match.group(1).lower())
+        out = "" if value is None or isinstance(value, dict | list) else str(value).strip()
+        out = out or (match.group(2) or "").strip()
+        if not out:
+            return _EMPTY
+        return html_escape(out, quote=True) if escape else out
+
+    result = _MERGE.sub(substitute, text.replace(_EMPTY, ""))
+    result = _EMPTY_BETWEEN_SPACES.sub("", _EMPTY_BEFORE_PUNCT.sub("", result))
+    return result.replace(_EMPTY, "")
 
 
 def normalize_recipient(channel: str, raw: str) -> str:

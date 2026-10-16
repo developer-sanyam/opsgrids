@@ -370,3 +370,29 @@ async def test_another_organizations_campaign_is_not_found(
             f"{CAMPAIGNS}/{campaign_id}/test", json={"to_address": "ops@company.com"}
         )
     assert response.status_code == 404
+
+
+async def test_a_test_send_fills_merge_fields_with_the_preview_sample(
+    session: AsyncSession, org_id: uuid.UUID
+) -> None:
+    campaign_id = await _seed_campaign(session, org_id)
+    async with session.begin():
+        row = await session.get(models.Campaign, campaign_id)
+        assert row is not None
+        row.subject = "For {{company_name}}"
+        row.html_body = "<p>Hi {{customer_name}} on {{plan|Free}}, {{nickname}}.</p>"
+        row.text_body = "Hi {{ First_Name }} ({{email}}), {{nickname}}."
+    wire = RecordingTransport()
+    async with session.begin():
+        await services.send_campaign_test(
+            session,
+            _ctx(org_id, K_SEND),
+            campaign_id=campaign_id,
+            to_address="ops@company.com",
+            transport=wire,
+        )
+    sent = wire.sent[0]
+    assert sent.subject == "[Test] For Acme Traders"
+    assert sent.body.startswith("Hi Priya (ops@company.com),.")
+    assert "Hi Priya Sharma on Free,." in (sent.html or "")
+    assert "{{" not in sent.subject + sent.body + (sent.html or "")
