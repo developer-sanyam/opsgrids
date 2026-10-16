@@ -275,6 +275,8 @@ class TestNothingElseIsPublic:
             ("POST", COLLECTIONS),
             # A customer's Shiprocket account pushing tracking to operations.
             ("POST", "/api/v1/webhooks/operations/parcel-track"),
+            # ... and Delhivery pushing scans.
+            ("POST", "/api/v1/webhooks/operations/delhivery"),
         }
         assert ("POST", RAZORPAY) not in reached
 

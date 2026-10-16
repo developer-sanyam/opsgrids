@@ -152,6 +152,48 @@ describe("CarriersPage", () => {
     );
   });
 
+  it("connects Delhivery with its API token alone", async () => {
+    const user = userEvent.setup();
+    listChannels.mockResolvedValue(page([]));
+    connectChannel.mockResolvedValue(carrier({ provider: "delhivery" }));
+    renderScreen(<CarriersPage />, [READ, WRITE]);
+
+    await user.click(await screen.findByRole("button", { name: "Connect courier" }));
+    await user.selectOptions(screen.getByLabelText("Courier"), "delhivery");
+    expect(screen.queryByLabelText("API user password")).toBeNull();
+    await user.type(screen.getByLabelText("Connection name"), "Delhivery Pune");
+    await user.type(screen.getByLabelText("Pickup location"), "Pune WH");
+    await user.type(screen.getByLabelText("API token"), "dl-token-1");
+    await user.selectOptions(screen.getByLabelText("Warehouse"), "wh-1");
+    await user.click(screen.getByRole("button", { name: "Connect" }));
+
+    await waitFor(() =>
+      expect(connectChannel).toHaveBeenCalledWith({
+        provider: "delhivery",
+        kind: "carrier",
+        name: "Delhivery Pune",
+        external_shop_id: "Pune WH",
+        api_key: "dl-token-1", // pragma: allowlist secret
+        default_warehouse_id: "wh-1",
+        auto_accept_orders: false,
+      }),
+    );
+  });
+
+  it("reconnects Delhivery with a token only", async () => {
+    const user = userEvent.setup();
+    listChannels.mockResolvedValue(page([carrier({ provider: "delhivery", status: "error" })]));
+    reconnectChannel.mockResolvedValue(carrier({ provider: "delhivery" }));
+    renderScreen(<CarriersPage />, [READ, WRITE]);
+
+    await user.click(await screen.findByRole("button", { name: /Reconnect Courier Shiprocket Pune/ }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByLabelText("API token"), "dl-new");
+    await user.click(within(dialog).getByRole("button", { name: "Reconnect" }));
+
+    await waitFor(() => expect(reconnectChannel).toHaveBeenCalledWith("car-1", { api_key: "dl-new" })); // pragma: allowlist secret
+  });
+
   it("refuses to connect without a password, and never calls the server", async () => {
     const user = userEvent.setup();
     listChannels.mockResolvedValue(page([]));

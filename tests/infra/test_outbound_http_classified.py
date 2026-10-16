@@ -88,6 +88,7 @@ CLASSIFIED: dict[tuple[str, str], tuple[str, str]] = {
     # `Channel.api_base_url` could hold a tenant-typed domain for a future provider; the mock
     # sandbox leaves it null (platform-configured). A real provider that fills it must use
     # EgressGuard and drops this entry.
+    ("services/operations/app/channels/delhivery.py", "__init__"): (PLATFORM, "Delhivery API host from settings (delhivery_api_base); never a tenant value"),
     ("services/operations/app/channels/shiprocket.py", "__init__"): (PLATFORM, "Shiprocket API host from settings (shiprocket_api_base); never a tenant value"),
     ("services/operations/app/channels/mock_provider.py", "__init__"): (PLATFORM, "mock sandbox base from settings; Channel.api_base_url stays null for it"),
 }  # fmt: skip
