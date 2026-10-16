@@ -121,6 +121,21 @@ class MandateResult:
     activated_at: str | None = None
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class CheckoutRedirect:
+    """Where a redirect-checkout provider (PhonePe, PayU, Paytm) takes the customer's browser: a
+    `GET` of `url`, or a form `POST` of `fields` to it. The URL or fields carry a short-lived token
+    or a salted hash, so this is **in memory only**, like `OrderResult.checkout_token`: never
+    stored, never logged, and `repr` is suppressed so a traceback cannot print it."""
+
+    url: str
+    method: Literal["GET", "POST"] = "GET"
+    fields: Mapping[str, str] = field(default_factory=dict)
+
+    def __repr__(self) -> str:
+        return f"CheckoutRedirect(method={self.method!r})"
+
+
 @dataclass(frozen=True, slots=True)
 class OrderResult:
     """A provider Order: what a payment is created against. `receipt` is the platform's charge
@@ -135,6 +150,8 @@ class OrderResult:
     #: stored, never logged — `repr=False` keeps it out of a traceback too — and re-fetched from
     #: the provider when a checkout is reopened.
     checkout_token: str | None = field(default=None, repr=False)
+    #: For a redirect-checkout provider, where the browser goes to pay (see `CheckoutRedirect`).
+    redirect: CheckoutRedirect | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -411,6 +428,8 @@ class CollectionsProvider(Protocol):
       records**, on a reopen: the adapter fetches that Order by its id and returns it, or refuses
       (`ProviderTransient`, `recorded_order_not_found`) — never a receipt search, never another
       create (the recorded-Order rule of `CheckoutRequest.recorded_order_id`, ADR-0032).
+      `return_url` is where a redirect-checkout provider sends the customer's browser afterwards
+      (ignored by a provider whose checkout is a modal on the merchant's page).
     * `find_order` — the lookup alone, never a create (the expiry sweep, for a collection that
       recorded no Order).
     * `order_payments` — every attempt on an Order as the provider reports it now, in the neutral
@@ -453,6 +472,7 @@ class CollectionsProvider(Protocol):
         expires_at: datetime | None = None,
         notify_url: str | None = None,
         recorded_order_id: str | None = None,
+        return_url: str | None = None,
     ) -> OrderResult: ...
 
     def find_order(self, *, receipt: str) -> OrderResult | None: ...

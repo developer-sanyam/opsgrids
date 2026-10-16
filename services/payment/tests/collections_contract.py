@@ -72,6 +72,7 @@ def ensure(
         expires_at=datetime.now(UTC) + timedelta(days=1),
         notify_url="https://app.opsgrids.example/api/v1/webhooks/collections?account=x",
         recorded_order_id=recorded_order_id,
+        return_url="https://app.opsgrids.example/api/v1/pay/return",
     )
 
 

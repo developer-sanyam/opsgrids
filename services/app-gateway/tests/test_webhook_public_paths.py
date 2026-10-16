@@ -273,6 +273,8 @@ class TestNothingElseIsPublic:
             ("GET", f"{WHATSAPP}/data-deletion-status"),
             ("POST", RAZORPAY_COLLECTIONS),
             ("POST", COLLECTIONS),
+            ("GET", "/api/v1/pay/return"),
+            ("POST", "/api/v1/pay/return"),
         }
         assert ("POST", RAZORPAY) not in reached
 

@@ -27,7 +27,9 @@ SECRET = "dev-only-cashfree-merchant-secret-0001"  # pragma: allowlist secret
 
 
 def test_the_provider_lists_agree() -> None:
-    assert set(MERCHANT_PROVIDERS) == set(registry.PROVIDER_NAMES) == set(domain.PROVIDERS)
+    assert (
+        set(MERCHANT_PROVIDERS) == set(registry.COLLECTIONS_PROVIDER_NAMES) == set(domain.PROVIDERS)
+    )
     assert set(MERCHANT_WEBHOOK_SECRET_PROVIDERS) == {
         name for name in domain.PROVIDERS if domain.spec_for(name).has_webhook_secret
     }

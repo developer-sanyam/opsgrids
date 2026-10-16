@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -45,6 +45,7 @@ from app.models import (
 )
 from app.providers import cashfree_codec
 from app.providers import cashfree_collections as cashfree
+from app.providers import phonepe_collections as phonepe
 from app.providers import razorpay_collections as razorpay
 from app.providers.base import PaymentSnapshot, valid_phone
 
@@ -60,7 +61,8 @@ REFERENCE_TYPES: frozenset[str] = frozenset({REFERENCE_OPERATIONS_ORDER})
 
 PROVIDER_RAZORPAY = "razorpay"
 PROVIDER_CASHFREE = "cashfree"
-PROVIDERS: frozenset[str] = frozenset({PROVIDER_RAZORPAY, PROVIDER_CASHFREE})
+PROVIDER_PHONEPE = "phonepe"
+PROVIDERS: frozenset[str] = frozenset({PROVIDER_RAZORPAY, PROVIDER_CASHFREE, PROVIDER_PHONEPE})
 
 # --- the merchant webhook --------------------------------------------------------------------
 
@@ -72,6 +74,16 @@ WEBHOOK_PATH = "/api/v1/webhooks/collections"
 LEGACY_RAZORPAY_WEBHOOK_PATH = "/api/v1/webhooks/razorpay/collections"
 #: Cashfree's ceiling on `order_meta.notify_url`.
 NOTIFY_URL_MAX = 250
+#: Where a redirect-checkout provider (PhonePe) sends the customer's browser once they have paid
+#: or given up: a static page that reads nothing and says "you can close this tab" -- the staff
+#: screen that opened the checkout in a new tab asks the provider what happened.
+#: Short on purpose: PayU documents a 50-character ceiling on `surl`/`furl`.
+RETURN_PATH = "/api/v1/pay/return"
+
+
+def return_url(public_api_base: str) -> str:
+    """The absolute URL of the return page, from the platform's public `/api/v1` base."""
+    return f"{public_api_base.rstrip('/')}{RETURN_PATH.removeprefix('/api/v1')}"
 
 
 def webhook_url(public_api_base: str, account_id: object, path: str = WEBHOOK_PATH) -> str:
@@ -106,8 +118,10 @@ class ProviderSpec:
     webhook_events: tuple[str, ...]
     #: The provider's refund key for a refund whose identity hashes to a hex digest.
     refund_key: Callable[[str], str]
-    #: The (lower-cased) header a delivery's signature travels in — kept on the inbox row.
-    signature_header: str
+    #: The (lower-cased) header a delivery's signature travels in — kept on the inbox row. None
+    #: when that header is a static credential that must never be stored (PhonePe's
+    #: `Authorization`).
+    signature_header: str | None
     #: The path a merchant is shown to register. Both paths reach one handler, which takes the
     #: provider from the account row; a Razorpay account keeps showing the path every Razorpay
     #: merchant already registered.
@@ -138,7 +152,26 @@ CASHFREE = ProviderSpec(
     signature_header=cashfree.SIGNATURE_HEADER,
     webhook_path=WEBHOOK_PATH,
 )
-_SPECS: dict[str, ProviderSpec] = {RAZORPAY.name: RAZORPAY, CASHFREE.name: CASHFREE}
+PHONEPE = ProviderSpec(
+    name=PROVIDER_PHONEPE,
+    display_name="PhonePe",
+    # The webhook password the merchant sets in PhonePe's dashboard (its username is config).
+    has_webhook_secret=True,
+    requires_payer=False,
+    # The browser's handle is a token-bearing `redirectUrl`, never stored: asked for again.
+    reopen_asks_provider=True,
+    # A PhonePe Order takes payment until its own `expireAfter` (at most an hour).
+    order_outlives_cancel=True,
+    webhook_events=phonepe.WEBHOOK_EVENTS,
+    refund_key=phonepe.refund_key,
+    signature_header=None,
+    webhook_path=WEBHOOK_PATH,
+)
+_SPECS: dict[str, ProviderSpec] = {
+    RAZORPAY.name: RAZORPAY,
+    CASHFREE.name: CASHFREE,
+    PHONEPE.name: PHONEPE,
+}
 
 
 def spec_for(provider: str) -> ProviderSpec:
@@ -196,6 +229,7 @@ def validate_credentials(
     webhook_secret: str | None,
     mode: str | None,
     allow_live: bool,
+    config: Mapping[str, object] | None = None,
 ) -> str:
     """The account's mode (`test` / `live`), or a `CredentialProblem` naming what is wrong.
 
@@ -204,7 +238,10 @@ def validate_credentials(
     * **Cashfree** — the merchant chooses `sandbox` or `production` (an App ID does not say), the
       Secret Key signs webhooks so no webhook secret is accepted, Production needs `allow_live`,
       and keys whose shape plainly belongs to the other environment are refused (a safe
-      false-refuse, never a reason to let a key through)."""
+      false-refuse, never a reason to let a key through).
+    * **PhonePe** — Client ID, Client Secret, the client version and the webhook username
+      (`config`), the webhook password as the webhook secret, and `sandbox` or `production`
+      chosen by the merchant; Production needs `allow_live`."""
     if provider not in PROVIDERS:
         raise CredentialProblem(f"{provider!r} is not a supported payment provider")
     if not valid_secret(key_secret):
@@ -225,6 +262,8 @@ def validate_credentials(
                 "webhook_secret must be 8-128 printable characters with no spaces"
             )
         return derived
+    if provider == PROVIDER_PHONEPE:
+        return _validate_phonepe(key_id, webhook_secret, mode, allow_live, config or {})
     if not _APP_ID.fullmatch(key_id):
         raise CredentialProblem(
             "key_id must be a Cashfree App ID: 4-64 letters, digits, '_' or '-'"
@@ -249,6 +288,44 @@ def validate_credentials(
             "These look like Sandbox keys; choose Sandbox, or use the Production keys"
         )
     return platform_mode
+
+
+#: PhonePe's non-secret settings, kept in `MerchantAccount.config`: the client version that comes
+#: with the Client ID, and the webhook username (its password is the sealed webhook secret).
+PHONEPE_CONFIG_KEYS: frozenset[str] = frozenset({"client_version", "webhook_username"})
+_PHONEPE_CLIENT_ID = re.compile(r"^[A-Za-z0-9_.-]{4,64}$")
+_PHONEPE_CLIENT_VERSION = re.compile(r"^[0-9]{1,6}$")
+_WEBHOOK_USERNAME = re.compile(r"^[\x21-\x7e]{1,64}$")
+
+
+def _validate_phonepe(
+    key_id: str,
+    webhook_secret: str | None,
+    mode: str | None,
+    allow_live: bool,
+    config: Mapping[str, object],
+) -> str:
+    if not _PHONEPE_CLIENT_ID.fullmatch(key_id):
+        raise CredentialProblem("key_id must be a PhonePe Client ID: 4-64 letters, digits, '_.-'")
+    if set(config) != PHONEPE_CONFIG_KEYS:
+        raise CredentialProblem("config must hold exactly client_version and webhook_username")
+    version = config["client_version"]
+    if isinstance(version, bool) or not _PHONEPE_CLIENT_VERSION.fullmatch(str(version)):
+        raise CredentialProblem("client_version must be the number PhonePe gave with the Client ID")
+    username = config["webhook_username"]
+    if not isinstance(username, str) or not _WEBHOOK_USERNAME.fullmatch(username):
+        raise CredentialProblem("webhook_username must be 1-64 printable characters, no spaces")
+    if webhook_secret is None or not valid_secret(webhook_secret):
+        raise CredentialProblem(
+            "webhook_secret (the webhook password) must be 8-128 printable characters, no spaces"
+        )
+    if mode not in CASHFREE_MODES:
+        raise CredentialProblem("mode must be sandbox or production for PhonePe")
+    if CASHFREE_MODES[mode] == MERCHANT_MODE_LIVE and not allow_live:
+        raise CredentialProblem(
+            "PhonePe Production is not enabled on this platform yet; connect a Sandbox account"
+        )
+    return CASHFREE_MODES[mode]
 
 
 def checkout_mode(mode: str) -> str:

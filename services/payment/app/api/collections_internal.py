@@ -38,6 +38,7 @@ from app.schemas import (
     CollectionOut,
     CollectionRefundIn,
     RazorpayCheckoutSessionOut,
+    RedirectCheckoutSessionOut,
     ReferenceCollectionsOut,
 )
 from platform_core.auth import require_service_token
@@ -176,7 +177,9 @@ async def open_checkout(
         account = await selectors.live_merchant_account(session, organization_id)
         assert charge is not None
         view = (await selectors.collection_views(session, organization_id, [charge]))[0]
-    checkout: RazorpayCheckoutSessionOut | CashfreeCheckoutSessionOut | None = None
+    checkout: (
+        RazorpayCheckoutSessionOut | CashfreeCheckoutSessionOut | RedirectCheckoutSessionOut | None
+    ) = None
     if (
         charge.provider_order_id is not None
         and account is not None
@@ -184,7 +187,21 @@ async def open_checkout(
         and charge.state not in ("captured", "cancelled", "expired")
     ):
         openable = settings().collections_wire_for(account.provider) == "live"
-        if account.provider == domain.PROVIDER_CASHFREE:
+        redirect = order.redirect if order is not None else None
+        if account.provider == domain.PROVIDER_PHONEPE:
+            # In memory only, like Cashfree's session: this response is the one place it goes.
+            if redirect is not None:
+                checkout = RedirectCheckoutSessionOut(
+                    provider="phonepe",
+                    method=redirect.method,
+                    url=redirect.url,
+                    fields=dict(redirect.fields),
+                    provider_order_id=charge.provider_order_id,
+                    amount_minor=charge.amount_minor,
+                    currency=charge.currency,
+                    openable=openable,
+                )
+        elif account.provider == domain.PROVIDER_CASHFREE:
             # The session token is in memory only — this response is the one place it goes.
             token = order.checkout_token if order is not None else None
             if token is not None and order is not None:

@@ -117,7 +117,7 @@ generated into [`libs/contracts/openapi/`](libs/contracts/openapi/) by `make ope
 | `/subscriptions`, `/subscription` | subscription | — |
 | `/usage` | metering | — |
 | `/invoices`, `/credit-balance`, `/billing` | billing | — |
-| `/payment`, `/webhooks/razorpay`, `/webhooks/razorpay/collections`, `/webhooks/collections` | payment | — |
+| `/payment`, `/webhooks/razorpay`, `/webhooks/razorpay/collections`, `/webhooks/collections`, `/pay/return` | payment | — |
 | `/employees` · `/attendance`, `/shifts`, `/geofences` · `/leave` | employee · attendance · leave | `hrms` |
 | `/customers`, `/contacts` · `/deals` · `/leads` | customer · deal · lead | `crm` |
 | `/projects` · `/timesheets` · `/standups` | project · timesheet · standup | `pulseboard` |

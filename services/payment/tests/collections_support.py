@@ -26,6 +26,8 @@ from app.main import app
 from app.providers.base import PaymentSnapshot
 from app.providers.cashfree_collections import CashfreeCollectionsProvider
 from app.providers.cashfree_fake import CashfreeFakeWire
+from app.providers.phonepe_collections import PhonePeCollectionsProvider
+from app.providers.phonepe_fake import PhonePeFakeWire
 from app.providers.razorpay import RazorpayProvider
 from app.providers.razorpay_collections import RazorpayCollectionsProvider
 from platform_core.auth import Principal, get_principal
@@ -65,6 +67,10 @@ class MerchantProviders:
     #: Build Cashfree adapters as the live wire would (`is_live`), still over the fake: their
     #: Orders are recorded as made live (`order_wire = live`), i.e. ones a customer could pay.
     cashfree_live: bool = False
+    #: One stateful `PhonePeFakeWire` per Client ID, as `COLLECTIONS_PHONEPE_WIRE=stub` runs.
+    phonepe_wires: dict[str, PhonePeFakeWire] = field(default_factory=dict)
+    #: The non-secret config of every adapter built, in order.
+    configs: list[dict[str, Any]] = field(default_factory=list)
 
     def __call__(
         self,
@@ -74,10 +80,19 @@ class MerchantProviders:
         *,
         provider: str = "razorpay",
         mode: str = "test",
+        config: Any = None,
     ) -> Any:
         if key_secret:
             self.key_secrets_seen.append(key_secret)
         self.built.append((provider, mode))
+        self.configs.append(dict(config or {}))
+        if provider == "phonepe":
+            return PhonePeCollectionsProvider(
+                wire=self.phonepe_wires.setdefault(key_id, PhonePeFakeWire()),
+                mode="stub",
+                webhook_username=str((config or {}).get("webhook_username") or ""),
+                webhook_password=webhook_secret,
+            )
         if provider == "cashfree":
             wire = self.cashfree_wires.setdefault(key_id, CashfreeFakeWire())
             live = "production" if mode == "live" else "sandbox"

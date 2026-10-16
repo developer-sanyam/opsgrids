@@ -11,17 +11,23 @@ import type { StatusTone } from "@opsgrids/ui";
 export const PROVIDER_NAME: Record<CollectionsProvider, string> = {
   razorpay: "Razorpay",
   cashfree: "Cashfree",
+  phonepe: "PhonePe",
 };
 
 export function providerName(provider: string | null | undefined): string {
-  return provider === "cashfree" ? PROVIDER_NAME.cashfree : PROVIDER_NAME.razorpay;
+  return PROVIDER_NAME[provider as CollectionsProvider] ?? PROVIDER_NAME.razorpay;
+}
+
+/** Providers whose merchant chooses Sandbox or Production (the key does not say which). */
+export function choosesEnvironment(provider: string | null | undefined): boolean {
+  return provider === "cashfree" || provider === "phonepe";
 }
 
 /** A mode as the provider's own dashboard names it: Razorpay Test / Live, Cashfree Sandbox /
  *  Production. */
 export function modeLabel(provider: string | null | undefined, mode: string | null | undefined): string {
   const live = mode === "live";
-  if (provider === "cashfree") return live ? "Production" : "Sandbox";
+  if (choosesEnvironment(provider)) return live ? "Production" : "Sandbox";
   return live ? "Live" : "Test";
 }
 
@@ -43,6 +49,9 @@ export const CONNECTION_BADGE: Record<ConnectionState, { tone: StatusTone; label
 export function connectionErrorHint(provider: string | null | undefined, code: string | null | undefined): string {
   const name = providerName(provider);
   if (code === "credentials_rejected") {
+    if (provider === "phonepe") {
+      return `${name} did not accept the Client ID, Client Secret and client version. Check they are for the environment you chose (Sandbox or Production), then replace them.`;
+    }
     return provider === "cashfree"
       ? `${name} did not accept the App ID and Secret Key. Check they are the keys for the environment you chose (Sandbox or Production), then replace them.`
       : `${name} did not accept the key id and key secret. Check they are a pair, in the same mode, then replace them.`;

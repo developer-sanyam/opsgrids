@@ -1104,6 +1104,8 @@ services:
       COLLECTIONS_WIRE: ${COLLECTIONS_WIRE:-stub}
       # A tenant's Cashfree account (ADR-0033): `stub` until the owner turns it on, sandbox first.
       COLLECTIONS_CASHFREE_WIRE: ${COLLECTIONS_CASHFREE_WIRE:-stub}
+      # A tenant's PhonePe account (Standard Checkout V2): `stub` until the owner turns it on.
+      COLLECTIONS_PHONEPE_WIRE: ${COLLECTIONS_PHONEPE_WIRE:-stub}
       COLLECTIONS_ALLOW_LIVE_KEYS: ${COLLECTIONS_ALLOW_LIVE_KEYS:-false}
     networks:
       - back
