@@ -44,3 +44,4 @@ edge_selfserve_tenant.json
 # Private keys and certificates — never committed (server ssh keys, TLS keys)
 *.pem
 *.key
+graphify-out/
