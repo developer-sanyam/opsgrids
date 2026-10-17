@@ -540,7 +540,6 @@ class TestAddProductOptions:
         assert by_id[str(monthly)]["blocked_code"] is None
         assert by_id[str(yearly)]["blocked_code"] is None
         assert by_id[str(yearly)]["billing_interval"] == "year"
-
     async def test_a_product_a_live_bundle_already_entitles_names_the_bundle(
         self, client: AsyncClient, upstreams: FakeUpstreams, org_id: uuid.UUID
     ) -> None:

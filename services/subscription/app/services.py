@@ -234,7 +234,6 @@ def _transition(
     `audit_before`/`audit_after` add facts to the audit row's before/after for a move whose state
     alone does not say what changed — a trial extension stays `trial`, and its row names the end
     it moved from and to.
-
     `emit_event=False` writes the transition row and the audit row and stages **no event**. Only a
     transition that a second event in the same transaction supersedes may be silent: see
     `apply_pending_change`'s `silent`, whose lapsed change is folded into the stop event that
