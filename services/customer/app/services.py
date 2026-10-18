@@ -1391,3 +1391,33 @@ async def resolve_messaging_phone(
         after={"channel": channel, "resolved": plaintext is not None},
     )
     return plaintext
+
+
+async def open_contacts_for_export(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    contacts: list[Contact],
+    service: str,
+) -> dict[uuid.UUID, str | None]:
+    """Open the sealed numbers of a page of contacts for the one service that projects them
+    (C53). One audit row for the page (ids only, no number), in the caller's transaction: opening
+    sealed PII is an auditable read whether a person or a service does it."""
+    phones: dict[uuid.UUID, str | None] = {
+        c.id: open_sealed(c.phone_enc, settings=settings()) if c.phone_enc is not None else None
+        for c in contacts
+        if c.deleted_at is None
+    }
+    opened = sorted(str(i) for i, p in phones.items() if p is not None)
+    if opened:
+        record_audit(
+            session,
+            AuditLog,
+            organization_id=organization_id,
+            actor_id=None,
+            acting_as=service,
+            action="contact.exported",
+            entity="contact",
+            after={"fields": ["phone"], "contact_ids": opened},
+        )
+    return phones

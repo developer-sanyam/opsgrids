@@ -385,3 +385,30 @@ decision's state.
   whose country is India the SPA reads a bare 10-digit mobile (6-9 first digit, optionally behind a
   `0` or `91`) as `+91...` before sending, in the forms and in imports; a revealed number is shown
   `+91 90000 00021`. The organization's country comes from `GET /organization`, India until it is known.
+
+## Amended 2026-10-16: D-15 includes phone-only CRM contacts
+
+The owner decided on 2026-10-16 that the Engage contact book projects **every** CRM contact that
+has a usable e-mail **or** a usable phone number. This amends D-15 and sub-project 4 §7.4 rule 1,
+which projected only contacts with an e-mail. Nothing else in D-15 changes: standalone Engage is
+kept, and the projection writes no consent event and never opts anyone in.
+
+- **Shape.** `notification.contacts` gains `crm_contact_id` (plain UUID, no foreign key; unique per
+  organization where set), `origin` (`manual`, `import`, `signup`, `crm`) and the sealed number
+  (`phone_enc`, `phone_masked`, `phone_index`, the same keyed blind index the consent ledger uses
+  for WhatsApp). `email_enc` and `email_index` become nullable, so a phone-only contact has no
+  address. Every e-mail audience adds `email_index IS NOT NULL`; the WhatsApp audience matches an
+  opt-in on the contact id **or** on `phone_index`, so a phone-only contact is reachable only after
+  a real opt-in on that number and a STOP from it still wins.
+- **Read-only copy.** `PATCH` and `DELETE` of a `crm` row answer 409 `managed_in_crm`; an import
+  row for its address is reported `managed_in_crm` and skipped.
+- **Erase.** A deleted CRM contact (customer has a soft delete and no separate erase yet, so
+  EV18 is not published) removes the copy and overwrites its campaign-recipient snapshots in the
+  same transaction, so no block on a CRM erase is needed. The same handler is the EV18 handler
+  when that event ships. The consent ledger is append-only and is not rewritten.
+- **Read path.** The `crm.book.contact.*` events stay thin. Customer answers C53
+  (`GET /internal/v1/organizations/{org}/contacts:export`, notification only) with the name, e-mail,
+  phone, status and company id, and audits the number it opens.
+- **Segments** gain a `crm_status` filter, read from the copy's `attributes.crm_status`.
+- **Deploy order.** Notification first (migration, handler), then customer (C53). Events published
+  before the notification image runs are lost to it; `tools/sync_engage_contacts.py` reconciles.

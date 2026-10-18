@@ -17,9 +17,10 @@ part of reading it, so routes stay thin.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import AuditLog, Company, Contact, Owner
@@ -358,6 +359,30 @@ async def get_contact(
         Contact.deleted_at.is_(None),
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def export_contacts(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    *,
+    ids: list[uuid.UUID] | None,
+    after: tuple[datetime, uuid.UUID] | None,
+    limit: int,
+) -> list[Contact]:
+    """Contacts for Engage's projection, soft-deleted rows included (C53): by id, or keyset-paged
+    on `(updated_at, id)`. Every query filters on the organization."""
+    stmt = select(Contact).where(Contact.organization_id == org_id)
+    if ids is not None:
+        stmt = stmt.where(Contact.id.in_(ids))
+    elif after is not None:
+        stmt = stmt.where(
+            or_(
+                Contact.updated_at > after[0],
+                and_(Contact.updated_at == after[0], Contact.id > after[1]),
+            )
+        )
+    stmt = stmt.order_by(Contact.updated_at.asc(), Contact.id.asc()).limit(limit)
+    return list((await session.execute(stmt)).scalars())
 
 
 async def get_contact_by_id_any_state(
