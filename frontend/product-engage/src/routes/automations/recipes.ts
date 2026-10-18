@@ -39,6 +39,88 @@ export const RECIPES: Recipe[] = [
     },
   },
   {
+    id: "lead-interest-check",
+    name: "Lead interest check and follow-up",
+    description:
+      "Send leads an interest-check email, branch on interest: proceed further, block/disqualify if not interested, or send a follow-up email if no reply.",
+    build: () => {
+      let graph = addStep(emptyGraph("crm.lead.created"), { from: "trigger" }, "send_message").graph;
+      graph = replaceNode(graph, {
+        id: "send_message_1",
+        type: "send_message",
+        config: {
+          channel: "email",
+          template: { ref: "" },
+          recipient_path: "payload.email",
+          variable_map: { name: "payload.full_name", company: "payload.company" },
+          purpose: "marketing",
+        },
+      });
+      graph = addStep(graph, { from: "send_message_1" }, "wait").graph;
+      graph = replaceNode(graph, {
+        id: "wait_1",
+        type: "wait",
+        config: {
+          seconds: 259_200,
+          window: { start: "09:00", end: "18:00", timezone: "Asia/Kolkata" },
+        },
+      });
+      graph = addStep(graph, { from: "wait_1" }, "condition").graph;
+      graph = replaceNode(graph, {
+        id: "condition_1",
+        type: "condition",
+        config: {
+          match: "any",
+          rules: [
+            { path: "payload.status", op: "eq", value: "qualified" },
+            { path: "payload.status", op: "eq", value: "working" },
+          ],
+        },
+      });
+      graph = addStep(graph, { from: "condition_1", label: "yes" }, "create_task").graph;
+      graph = replaceNode(graph, {
+        id: "create_task_1",
+        type: "create_task",
+        config: {
+          title: "Follow up interested lead",
+          description: "Lead expressed interest. Proceed with discovery call or demo.",
+          assignee_team: "sales",
+        },
+      });
+      graph = addStep(graph, { from: "condition_1", label: "no" }, "condition").graph;
+      graph = replaceNode(graph, {
+        id: "condition_2",
+        type: "condition",
+        config: {
+          match: "all",
+          rules: [{ path: "payload.status", op: "eq", value: "disqualified" }],
+        },
+      });
+      graph = addStep(graph, { from: "condition_2", label: "yes" }, "create_task").graph;
+      graph = replaceNode(graph, {
+        id: "create_task_2",
+        type: "create_task",
+        config: {
+          title: "Mark lead as blocked / disqualified",
+          description: "Lead indicated no interest. Mark as disqualified and suppress future outreach.",
+          assignee_team: "sales",
+        },
+      });
+      graph = addStep(graph, { from: "condition_2", label: "no" }, "send_message").graph;
+      return replaceNode(graph, {
+        id: "send_message_2",
+        type: "send_message",
+        config: {
+          channel: "email",
+          template: { ref: "" },
+          recipient_path: "payload.email",
+          variable_map: { name: "payload.full_name", company: "payload.company" },
+          purpose: "marketing",
+        },
+      });
+    },
+  },
+  {
     id: "invoice-follow-up",
     name: "Invoice follow-up",
     description: "When an invoice is issued, wait three days and send a payment reminder.",
