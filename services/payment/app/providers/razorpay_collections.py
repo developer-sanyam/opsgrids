@@ -168,6 +168,7 @@ class RazorpayCollectionsProvider(RazorpayProvider):
         expires_at: datetime | None = None,
         notify_url: str | None = None,
         recorded_order_id: str | None = None,
+        return_url: str | None = None,  # a modal checkout: nothing to return to
     ) -> OrderResult:
         """`RazorpayProvider.ensure_order`, unchanged. The payer, the expiry and the notify URL are
         not Razorpay Order fields and are dropped here — the payer never leaves this process.

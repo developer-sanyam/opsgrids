@@ -143,10 +143,10 @@ MERCHANT_MODE_LIVE = "live"
 #: `tests/test_merchant_provider_registry.py` pins the three equal. Kept here, import-free,
 #: because the CHECKs below are built from it: adding a provider is its registry entry, a name
 #: here, and a migration widening the CHECK.
-MERCHANT_PROVIDERS: tuple[str, ...] = ("razorpay", "cashfree")
+MERCHANT_PROVIDERS: tuple[str, ...] = ("razorpay", "cashfree", "phonepe")
 #: The subset whose merchant chooses a webhook secret (`ProviderSpec.has_webhook_secret`).
 #: The others sign with the API secret, so their row holds no webhook secret.
-MERCHANT_WEBHOOK_SECRET_PROVIDERS: tuple[str, ...] = ("razorpay",)
+MERCHANT_WEBHOOK_SECRET_PROVIDERS: tuple[str, ...] = ("razorpay", "phonepe")
 
 
 def sql_in(column: str, values: tuple[str, ...], *, negate: bool = False) -> str:

@@ -277,6 +277,9 @@ class TestNothingElseIsPublic:
             ("POST", "/api/v1/webhooks/operations/parcel-track"),
             # ... and Delhivery pushing scans.
             ("POST", "/api/v1/webhooks/operations/delhivery"),
+            ("POST", "/api/v1/webhooks/operations/shopify"),
+            ("GET", "/api/v1/pay/return"),
+            ("POST", "/api/v1/pay/return"),
         }
         assert ("POST", RAZORPAY) not in reached
 

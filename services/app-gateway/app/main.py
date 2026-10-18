@@ -136,6 +136,12 @@ ENGAGE_TRACKING_PREFIX = "/api/v1/engage/t/"
 #: the provider from the account row, never from the path, so the Razorpay path is kept forever as
 #: an alias and neither path can be used to have a body judged by the other provider's rules.
 #:
+#: **And** `/api/v1/pay/return` — not a webhook but the page a redirect-checkout
+#: provider (PhonePe; PayU and Paytm POST their form to it) sends the paying customer's browser
+#: back to. `GET` and `POST`; payment answers a static "you can close this tab" page that reads
+#: nothing from the request, so it can neither be steered nor trusted. The staff screen that
+#: opened the checkout asks the provider what happened.
+#:
 #: The three `/whatsapp/deauthorize`, `/whatsapp/data-deletion` and
 #: `/whatsapp/data-deletion-status` entries are Facebook Login's deauthorize and data-deletion
 #: callbacks — a different Meta trust scheme (`signed_request`, verified by notification's
@@ -163,6 +169,7 @@ WEBHOOK_PUBLIC_PATHS: Mapping[str, frozenset[str]] = MappingProxyType(
         # `Authorization` token). Same 256 KiB cap in both route tables.
         "/api/v1/webhooks/operations/delhivery": frozenset({"POST"}),
         "/api/v1/webhooks/operations/shopify": frozenset({"POST"}),
+        "/api/v1/pay/return": frozenset({"GET", "POST"}),
     }
 )
 

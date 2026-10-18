@@ -202,7 +202,12 @@ def _open(account: MerchantAccount, field: str) -> str:
 
 
 def _validate_credentials(
-    provider: str, key_id: str, key_secret: str, webhook_secret: str | None, mode: str | None
+    provider: str,
+    key_id: str,
+    key_secret: str,
+    webhook_secret: str | None,
+    mode: str | None,
+    config: dict[str, Any] | None = None,
 ) -> str:
     """The account's mode, or a 422 naming the field that is wrong — never echoing a secret."""
     try:
@@ -213,6 +218,7 @@ def _validate_credentials(
             webhook_secret=webhook_secret,
             mode=mode,
             allow_live=settings().collections_allow_live_keys,
+            config=config,
         )
     except domain.CredentialProblem as exc:
         raise ValidationProblem(str(exc)) from None
@@ -240,10 +246,14 @@ async def set_merchant_account(
     makes the account **unverified** again (`verified_at`, `last_error_code` cleared): a
     verification was of the keys it probed. The audit row names the key id and mode — never a
     secret, its mask, its length or its hash (ADR-0019 §2)."""
-    mode = _validate_credentials(provider, key_id, key_secret, webhook_secret, mode)
+    existing = await selectors.lock_live_merchant_account(session, organization_id)
+    # A rotation that sends no config keeps the stored one, so that is what is validated.
+    effective_config = config if config is not None or existing is None else existing.config
+    mode = _validate_credentials(
+        provider, key_id, key_secret, webhook_secret, mode, effective_config
+    )
     spec = domain.spec_for(provider)
     now = _now()
-    existing = await selectors.lock_live_merchant_account(session, organization_id)
     if existing is not None:
         if existing.provider != provider or existing.mode != mode:
             # **Provider and mode are fixed for the life of a row** (ADR-0032). Every charge taken
@@ -480,9 +490,17 @@ class VerifyTicket:
     key_id: str
     key_secret: str
     rotated_at: datetime | None
+    config: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def build(self, factory: CollectionsProviderFactory) -> CollectionsProvider:
-        return factory(self.key_id, self.key_secret, "", provider=self.provider, mode=self.mode)
+        return factory(
+            self.key_id,
+            self.key_secret,
+            "",
+            provider=self.provider,
+            mode=self.mode,
+            config=self.config,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -517,6 +535,7 @@ async def claim_verification(session: AsyncSession, *, organization_id: uuid.UUI
         key_id=account.key_id,
         key_secret=_open(account, KEY_SECRET),
         rotated_at=account.rotated_at,
+        config=dict(account.config),
     )
 
 
@@ -931,6 +950,10 @@ class ProviderTicket:
     #: Which wire made the collection's Order (`Charge.order_wire`); None when it has none yet,
     #: or was recorded before this was kept.
     order_wire: str | None = None
+    #: The account's non-secret provider settings (`MerchantAccount.config`).
+    config: dict[str, Any] = dataclasses.field(default_factory=dict)
+    #: Where a redirect-checkout provider sends the customer's browser afterwards.
+    return_url: str | None = None
 
     def build(self, factory: CollectionsProviderFactory) -> CollectionsProvider:
         return factory(
@@ -939,6 +962,7 @@ class ProviderTicket:
             self.webhook_secret,
             provider=self.provider,
             mode=self.mode,
+            config=self.config,
         )
 
 
@@ -987,6 +1011,8 @@ def _ticket(
         expires_at=_order_expiry(charge),
         notify_url=_notify_url(account),
         order_wire=charge.order_wire,
+        config=dict(account.config),
+        return_url=domain.return_url(settings().collections_public_api_base),
     )
 
 
@@ -1350,6 +1376,7 @@ def _ensure_order(provider: CollectionsProvider, ticket: ProviderTicket) -> Orde
         expires_at=ticket.expires_at,
         notify_url=ticket.notify_url,
         recorded_order_id=_recorded_order_id(ticket),
+        return_url=ticket.return_url,
     )
 
 
@@ -1815,9 +1842,15 @@ def _webhook_provider(
             _open(account, WEBHOOK_SECRET),
             provider=account.provider,
             mode=account.mode,
+            config=dict(account.config),
         )
     return factory(
-        account.key_id, _open(account, KEY_SECRET), "", provider=account.provider, mode=account.mode
+        account.key_id,
+        _open(account, KEY_SECRET),
+        "",
+        provider=account.provider,
+        mode=account.mode,
+        config=dict(account.config),
     )
 
 
@@ -1869,7 +1902,8 @@ async def ingest_merchant_webhook(
         )
         raise charge_services.WebhookSignatureProblem("could not verify the webhook signature")
     # Kept on the inbox row as it always was (it is the provider's, not a secret).
-    signature = headers.get(domain.spec_for(account.provider).signature_header)
+    signature_header = domain.spec_for(account.provider).signature_header
+    signature = headers.get(signature_header) if signature_header else None
 
     try:
         parsed = provider.parse_webhook(body=body)

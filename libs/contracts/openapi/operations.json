@@ -10786,6 +10786,7 @@
                 "discriminator": {
                   "mapping": {
                     "cashfree": "#/components/schemas/CashfreeOrderCheckoutSessionOut",
+                    "phonepe": "#/components/schemas/RedirectOrderCheckoutSessionOut",
                     "razorpay": "#/components/schemas/RazorpayOrderCheckoutSessionOut"
                   },
                   "propertyName": "provider"
@@ -10796,6 +10797,9 @@
                   },
                   {
                     "$ref": "#/components/schemas/CashfreeOrderCheckoutSessionOut"
+                  },
+                  {
+                    "$ref": "#/components/schemas/RedirectOrderCheckoutSessionOut"
                   }
                 ]
               },
@@ -17339,6 +17343,67 @@
           "balanced"
         ],
         "title": "ReconciliationOut",
+        "type": "object"
+      },
+      "RedirectOrderCheckoutSessionOut": {
+        "description": "Where the browser goes to pay with a redirect-checkout provider (PhonePe): a `GET` of `url`\nor a form `POST` of `fields` to it, opened in a new tab. Fetched from the provider by payment\nfor this response and never stored; reopening asks again. No credential.",
+        "properties": {
+          "amount_minor": {
+            "title": "Amount Minor",
+            "type": "integer"
+          },
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "fields": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Fields",
+            "type": "object"
+          },
+          "method": {
+            "enum": [
+              "GET",
+              "POST"
+            ],
+            "title": "Method",
+            "type": "string"
+          },
+          "openable": {
+            "title": "Openable",
+            "type": "boolean"
+          },
+          "order_number": {
+            "title": "Order Number",
+            "type": "string"
+          },
+          "provider": {
+            "const": "phonepe",
+            "title": "Provider",
+            "type": "string"
+          },
+          "provider_order_id": {
+            "title": "Provider Order Id",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "method",
+          "url",
+          "provider_order_id",
+          "amount_minor",
+          "currency",
+          "openable",
+          "order_number"
+        ],
+        "title": "RedirectOrderCheckoutSessionOut",
         "type": "object"
       },
       "RejectIn": {

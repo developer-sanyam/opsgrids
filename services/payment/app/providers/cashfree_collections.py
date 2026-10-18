@@ -161,6 +161,7 @@ class CashfreeCollectionsProvider:
         expires_at: datetime | None = None,
         notify_url: str | None = None,
         recorded_order_id: str | None = None,
+        return_url: str | None = None,  # a modal checkout: nothing to return to
     ) -> OrderResult:
         """The Order for `receipt` — looked up first, created only if Cashfree holds none — with
         its `payment_session_id` in `checkout_token`. A payer with no usable phone, an expiry not

@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from app import consumers
 from app.api.audit import router as audit_router
 from app.api.checkout import router as checkout_router
+from app.api.collections import return_router as collections_return_router
 from app.api.collections import router as collections_router
 from app.api.collections import webhook_router as collections_webhook_router
 from app.api.collections_internal import router as collections_internal_router
@@ -115,6 +116,7 @@ app = create_app(
         webhooks_router,
         collections_router,
         collections_webhook_router,
+        collections_return_router,
     ],
     # A stalled relay is silent. `/health/outbox` counts through the outbox engine so it is not
     # blind to the rows the app role cannot see.

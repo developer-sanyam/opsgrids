@@ -175,6 +175,10 @@ class Settings(ServiceSettings):
     #: the environment the merchant chose when connecting (Sandbox or Production). An owner
     #: decision, sandbox first.
     collections_cashfree_wire: Literal["stub", "live"] = "stub"
+    #: The same switch for a merchant's **PhonePe** account (Standard Checkout V2): `stub` runs it
+    #: on the in-process fake, `live` talks to PhonePe with that merchant's own Client ID and
+    #: Secret, in the environment the merchant chose. An owner decision, sandbox first.
+    collections_phonepe_wire: Literal["stub", "live"] = "stub"
     #: Whether a merchant may connect **live** keys (`rzp_live_…`, or a Cashfree account in
     #: Production). Off: only test-mode / Sandbox accounts are accepted, so nothing a tenant
     #: configures can move real money until the owner says so.
@@ -219,6 +223,8 @@ class Settings(ServiceSettings):
         Cashfree's own switch."""
         if provider == "cashfree":
             return self.collections_cashfree_wire
+        if provider == "phonepe":
+            return self.collections_phonepe_wire
         return "live" if self.collections_wire == provider else "stub"
 
     @property

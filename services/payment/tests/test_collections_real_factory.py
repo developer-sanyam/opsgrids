@@ -128,6 +128,7 @@ def _timing_out_factory(error: Exception) -> Any:
         *,
         provider: str = "razorpay",
         mode: str = "test",
+        config: Any = None,
     ) -> RazorpayCollectionsProvider:
         assert provider == "razorpay"
         wire = RazorpayHttpWire(

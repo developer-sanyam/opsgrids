@@ -142,6 +142,7 @@ from app.schemas import (
     RazorpayOrderCheckoutSessionOut,
     ReceiveIn,
     ReconcileOut,
+    RedirectOrderCheckoutSessionOut,
     ReservationReleaseIn,
     RouteOut,
     ScanIn,
@@ -2078,9 +2079,15 @@ def _payer(order: Order) -> dict[str, str | None]:
 
 def _checkout_session(
     raw: dict[str, Any], order: Order
-) -> RazorpayOrderCheckoutSessionOut | CashfreeOrderCheckoutSessionOut:
+) -> (
+    RazorpayOrderCheckoutSessionOut
+    | CashfreeOrderCheckoutSessionOut
+    | RedirectOrderCheckoutSessionOut
+):
     if raw.get("provider") == "cashfree":
         return CashfreeOrderCheckoutSessionOut(**raw, order_number=order.number)
+    if raw.get("provider") == "phonepe":
+        return RedirectOrderCheckoutSessionOut(**raw, order_number=order.number)
     return RazorpayOrderCheckoutSessionOut(
         **raw,
         order_number=order.number,

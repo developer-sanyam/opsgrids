@@ -234,6 +234,15 @@
             "title": "Cashfree",
             "type": "string"
           },
+          "phonepe": {
+            "default": "stub",
+            "enum": [
+              "stub",
+              "live"
+            ],
+            "title": "Phonepe",
+            "type": "string"
+          },
           "razorpay": {
             "enum": [
               "stub",
@@ -265,7 +274,7 @@
       },
       "MerchantAccountIn": {
         "additionalProperties": false,
-        "description": "`PUT /payment/collections/merchant-account` \u2014 connect the organization's payment-provider\naccount, or rotate its credentials in place (same provider and mode only: switching is\ndisconnect, then connect). Needs a session that signed in with a one-time code.\n\n* **Razorpay**: `key_id` (`rzp_test_\u2026` / `rzp_live_\u2026`, public \u2014 Checkout is opened with it; the\n  mode is read from it, so `mode` is not sent), `key_secret`, `webhook_secret` (the one set on\n  the webhook in Razorpay's dashboard).\n* **Cashfree**: `key_id` is the App ID, `key_secret` the Secret Key (it also signs webhooks, so\n  there is no `webhook_secret`), and `mode` is `sandbox` or `production` \u2014 an App ID does not\n  say which.\n\nSecrets are sealed on arrival and never returned \u2014 only a masked hint of each.",
+        "description": "`PUT /payment/collections/merchant-account` \u2014 connect the organization's payment-provider\naccount, or rotate its credentials in place (same provider and mode only: switching is\ndisconnect, then connect). Needs a session that signed in with a one-time code.\n\n* **Razorpay**: `key_id` (`rzp_test_\u2026` / `rzp_live_\u2026`, public \u2014 Checkout is opened with it; the\n  mode is read from it, so `mode` is not sent), `key_secret`, `webhook_secret` (the one set on\n  the webhook in Razorpay's dashboard).\n* **Cashfree**: `key_id` is the App ID, `key_secret` the Secret Key (it also signs webhooks, so\n  there is no `webhook_secret`), and `mode` is `sandbox` or `production` \u2014 an App ID does not\n  say which.\n* **PhonePe** (Standard Checkout V2): `key_id` is the Client ID, `key_secret` the Client\n  Secret, `webhook_secret` the webhook **password** set in PhonePe's dashboard, `mode`\n  `sandbox` or `production`, and `config` exactly `{\"client_version\": <number>,\n  \"webhook_username\": \"<the webhook username>\"}`.\n\nSecrets are sealed on arrival and never returned \u2014 only a masked hint of each.",
         "properties": {
           "config": {
             "anyOf": [
@@ -324,7 +333,8 @@
             "default": "razorpay",
             "enum": [
               "razorpay",
-              "cashfree"
+              "cashfree",
+              "phonepe"
             ],
             "title": "Provider",
             "type": "string"
