@@ -183,7 +183,11 @@ async def _scheduled_requests(session, org_id) -> list[OutboxEvent]:
         )
         .order_by(OutboxEvent.created_at)
     )
-    return list((await session.execute(stmt)).scalars().all())
+    rows = (await session.execute(stmt)).scalars().all()
+    # Issuing also schedules the overdue check; that is not a filing retry.
+    return [
+        r for r in rows if r.payload["target"]["event_type"] != services.EVT_INVOICE_OVERDUE_CHECK
+    ]
 
 
 def _fire(row: OutboxEvent) -> dict[str, Any]:

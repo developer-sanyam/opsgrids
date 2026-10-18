@@ -178,6 +178,11 @@ def _deal_state(deal: Deal) -> dict[str, Any]:
         "owner_id": str(deal.owner_id),
         "probability": deal.probability,
         "closed_at": deal.closed_at.isoformat() if deal.closed_at is not None else None,
+        # SP4 EV6-EV9: let an automation address the customer. The legacy `company_id` stays.
+        "crm_company_id": str(deal.company_id),
+        "crm_contact_id": (
+            str(deal.primary_contact_id) if deal.primary_contact_id is not None else None
+        ),
     }
 
 

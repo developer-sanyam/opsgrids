@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opsgrids://contracts/finance.billing.invoice.overdue_check/v1",
+  "title": "finance.billing.invoice.overdue_check",
+  "description": "Internal to finance. Staged as the target of a `platform.schedule.requested` (ADR-0015) due the day after an invoice's due date; the consumer re-reads the invoice and publishes `finance.billing.invoice.overdue` only if it is still unpaid and not void.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["organization_id", "invoice_id"],
+  "properties": {
+    "organization_id": { "type": "string", "format": "uuid" },
+    "invoice_id": { "type": "string", "format": "uuid" }
+  }
+}

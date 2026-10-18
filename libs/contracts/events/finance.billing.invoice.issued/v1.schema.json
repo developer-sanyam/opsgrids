@@ -29,6 +29,7 @@
     "number": { "type": "string", "minLength": 1 },
     "document_type": { "enum": ["invoice", "credit_note"] },
     "customer_id": { "type": "string", "format": "uuid" },
+    "crm_contact_id": { "type": ["string", "null"], "format": "uuid" },
     "status": { "enum": ["draft", "sent", "paid", "overdue", "void"] },
     "issued_date": { "type": "string", "format": "date" },
     "due_date": { "type": "string", "format": "date" },

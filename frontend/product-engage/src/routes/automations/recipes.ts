@@ -123,31 +123,94 @@ export const RECIPES: Recipe[] = [
   {
     id: "invoice-follow-up",
     name: "Invoice follow-up",
-    description: "When an invoice is issued, wait three days and send a payment reminder.",
+    description: "The day after an invoice's due date, if it is still unpaid, send the customer one WhatsApp reminder. Needs the customer linked to a CRM contact.",
     build: () => {
-      let graph = addStep(emptyGraph("finance.billing.invoice.issued"), { from: "trigger" }, "wait").graph;
-      graph = replaceNode(graph, { id: "wait_1", type: "wait", config: { seconds: 259_200 } });
-      return addStep(graph, { from: "wait_1" }, "send_message").graph;
+      const graph = addStep(emptyGraph("finance.billing.invoice.overdue"), { from: "trigger" }, "send_message").graph;
+      return replaceNode(graph, {
+        id: "send_message_1",
+        type: "send_message",
+        config: {
+          channel: "whatsapp",
+          template: { ref: "" },
+          recipient_path: "payload.crm_contact_id",
+          recipient_kind: "contact_id",
+          variable_map: {},
+          purpose: "transactional",
+        },
+      });
     },
   },
   {
     id: "payment-receipt",
     name: "Payment receipt",
-    description: "When a payment is received, email the customer a receipt.",
+    description: "When a payment is received, send the customer a WhatsApp receipt. Needs the customer linked to a CRM contact.",
     build: () => {
       const graph = addStep(emptyGraph("finance.billing.payment.received"), { from: "trigger" }, "send_message").graph;
       return replaceNode(graph, {
         id: "send_message_1",
         type: "send_message",
-        config: { channel: "email", template: { ref: "" }, recipient_path: "", variable_map: {} },
+        config: {
+          channel: "whatsapp",
+          template: { ref: "" },
+          recipient_path: "payload.crm_contact_id",
+          recipient_kind: "contact_id",
+          variable_map: {},
+          purpose: "transactional",
+        },
       });
     },
   },
   {
-    id: "enquiry-follow-up",
-    name: "Follow up a storefront enquiry",
-    description: "When an enquiry comes in, ask the sales team to follow up.",
-    build: () => addStep(emptyGraph("storefront.enquiry.created"), { from: "trigger" }, "create_task").graph,
+    id: "invoice-issued-notice",
+    name: "Invoice issued notice",
+    description: "When an invoice is issued, send the customer a WhatsApp notice. Needs the customer linked to a CRM contact.",
+    build: () => {
+      const graph = addStep(emptyGraph("finance.billing.invoice.issued"), { from: "trigger" }, "send_message").graph;
+      return replaceNode(graph, {
+        id: "send_message_1",
+        type: "send_message",
+        config: {
+          channel: "whatsapp",
+          template: { ref: "" },
+          recipient_path: "payload.crm_contact_id",
+          recipient_kind: "contact_id",
+          variable_map: {},
+          purpose: "transactional",
+        },
+      });
+    },
+  },
+  {
+    id: "deal-won",
+    name: "Thank a customer for a won deal",
+    description: "When a deal is marked won, send the deal's primary contact a WhatsApp thank-you, if they have opted in.",
+    build: () => {
+      let graph = addStep(emptyGraph("crm.pipeline.deal.stage_changed"), { from: "trigger" }, "condition").graph;
+      graph = replaceNode(graph, {
+        id: "condition_1",
+        type: "condition",
+        config: { match: "all", rules: [{ path: "payload.to_outcome", op: "eq", value: "won" }] },
+      });
+      graph = addStep(graph, { from: "condition_1", label: "yes" }, "send_message").graph;
+      return replaceNode(graph, {
+        id: "send_message_1",
+        type: "send_message",
+        config: {
+          channel: "whatsapp",
+          template: { ref: "" },
+          recipient_path: "payload.crm_contact_id",
+          recipient_kind: "contact_id",
+          variable_map: {},
+          purpose: "marketing",
+        },
+      });
+    },
+  },
+  {
+    id: "lead-follow-up",
+    name: "Follow up a new lead",
+    description: "When a lead comes in, ask the sales team to follow up.",
+    build: () => addStep(emptyGraph("crm.lead.created"), { from: "trigger" }, "create_task").graph,
   },
   {
     id: "low-stock-alert",

@@ -22,6 +22,8 @@
   ],
   "properties": {
     "organization_id": { "type": "string", "format": "uuid" },
+    "crm_company_id": { "type": "string", "format": "uuid" },
+    "crm_contact_id": { "type": ["string", "null"], "format": "uuid" },
     "deal_id": { "type": "string", "format": "uuid" },
     "changed": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
     "name": { "type": "string", "minLength": 1 },
