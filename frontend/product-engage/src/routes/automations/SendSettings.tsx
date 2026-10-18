@@ -130,19 +130,54 @@ export function SendSettings({
         />
       )}
 
-      <PathField
-        label="Send to"
-        required
-        value={recipient_path}
-        variables={variables}
-        placeholder={looksUpAContact ? "payload.contact_id" : "payload.customer.phone"}
-        helper={
-          looksUpAContact
-            ? "The CRM contact on the event. The WhatsApp number is looked up from the contact when the message is sent."
-            : `Where the ${channel === "email" ? "email address" : "phone number"} is read from on the event.`
-        }
-        onChange={changeRecipientPath}
-      />
+      <div className="flex flex-col gap-1.5">
+        <PathField
+          label="Send to"
+          required
+          value={recipient_path}
+          variables={variables}
+          placeholder={
+            channel === "email"
+              ? "payload.customer.email"
+              : looksUpAContact
+                ? "payload.contact_id"
+                : "payload.customer.phone"
+          }
+          helper={
+            looksUpAContact
+              ? "The CRM contact on the event. The WhatsApp number is looked up from the contact when the message is sent."
+              : `Where the ${channel === "email" ? "email address" : "phone number"} is read from on the event.`
+          }
+          onChange={changeRecipientPath}
+        />
+        {variables.length > 0 ? (() => {
+          const suggestions = variables.filter((v) =>
+            channel === "email"
+              ? v.path.toLowerCase().includes("email") || v.label.toLowerCase().includes("email")
+              : v.path.toLowerCase().includes("phone") ||
+                v.path.toLowerCase().includes("contact") ||
+                v.label.toLowerCase().includes("phone") ||
+                v.label.toLowerCase().includes("contact"),
+          );
+          if (suggestions.length === 0) return null;
+          return (
+            <div className="flex flex-wrap items-center gap-1.5 pt-1 text-xs">
+              <span className="text-muted">Suggested:</span>
+              {suggestions.map((s) => (
+                <button
+                  key={s.path}
+                  type="button"
+                  onClick={() => changeRecipientPath(s.path)}
+                  className="rounded bg-sunken px-2 py-0.5 font-mono text-accent-ink hover:bg-surface hover:ring-1 hover:ring-accent"
+                  title={`Use ${s.label} (${s.path})`}
+                >
+                  {s.path}
+                </button>
+              ))}
+            </div>
+          );
+        })() : null}
+      </div>
 
       <Select
         label="Purpose"
