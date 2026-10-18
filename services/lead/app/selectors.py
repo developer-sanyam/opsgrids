@@ -31,6 +31,7 @@ def leads_stmt(
     *,
     status: str | None = None,
     owner_id: uuid.UUID | None = None,
+    source: str | None = None,
 ) -> Select[Any]:
     """Scope-filtered lead list, newest first."""
     stmt = select(Lead).where(
@@ -42,6 +43,8 @@ def leads_stmt(
         stmt = stmt.where(Lead.status == status)
     if owner_id is not None:
         stmt = stmt.where(Lead.owner_id == owner_id)
+    if source is not None:
+        stmt = stmt.where(Lead.source == source)
     return stmt.order_by(Lead.created_at.desc())
 
 

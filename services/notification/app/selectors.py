@@ -814,6 +814,7 @@ async def sendable_contacts(
     list_id: uuid.UUID | None = None,
     segment: Segment | None = None,
     lock: bool = False,
+    cold: bool = False,
 ) -> list[Contact]:
     """Contacts a campaign may send to: the organization's contacts minus every suppressed
     address, whatever the reason, **and only those whose latest email/marketing consent event is
@@ -836,7 +837,7 @@ async def sendable_contacts(
     mode because it is the one lock that never conflicts with another `expand_campaign` page
     reading the same contact for a different campaign, or with an ordinary read.
     """
-    stmt = _email_audience_stmt(select(Contact), ctx, list_id, segment)
+    stmt = _email_audience_stmt(select(Contact), ctx, list_id, segment, cold=cold)
     if after_id is not None:
         stmt = stmt.where(Contact.id > after_id)
     stmt = stmt.order_by(Contact.id.asc()).limit(limit)
@@ -846,9 +847,19 @@ async def sendable_contacts(
 
 
 def _email_audience_stmt(
-    stmt: Select[Any], ctx: ScopeContext, list_id: uuid.UUID | None, segment: Segment | None
+    stmt: Select[Any],
+    ctx: ScopeContext,
+    list_id: uuid.UUID | None,
+    segment: Segment | None,
+    *,
+    cold: bool = False,
 ) -> Select[Any]:
-    """`sendable_contacts`'s predicate on any select over `Contact` — see its docstring."""
+    """`sendable_contacts`'s predicate on any select over `Contact` — see its docstring.
+
+    `cold` is B2B outreach to CRM leads under legitimate interest (ADR-0038 addendum
+    2026-10-16): the contact must have been built from a lead, and "latest event is an opt-in" is
+    replaced by "latest event is not an opt-out". Suppressions are unchanged, and nobody is ever
+    opted in by it."""
     suppressed = exists().where(
         Suppression.organization_id == Contact.organization_id,
         Suppression.email_index == Contact.email_index,
@@ -860,14 +871,19 @@ def _email_audience_stmt(
         # A phone-only CRM projection has no address to mail.
         Contact.email_index.is_not(None),
         ~suppressed,
-        latest_consent_is(
-            "opted_in",
-            organization_id=Contact.organization_id,
-            channel="email",
-            purpose="marketing",
-            subject_index=Contact.email_index,
-        ),
     )
+    consent_status = "opted_out" if cold else "opted_in"
+    consent_ok = latest_consent_is(
+        consent_status,
+        organization_id=Contact.organization_id,
+        channel="email",
+        purpose="marketing",
+        subject_index=Contact.email_index,
+    )
+    if cold:
+        stmt = stmt.where(Contact.crm_lead_id.is_not(None), ~consent_ok)
+    else:
+        stmt = stmt.where(consent_ok)
     return _narrow_audience(ctx.apply(stmt, owner_col=Contact.created_by), list_id, segment)
 
 
@@ -1210,6 +1226,24 @@ async def recipient_status_counts(
     for campaign_id, status, n in (await session.execute(stmt)).all():
         out.setdefault(campaign_id, {})[status] = int(n)
     return out
+
+
+async def cold_mail_sent_since(session: AsyncSession, org_id: uuid.UUID, since: datetime) -> int:
+    """Cold-outreach mail this organization has sent since `since` — what counts against
+    `Settings.engage_cold_daily_cap`."""
+    stmt = (
+        select(func.count())
+        .select_from(CampaignRecipient)
+        .join(Campaign, Campaign.id == CampaignRecipient.campaign_id)
+        .where(
+            CampaignRecipient.organization_id == org_id,
+            Campaign.organization_id == org_id,
+            Campaign.cold_outreach.is_(True),
+            CampaignRecipient.status == "sent",
+            CampaignRecipient.sent_at >= since,
+        )
+    )
+    return int((await session.execute(stmt)).scalar_one())
 
 
 async def campaign_mail_sent_since(

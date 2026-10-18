@@ -302,6 +302,18 @@ describe("a contact copied from the CRM", () => {
   });
 });
 
+describe("a contact copied from a CRM lead", () => {
+  it("is labelled, and (unlike a CRM contact copy) may be edited and deleted", async () => {
+    const lead: ContactOut = { ...MASKED, origin: "crm_lead" };
+    vi.spyOn(client, "listContacts").mockResolvedValue(page([lead]));
+    renderPage();
+
+    await screen.findByText("Priya Raghavan");
+    expect(screen.getByText("From a CRM lead")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: /^Delete/ }).length).toBeGreaterThan(0);
+  });
+});
+
 describe("deleting a contact", () => {
   it("removes the row once the service confirms, and says so", async () => {
     vi.spyOn(client, "listContacts")

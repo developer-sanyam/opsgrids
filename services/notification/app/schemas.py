@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     AwareDatetime,
@@ -874,6 +874,8 @@ class CampaignOut(BaseModel):
     ab_wait_minutes: int = 240
     ab_winner: Literal["a", "b"] | None = None
     ab_decided_at: datetime | None = None
+    #: True for a campaign built from CRM leads (cold outreach under legitimate interest).
+    cold_outreach: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -1040,3 +1042,86 @@ class UnmaskedMessageOut(BaseModel):
 
     message_id: str
     body: str | None
+
+
+# --------------------------------------------------------------- cold e-mail to CRM leads
+
+LeadStatusFilter = Literal["new", "working", "qualified", "disqualified", "converted"]
+LeadSourceFilter = Literal["form", "import", "manual"]
+
+
+class LeadSelectionIn(BaseModel):
+    """Which leads: an explicit list (what the rep ticked), or, with no `lead_ids`, every lead the
+    caller may read that matches the filter (`status` / `source`; neither means all of them)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    lead_ids: list[uuid.UUID] | None = Field(default=None, min_length=1, max_length=2000)
+    status: LeadStatusFilter | None = None
+    source: LeadSourceFilter | None = None
+
+    @model_validator(mode="after")
+    def _ids_or_filter(self) -> Self:
+        if self.lead_ids is not None and (self.status or self.source):
+            raise ValueError("Send lead_ids or a status/source filter, not both")
+        return self
+
+
+class LeadAudiencePreviewIn(LeadSelectionIn):
+    """The draft the preview fills in with a real lead, so the rep sees what goes out."""
+
+    subject: str = Field(default="", max_length=255)
+    text_body: str = Field(default="", max_length=500_000)
+
+
+class LeadCampaignIn(LeadSelectionIn):
+    name: str = Field(default="", max_length=160)
+    sender_id: uuid.UUID
+    subject: str = Field(min_length=1, max_length=255)
+    text_body: str = Field(min_length=1, max_length=500_000)
+    html_body: str = Field(default="", max_length=500_000)
+
+    @field_validator("subject")
+    @classmethod
+    def _subject_no_crlf(cls, value: str) -> str:
+        return _reject_header_injection(value)
+
+
+class LeadAudienceCounts(BaseModel):
+    """What a send would reach. No addresses."""
+
+    selected: int
+    with_email: int
+    #: Converted or disqualified leads are never cold-mailed.
+    skipped_status: int
+    #: Suppressed (bounce, complaint, unsubscribe) or opted out of marketing.
+    excluded: int
+    sendable: int
+    daily_cap: int
+    sent_today: int
+
+
+class LeadSample(BaseModel):
+    lead_id: str
+    full_name: str
+    subject: str
+    text_body: str
+
+
+class LeadAudiencePreviewOut(LeadAudienceCounts):
+    sample: LeadSample | None
+    #: Merge fields the draft uses that no lead can fill (the send gate would refuse them).
+    unknown_fields: list[str]
+
+
+class LeadCampaignOut(LeadAudienceCounts):
+    campaign: CampaignOut
+
+
+class LeadColdEmailOut(BaseModel):
+    """One line of a lead's timeline: a cold email sent. The campaign subject, never the body or
+    the address."""
+
+    campaign_id: str
+    title: str
+    at: datetime

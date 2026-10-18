@@ -412,3 +412,47 @@ kept, and the projection writes no consent event and never opts anyone in.
 - **Segments** gain a `crm_status` filter, read from the copy's `attributes.crm_status`.
 - **Deploy order.** Notification first (migration, handler), then customer (C53). Events published
   before the notification image runs are lost to it; `tools/sync_engage_contacts.py` reconciles.
+
+## Amended 2026-10-16: cold e-mail to CRM leads
+
+The owner asked for cold e-mail to the leads on the CRM Leads list. This adds a **B2B outreach path
+under legitimate interest** next to the consent-based campaign path. It amends D-15 (leads are not
+CRM contacts and are not projected into the book as a standing copy) and leaves D-33 and ADR-0021
+as they are: silence is still not consent, nothing here writes a consent event or opts anyone in,
+and a STOP or an unsubscribe still opts out of marketing and always wins.
+
+- **Who may be mailed.** A lead with a usable e-mail whose status is not `converted` or
+  `disqualified`, whose address is not suppressed (bounce, complaint, unsubscribe, manual) and whose
+  latest e-mail marketing event is not an opt-out. Purpose is `marketing`.
+- **Always.** The one-click unsubscribe link and the `List-Unsubscribe` / `List-Unsubscribe-Post`
+  headers every campaign carries (Engage's existing unsubscribe, which suppresses the address and
+  records the opt-out); a verified sender ("Send as"), a verified domain and a connected provider,
+  through the ordinary send gate; merge-field validation (#194).
+- **Daily cap.** At most `ENGAGE_COLD_DAILY_CAP` (default 200) cold e-mails per organization per
+  UTC day, across all its cold campaigns, on top of the connection's own `daily_cap`. The send
+  driver holds the rest `queued` and sends them the next day. It is a deployment setting, not a
+  per-organization row; a per-organization override would be a new setting and is not built.
+  `ENGAGE_COLD_AUDIENCE_MAX` (default 2000) bounds one campaign's selection.
+- **Shape.** A lead is copied into `notification.contacts` only when a rep creates a cold campaign
+  from it, at send time, from `lead`'s internal `leads:export` (notification only; the actor's OWN
+  scope travels as `owner_id`; the read is audited with a count). The copy has `origin =
+  'crm_lead'` and `crm_lead_id` (a plain UUID, unique per organization); an existing contact with
+  the same address is linked instead of duplicated and keeps its origin and consent history. The
+  campaign has `cold_outreach = true` and targets a list of exactly those contacts. That flag
+  changes one predicate: "latest event is an opt-in" becomes "latest event is not an opt-out", and
+  only for a contact that carries a `crm_lead_id`. Nothing else about the send path differs.
+  Projecting leads continuously (as #196 does for contacts) was not chosen: it would hold every
+  lead's address in Engage whether or not anyone ever mails them.
+- **Authorization.** `engage` and `crm` entitlements, `engage.campaign.campaign.write` and
+  `crm.lead.lead.read` (the scope is applied by lead; an OWN reader reaches only their leads, TEAM
+  and LOCATION are refused). Sending or scheduling is the existing `engage.campaign.campaign.send`.
+- **Lead timeline.** "Cold email sent: <subject>" per lead, from the recipients that were sent.
+  The subject only: no body, no address.
+- **Not built.** An automatic "no reply or open in N days" follow-up: the automation engine starts
+  from a published event with a payload condition, and Engage publishes no per-recipient sent or
+  open event it could start from. A follow-up is a second manual campaign to the same leads.
+- **Erase.** A deleted lead's Engage copy is not removed automatically (no lead erase event is
+  published today); it stays suppressed or opted out if it ever opted out, and an Engage user can
+  delete it from the contact book.
+- **Deploy order.** Notification first (migration `d7b2e9c4a1f6`, `LEAD_INTERNAL_URL`), then lead
+  (`leads:export`, the `source` list filter), then the CRM and Engage SPAs.

@@ -96,7 +96,19 @@ class Settings(ServiceSettings):
     storefront_internal_url: str = "http://localhost:8174"
     storefront_timeout_seconds: float = 5.0
 
+    #: Where to read the leads of a cold-email campaign (`app/crm_leads.py`). Lead owns the
+    #: address and the key; every read is audited there.
+    lead_internal_url: str = "http://localhost:8135"
+    lead_timeout_seconds: float = 5.0
+
     # ----------------------------------------------------------------- engage sending identity
+    #: Cold e-mail to leads (ADR-0038 addendum 2026-10-16): the most one organization sends in a
+    #: UTC day across its `cold_outreach` campaigns, and the most leads one campaign may target.
+    #: The rest of a larger audience stays queued and goes out on the following days.
+    engage_cold_daily_cap: int = 200
+    engage_cold_audience_max: int = 2000
+    #: Audience previews and drafts per person per minute: each reads leads' addresses from lead.
+    engage_lead_audience_rate_limit_per_minute: int = 30
     #: Test sends per organization per minute. Independent of `daily_cap`, which is the
     #: provider's own limit on a *connected* connection — this bounds the route itself, which
     #: takes an arbitrary `to_address` and opens a real SMTP handshake on every call.

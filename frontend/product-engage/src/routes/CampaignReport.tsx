@@ -307,6 +307,12 @@ function ReportView({
             <dd className="text-ink">{audienceLabel}</dd>
           </div>
         </dl>
+        {campaign.cold_outreach === true ? (
+          <p className="text-sm text-ink">
+            Cold email to CRM leads. Anyone who has unsubscribed or opted out is left out, and every
+            email carries an unsubscribe link.
+          </p>
+        ) : null}
         {campaign.ab_test === true ? (
           <p className="text-sm text-ink">
             {campaign.ab_winner

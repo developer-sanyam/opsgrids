@@ -248,7 +248,8 @@ export interface ContactOut {
   email: string;
   name: string;
   attributes: Record<string, unknown>;
-  /** manual | import | signup | crm. A `crm` row is a copy managed in the CRM: the service
+  /** manual | import | signup | crm | crm_lead. A `crm_lead` row is Engage's copy of a CRM lead, made for a
+   *  cold email campaign. A `crm` row is a copy managed in the CRM: the service
    *  answers PATCH and DELETE with 409 `managed_in_crm`, so the UI offers neither. */
   origin?: string;
   crm_contact_id?: string | null;
@@ -616,6 +617,8 @@ export interface CampaignOut {
   ab_wait_minutes?: number;
   ab_winner?: "a" | "b" | null;
   ab_decided_at?: string | null;
+  /** True for a cold email to CRM leads (legitimate interest; opt-outs and suppressions still win). */
+  cold_outreach?: boolean;
   created_at: string;
   updated_at: string;
 }
