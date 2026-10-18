@@ -346,6 +346,9 @@ describe("MarketplacePage — bundles", () => {
     await waitFor(() => expect(screen.getByRole("heading", { name: "Suite" })).toBeTruthy());
     expect(screen.getByText("Suite Trio")).toBeTruthy();
     expect(screen.getByText(/Inventory and Revenue/)).toBeTruthy();
+    expect(screen.getByText("Bundle")).toBeTruthy();
+    expect(screen.getByText("Graduated Bundle Pricing")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Contact Sales for Suite" }).getAttribute("href")).toContain("mailto:info@opsgrids.com");
   });
 
   it("a member the suite entitles says so and offers Open, not another trial", async () => {

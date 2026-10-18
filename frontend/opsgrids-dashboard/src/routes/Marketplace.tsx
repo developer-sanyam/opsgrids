@@ -271,6 +271,8 @@ function ProductCard({ row, busy, onStart }: { row: Row; busy: boolean; onStart:
             <StatusBadge status="past_due" />
           ) : product.status !== "available" ? (
             <StatusBadge tone="neutral" label="Coming Soon" />
+          ) : product.is_bundle ? (
+            <StatusBadge tone="neutral" label="Bundle" />
           ) : offer ? (
             <StatusBadge tone="neutral" label="Available" />
           ) : null}
@@ -279,14 +281,20 @@ function ProductCard({ row, busy, onStart }: { row: Row; busy: boolean; onStart:
         {product.tagline ? <p className="text-sm text-muted">{product.tagline}</p> : null}
 
         {row.rungs.length > 0 ? (
-          <ul className="flex list-none flex-col gap-1 p-0 text-sm">
-            {row.rungs.map((rung) => (
-              <li key={rung.id}>
-                <span className="font-semibold text-ink">{rung.name}</span>{" "}
-                <span className="text-muted">— {joinNames(rung.members)}</span>
-              </li>
-            ))}
-          </ul>
+          <div className="flex flex-col gap-2 rounded-tile border border-faint bg-ground/80 p-3.5">
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted">Available Bundles</span>
+            <ul className="flex list-none flex-col gap-2 p-0 text-sm">
+              {row.rungs.map((rung) => (
+                <li
+                  key={rung.id}
+                  className="flex flex-col justify-between gap-0.5 border-b border-faint/60 pb-2 last:border-b-0 last:pb-0 sm:flex-row sm:items-baseline sm:gap-2"
+                >
+                  <span className="font-semibold text-ink">{rung.name}</span>
+                  <span className="text-xs text-muted">{joinNames(rung.members)}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
         ) : null}
 
         {isActive ? (
@@ -321,6 +329,22 @@ function ProductCard({ row, busy, onStart }: { row: Row; busy: boolean; onStart:
           </div>
         ) : product.status !== "available" ? (
           <p className="text-sm font-semibold text-ink-soft">Coming soon</p>
+        ) : product.is_bundle ? (
+          <div className="flex flex-col gap-1.5">
+            <p className="text-sm font-semibold text-ink-soft">Graduated Bundle Pricing</p>
+            <p className="text-xs text-muted">
+              Each product added reduces the unit rate across all bundled products on one combined bill.
+            </p>
+            <p className="text-xs text-muted">
+              Pricing is agreed with OpsGrids for your organisation — contact {PRICING_CONTACT_EMAIL}.{" "}
+              <a
+                href={`mailto:${PRICING_CONTACT_EMAIL}?subject=OpsGrids%20Suite%20Inquiry`}
+                className="font-medium text-accent-ink underline-offset-2 hover:underline"
+              >
+                Email us
+              </a>
+            </p>
+          </div>
         ) : offer ? (
           <div className="flex flex-col gap-1">
             <p className="text-sm font-semibold text-ink-soft">Free 14-day trial</p>
@@ -344,7 +368,16 @@ function ProductCard({ row, busy, onStart }: { row: Row; busy: boolean; onStart:
             <p className="text-xs text-muted">Each product it includes opens from its own card.</p>
           ) : null}
 
-          {product.is_bundle ? null : isActive || isTrial || isBundled ? (
+          {product.is_bundle ? (
+            !subscription && product.status === "available" ? (
+              <a
+                href={`mailto:${PRICING_CONTACT_EMAIL}?subject=OpsGrids%20Suite%20Inquiry`}
+                className="inline-flex h-11 items-center justify-center rounded-full border border-ink/20 bg-ground px-5 font-semibold text-ink transition-colors hover:border-ink/40 hover:bg-ground-soft"
+              >
+                Contact Sales for Suite
+              </a>
+            ) : null
+          ) : isActive || isTrial || isBundled ? (
             host && entitled ? (
               <a
                 href={host}
