@@ -1,0 +1,346 @@
+{
+  "categories": [
+    {
+      "key": "sales",
+      "name": "Sales"
+    },
+    {
+      "key": "pos",
+      "name": "POS"
+    },
+    {
+      "key": "erp",
+      "name": "ERP"
+    },
+    {
+      "key": "accounting",
+      "name": "Accounting"
+    },
+    {
+      "key": "lab",
+      "name": "Lab"
+    },
+    {
+      "key": "couriers",
+      "name": "Couriers"
+    },
+    {
+      "key": "payments",
+      "name": "Payments"
+    }
+  ],
+  "connectors": [
+    {
+      "key": "shopify",
+      "name": "Shopify",
+      "category": "sales",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "amazon",
+      "name": "Amazon",
+      "category": "sales",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "troology",
+      "name": "Troology",
+      "category": "sales",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "bng",
+      "name": "BNG",
+      "category": "pos",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "petpooja",
+      "name": "Petpooja",
+      "category": "pos",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "gofrugal",
+      "name": "Gofrugal",
+      "category": "erp",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "gofrugal_hq",
+      "name": "Gofrugal HQ",
+      "category": "erp",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "easyecom",
+      "name": "Easyecom",
+      "category": "erp",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "rdep",
+      "name": "RDEP",
+      "category": "erp",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "unicommerce",
+      "name": "Unicommerce",
+      "category": "erp",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "efacto",
+      "name": "Efacto",
+      "category": "accounting",
+      "product": "finance",
+      "path": "/",
+      "status": "coming_soon"
+    },
+    {
+      "key": "petpooja_invoice",
+      "name": "Petpooja Invoice",
+      "category": "accounting",
+      "product": "finance",
+      "path": "/",
+      "status": "coming_soon"
+    },
+    {
+      "key": "crelio",
+      "name": "Crelio",
+      "category": "lab",
+      "product": null,
+      "path": null,
+      "status": "coming_soon"
+    },
+    {
+      "key": "shiprocket",
+      "name": "ShipRocket",
+      "category": "couriers",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "shiprocket_hyperlocal",
+      "name": "ShipRocket HyperLocal",
+      "category": "couriers",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "fedex",
+      "name": "Fedex",
+      "category": "couriers",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "dhl",
+      "name": "DHL",
+      "category": "couriers",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "delhivery",
+      "name": "Delhivery",
+      "category": "couriers",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "qwqer",
+      "name": "Qwqer",
+      "category": "couriers",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "volta",
+      "name": "Volta",
+      "category": "couriers",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "delhivery_hyperlocal",
+      "name": "Delhivery Hyperlocal",
+      "category": "couriers",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "borzo",
+      "name": "Borzo",
+      "category": "couriers",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "borzo_eod",
+      "name": "Borzo EOD",
+      "category": "couriers",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "quickshift",
+      "name": "Quickshift",
+      "category": "couriers",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "dtdc",
+      "name": "DTDC",
+      "category": "couriers",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "india_post",
+      "name": "India Post",
+      "category": "couriers",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "skye_air",
+      "name": "Skye Air",
+      "category": "couriers",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "mover",
+      "name": "Mover",
+      "category": "couriers",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "mover_on_demand",
+      "name": "Mover On Demand",
+      "category": "couriers",
+      "product": "operations",
+      "path": "/channels",
+      "status": "coming_soon"
+    },
+    {
+      "key": "cashfree",
+      "name": "Cashfree",
+      "category": "payments",
+      "product": "operations",
+      "path": "/settings/payments",
+      "status": "available"
+    },
+    {
+      "key": "cashfreemerchant",
+      "name": "CashfreeMerchant",
+      "category": "payments",
+      "product": "operations",
+      "path": "/settings/payments",
+      "status": "coming_soon"
+    },
+    {
+      "key": "ccavenue",
+      "name": "CCAvenue",
+      "category": "payments",
+      "product": "operations",
+      "path": "/settings/payments",
+      "status": "coming_soon"
+    },
+    {
+      "key": "emerchantpay",
+      "name": "Emerchantpay",
+      "category": "payments",
+      "product": "operations",
+      "path": "/settings/payments",
+      "status": "coming_soon"
+    },
+    {
+      "key": "mobikwik",
+      "name": "MobiKwik",
+      "category": "payments",
+      "product": "operations",
+      "path": "/settings/payments",
+      "status": "coming_soon"
+    },
+    {
+      "key": "paytm",
+      "name": "Paytm",
+      "category": "payments",
+      "product": "operations",
+      "path": "/settings/payments",
+      "status": "coming_soon"
+    },
+    {
+      "key": "payu",
+      "name": "PayU",
+      "category": "payments",
+      "product": "operations",
+      "path": "/settings/payments",
+      "status": "coming_soon"
+    },
+    {
+      "key": "phonepe",
+      "name": "PhonePe",
+      "category": "payments",
+      "product": "operations",
+      "path": "/settings/payments",
+      "status": "coming_soon"
+    },
+    {
+      "key": "razorpay",
+      "name": "Razorpay",
+      "category": "payments",
+      "product": "operations",
+      "path": "/settings/payments",
+      "status": "available"
+    },
+    {
+      "key": "stripe",
+      "name": "Stripe",
+      "category": "payments",
+      "product": "operations",
+      "path": "/settings/payments",
+      "status": "coming_soon"
+    }
+  ]
+}
