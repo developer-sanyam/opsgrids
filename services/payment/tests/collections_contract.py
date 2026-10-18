@@ -42,6 +42,7 @@ from typing import Any
 
 import pytest
 
+from app.collections.domain import refund_idempotency_key
 from app.config import settings
 from app.domain import derive_event_id
 from app.providers.base import CheckoutCustomer, CollectionsProvider, MalformedWebhook
@@ -196,7 +197,9 @@ class CollectionsContract:
     def test_a_refund_is_idempotent_by_its_key(self, adapter: Any) -> None:
         order = ensure(adapter, str(uuid.uuid4()))
         payment_id = self.pay(adapter, order.provider_order_id)
-        key = "rfd" + uuid.uuid4().hex[:36]
+        # The key in the shape the platform hands this provider (Cashfree's `refund_id`, PayU's
+        # 23-character token, Razorpay's header).
+        key = refund_idempotency_key(uuid.uuid4(), uuid.uuid4(), "contract", adapter.name)
         kwargs: dict[str, Any] = {
             "idempotency_key": key,
             "provider_payment_id": payment_id,

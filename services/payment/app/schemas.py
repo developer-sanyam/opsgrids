@@ -160,12 +160,14 @@ class MerchantAccountIn(BaseModel):
       Secret, `webhook_secret` the webhook **password** set in PhonePe's dashboard, `mode`
       `sandbox` or `production`, and `config` exactly `{"client_version": <number>,
       "webhook_username": "<the webhook username>"}`.
+    * **PayU** (Hosted Checkout): `key_id` is the merchant key, `key_secret` the salt (it also
+      verifies webhooks, so there is no `webhook_secret`), and `mode` `sandbox` or `production`.
 
     Secrets are sealed on arrival and never returned — only a masked hint of each."""
 
     model_config = ConfigDict(extra="forbid")
 
-    provider: Literal["razorpay", "cashfree", "phonepe"] = "razorpay"
+    provider: Literal["razorpay", "cashfree", "phonepe", "payu"] = "razorpay"
     key_id: str = Field(min_length=1, max_length=64)
     key_secret: SecretStr = Field(min_length=8, max_length=128)
     webhook_secret: SecretStr | None = Field(default=None, min_length=8, max_length=128)
@@ -198,6 +200,7 @@ class CollectionWiresOut(BaseModel):
     razorpay: Literal["stub", "live"]
     cashfree: Literal["stub", "live"]
     phonepe: Literal["stub", "live"] = "stub"
+    payu: Literal["stub", "live"] = "stub"
 
 
 class MerchantAccountOut(BaseModel):
@@ -313,13 +316,13 @@ class CashfreeCheckoutSessionOut(BaseModel):
 
 
 class RedirectCheckoutSessionOut(BaseModel):
-    """Where the browser goes to pay with a redirect-checkout provider (PhonePe): a `GET` of
+    """Where the browser goes to pay with a redirect-checkout provider (PhonePe, PayU): a `GET` of
     `url`, or a form `POST` of `fields` to it, in a new tab. The URL (or the fields) carries a
     short-lived token, fetched for this response and **never stored**: reopening asks again. No
     credential. The provider then sends the browser to a static "you can close this tab" page;
     what happened is learned from the provider, never from that return."""
 
-    provider: Literal["phonepe"]
+    provider: Literal["phonepe", "payu"]
     method: Literal["GET", "POST"]
     url: str = Field(repr=False)
     fields: dict[str, str] = Field(default_factory=dict, repr=False)

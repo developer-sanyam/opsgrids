@@ -10786,6 +10786,7 @@
                 "discriminator": {
                   "mapping": {
                     "cashfree": "#/components/schemas/CashfreeOrderCheckoutSessionOut",
+                    "payu": "#/components/schemas/RedirectOrderCheckoutSessionOut",
                     "phonepe": "#/components/schemas/RedirectOrderCheckoutSessionOut",
                     "razorpay": "#/components/schemas/RazorpayOrderCheckoutSessionOut"
                   },
@@ -17346,7 +17347,7 @@
         "type": "object"
       },
       "RedirectOrderCheckoutSessionOut": {
-        "description": "Where the browser goes to pay with a redirect-checkout provider (PhonePe): a `GET` of `url`\nor a form `POST` of `fields` to it, opened in a new tab. Fetched from the provider by payment\nfor this response and never stored; reopening asks again. No credential.",
+        "description": "Where the browser goes to pay with a redirect-checkout provider (PhonePe, PayU): a `GET` of\n`url` or a form `POST` of `fields` to it, opened in a new tab. Fetched from the provider by\npayment for this response and never stored; reopening asks again. No credential.",
         "properties": {
           "amount_minor": {
             "title": "Amount Minor",
@@ -17380,7 +17381,10 @@
             "type": "string"
           },
           "provider": {
-            "const": "phonepe",
+            "enum": [
+              "phonepe",
+              "payu"
+            ],
             "title": "Provider",
             "type": "string"
           },

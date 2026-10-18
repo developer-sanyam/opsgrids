@@ -68,16 +68,23 @@ const PROVIDER_OPTIONS = [
     description:
       "Customers pay on PhonePe's checkout page, opened in a new tab; you connect your Client ID, Client Secret, client version and a webhook username and password.",
   },
+  {
+    value: "payu",
+    label: PROVIDER_NAME.payu,
+    description:
+      "Customers pay on PayU's checkout page, opened in a new tab; you connect your merchant key and salt. Each order needs the customer's phone.",
+  },
 ];
 
 const KEY_LABELS: Record<CollectionsProvider, { keyId: string; keySecret: string }> = {
   razorpay: { keyId: "Key id", keySecret: "Key secret" },
   cashfree: { keyId: "App ID", keySecret: "Secret Key" },
   phonepe: { keyId: "Client ID", keySecret: "Client Secret" },
+  payu: { keyId: "Merchant key", keySecret: "Salt" },
 };
 
 function asProvider(value: string): CollectionsProvider {
-  return value === "cashfree" || value === "phonepe" ? value : "razorpay";
+  return value === "cashfree" || value === "phonepe" || value === "payu" ? value : "razorpay";
 }
 
 function Detail({ label, children }: { label: string; children: ReactNode }) {
@@ -116,7 +123,7 @@ function AccountDetails({ account }: { account: MerchantAccountOut }) {
           </Detail>
         </>
       ) : null}
-      {provider === "cashfree" ? null : (
+      {provider === "cashfree" || provider === "payu" ? null : (
         <Detail label={provider === "phonepe" ? "Webhook password" : "Webhook secret"}>
           <span className="font-mono text-ink">{account.webhook_secret_masked}</span>
         </Detail>
