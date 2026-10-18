@@ -1108,6 +1108,8 @@ services:
       COLLECTIONS_PHONEPE_WIRE: ${COLLECTIONS_PHONEPE_WIRE:-stub}
       # A tenant's PayU account (Hosted Checkout): `stub` until the owner turns it on.
       COLLECTIONS_PAYU_WIRE: ${COLLECTIONS_PAYU_WIRE:-stub}
+      # A tenant's Paytm account: `stub` until the owner turns it on.
+      COLLECTIONS_PAYTM_WIRE: ${COLLECTIONS_PAYTM_WIRE:-stub}
       COLLECTIONS_ALLOW_LIVE_KEYS: ${COLLECTIONS_ALLOW_LIVE_KEYS:-false}
     networks:
       - back

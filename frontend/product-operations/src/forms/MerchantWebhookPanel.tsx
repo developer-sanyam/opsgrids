@@ -20,6 +20,14 @@ function Steps({ account }: { account: MerchantAccountOut }) {
       </ol>
     );
   }
+  if (account.provider === "paytm") {
+    return (
+      <ol className="flex list-decimal flex-col gap-1 pl-4 text-sm text-ink-soft">
+        <li>In Paytm's merchant dashboard, open Developer Settings → Webhooks and set this URL as the Payment Status webhook.</li>
+        <li>There is no webhook secret to copy: Paytm signs every payment status with your merchant key.</li>
+      </ol>
+    );
+  }
   if (account.provider === "payu") {
     return (
       <ol className="flex list-decimal flex-col gap-1 pl-4 text-sm text-ink-soft">

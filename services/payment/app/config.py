@@ -182,6 +182,9 @@ class Settings(ServiceSettings):
     #: The same switch for a merchant's **PayU** account (Hosted Checkout): `stub` runs it on the
     #: in-process fake, `live` talks to PayU with that merchant's own key and salt.
     collections_payu_wire: Literal["stub", "live"] = "stub"
+    #: The same switch for a merchant's **Paytm** account: `stub` runs it on the in-process fake,
+    #: `live` talks to Paytm with that merchant's own MID and merchant key.
+    collections_paytm_wire: Literal["stub", "live"] = "stub"
     #: Whether a merchant may connect **live** keys (`rzp_live_…`, or a Cashfree account in
     #: Production). Off: only test-mode / Sandbox accounts are accepted, so nothing a tenant
     #: configures can move real money until the owner says so.
@@ -230,6 +233,8 @@ class Settings(ServiceSettings):
             return self.collections_phonepe_wire
         if provider == "payu":
             return self.collections_payu_wire
+        if provider == "paytm":
+            return self.collections_paytm_wire
         return "live" if self.collections_wire == provider else "stub"
 
     @property

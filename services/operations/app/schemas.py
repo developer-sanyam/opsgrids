@@ -2212,11 +2212,12 @@ class CashfreeOrderCheckoutSessionOut(BaseModel):
 
 
 class RedirectOrderCheckoutSessionOut(BaseModel):
-    """Where the browser goes to pay with a redirect-checkout provider (PhonePe, PayU): a `GET` of
+    """Where the browser goes to pay with a redirect-checkout provider (PhonePe, PayU, Paytm): a
+    `GET` of
     `url` or a form `POST` of `fields` to it, opened in a new tab. Fetched from the provider by
     payment for this response and never stored; reopening asks again. No credential."""
 
-    provider: Literal["phonepe", "payu"]
+    provider: Literal["phonepe", "payu", "paytm"]
     method: Literal["GET", "POST"]
     url: str
     fields: dict[str, str] = Field(default_factory=dict)
