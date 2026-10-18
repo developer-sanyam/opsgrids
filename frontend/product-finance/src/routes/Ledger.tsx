@@ -142,8 +142,10 @@ export function LedgerPage() {
           ? "Trial balance exported as CSV."
           : ledger.status === "success"
             ? hasAccounts
-              ? `Representative figures for ${ledger.data.period_label}, as of ${formatDate(ledger.data.as_of)} — not this organization's own booked data.`
-              : "Profit & loss and trial balance, once the general ledger is available."
+              ? ledger.data.sample
+                ? `Representative figures for ${ledger.data.period_label}, as of ${formatDate(ledger.data.as_of)} — not this organization's own booked data.`
+                : `Booked figures for ${ledger.data.period_label}, as of ${formatDate(ledger.data.as_of)}.`
+              : "No ledger transactions booked for this period yet."
             : "Profit & loss and trial balance."}
       </p>
 
@@ -172,8 +174,8 @@ export function LedgerPage() {
         <Card className="p-6">
           <EmptyState
             icon={<ReceiptIcon className="size-6" />}
-            title="Ledger reports are not available yet"
-            description="Profit and loss and the trial balance need a general ledger, which is not built yet. Your invoices, payments and GST returns are unaffected, and nothing here is estimated."
+            title="No ledger activity recorded yet"
+            description="No sales invoices or purchase bills have been booked for this financial year yet. Once you issue invoices or record purchases, your trial balance and profit and loss will be computed automatically."
           />
         </Card>
       ) : null}

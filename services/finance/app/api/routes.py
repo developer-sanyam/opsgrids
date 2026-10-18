@@ -18,6 +18,7 @@ already routed to this service in `app-gateway/routes.json`. They match the fina
 from __future__ import annotations
 
 import uuid
+from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, status
@@ -948,7 +949,12 @@ async def get_overview(session: SessionDep, ctx: SummaryRead) -> OverviewSummary
     summary="Ledger / trial balance",
     dependencies=[Entitled],
 )
-async def get_ledger(session: SessionDep, ctx: LedgerRead) -> LedgerReport:
-    # The trial balance is representative booked data (see `app.domain`); the tenant-bound
-    # session is still taken so the route stays inside the chokepoint like every other.
-    return selectors.get_ledger()
+async def get_ledger(
+    session: SessionDep,
+    ctx: LedgerRead,
+    as_of: date | None = None,
+) -> LedgerReport:
+    """The trial-balance report computed from this organization's booked invoices, credit notes,
+    and purchase documents."""
+    return await selectors.get_ledger(session, ctx.organization_id, today=as_of)
+

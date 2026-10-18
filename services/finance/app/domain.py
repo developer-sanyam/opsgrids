@@ -2925,3 +2925,46 @@ CASHFLOW: list[CashflowRow] = [
 
 #: The label a ledger report carries while there is no general ledger to report on.
 LEDGER_PERIOD_LABEL: str = "Not available yet"
+
+
+def financial_year_label(d: date) -> str:
+    """The Indian financial year label for a given date, e.g. 'FY 2026–27 · to date'."""
+    start_year = d.year if d.month >= 4 else d.year - 1
+    end_year_short = (start_year + 1) % 100
+    return f"FY {start_year}–{end_year_short:02d} · to date"
+
+
+def financial_year_bounds(d: date) -> tuple[date, date]:
+    """Start and end dates of the financial year containing `d`."""
+    start_year = d.year if d.month >= 4 else d.year - 1
+    return date(start_year, 4, 1), date(start_year + 1, 3, 31)
+
+
+def is_freight_line(description: str, hsn_sac: str | None) -> bool:
+    """Whether a line item represents freight, delivery, shipping, or transport."""
+    code = (hsn_sac or "").strip()
+    if code.startswith(("9965", "9967")):
+        return True
+    desc = description.lower()
+    return any(w in desc for w in ("freight", "delivery", "shipping", "transport", "courier"))
+
+
+def is_services_line(description: str, hsn_sac: str | None) -> bool:
+    """Whether a line item represents services (SAC 99xx)."""
+    code = (hsn_sac or "").strip()
+    if code.startswith("99"):
+        return True
+    desc = description.lower()
+    return any(
+        w in desc
+        for w in (
+            "service",
+            "charges",
+            "consult",
+            "installation",
+            "testing",
+            "maintenance",
+            "support",
+        )
+    )
+

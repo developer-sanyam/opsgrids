@@ -12,7 +12,7 @@ from datetime import UTC, date, datetime
 import pytest
 
 from app import domain, selectors, services
-from app.schemas import CustomerCreate, InvoiceCreate, InvoiceLineCreate
+from app.schemas import CustomerCreate, InvoiceCreate, InvoiceLineCreate, PurchaseDocumentCreate
 from tests.helpers import admin_ctx
 
 pytestmark = pytest.mark.integration
@@ -320,11 +320,74 @@ class TestRevenueHistory:
 
 
 class TestLedger:
-    async def test_ledger_serves_no_invented_figures(self, client, book) -> None:
+    async def test_ledger_computed_from_booked_documents(self, client, book) -> None:
         res = await client.get("/api/v1/finance/ledger")
         assert res.status_code == 200
         body = res.json()
-        # There is no ledger table behind this report: flagged, and no fabricated accounts.
-        assert body["accounts"] == []
-        assert body["sample"] is True
+        assert body["sample"] is False
         assert body["as_of"] == datetime.now(UTC).date().isoformat()
+        assert body["period_label"] == "FY 2026–27 · to date"
+
+        accounts = {a["code"]: a for a in body["accounts"]}
+        assert set(accounts) == {"4000", "4100", "4200", "4900"}
+        assert accounts["4000"]["name"] == "Sales — Goods"
+        assert accounts["4000"]["type"] == "revenue"
+        assert accounts["4000"]["credit_minor"] == 1_553_000_000
+        assert accounts["4000"]["debit_minor"] == 0
+
+        assert accounts["4100"]["name"] == "Sales — Services"
+        assert accounts["4100"]["type"] == "revenue"
+        assert accounts["4100"]["credit_minor"] == 80_340_000
+        assert accounts["4100"]["debit_minor"] == 0
+
+        assert accounts["4200"]["name"] == "Freight & delivery recovered"
+        assert accounts["4200"]["type"] == "revenue"
+        assert accounts["4200"]["credit_minor"] == 147_700_000
+        assert accounts["4200"]["debit_minor"] == 0
+
+        assert accounts["4900"]["name"] == "Sales returns & credit notes"
+        assert accounts["4900"]["type"] == "contra_revenue"
+        assert accounts["4900"]["debit_minor"] == 10_320_000
+        assert accounts["4900"]["credit_minor"] == 0
+
+    async def test_ledger_empty_when_no_booked_activity(self, client) -> None:
+        # A tenant with no invoices or purchases booked serves an honest empty account list,
+        # never fabricated accounts and not flagged as a sample.
+        res = await client.get("/api/v1/finance/ledger")
+        assert res.status_code == 200
+        body = res.json()
+        assert body["sample"] is False
+        assert body["accounts"] == []
+        assert body["period_label"] == "FY 2026–27 · to date"
+
+    async def test_ledger_includes_purchases(self, session, ctx, client, book) -> None:
+        from decimal import Decimal
+
+        await services.record_purchase_document(
+            session,
+            ctx,
+            PurchaseDocumentCreate(
+                supplier_gstin="27AABCA9012D1Z5",
+                supplier_name="Raw Materials Co",
+                number="PO-2026-001",
+                document_type="invoice",
+                document_date=date(2026, 8, 1),
+                taxable_minor=500_000,
+                tax_rate_pct=Decimal("18.00"),
+            ),
+        )
+        await session.commit()
+        res = await client.get("/api/v1/finance/ledger")
+        assert res.status_code == 200
+        body = res.json()
+        assert body["sample"] is False
+        accounts = {a["code"]: a for a in body["accounts"]}
+        assert "5000" in accounts
+        assert accounts["5000"]["name"] == "Cost of goods & purchases"
+        assert accounts["5000"]["type"] == "expense"
+        assert accounts["5000"]["debit_minor"] == 500_000
+        assert accounts["5000"]["credit_minor"] == 0
+        assert "4000" in accounts
+
+
+

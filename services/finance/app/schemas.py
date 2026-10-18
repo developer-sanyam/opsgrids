@@ -380,9 +380,9 @@ class LedgerReport(BaseModel):
     period_label: str
     as_of: date
     accounts: list[LedgerAccount]
-    #: Always true today: there is no general ledger table behind this report, so `accounts`
-    #: is empty. Never served with invented figures.
-    sample: bool = True
+    #: True only when the report serves representative sample data. Real reports compute from booked
+    #: documents and serve sample=False.
+    sample: bool = False
 
 
 # --------------------------------------------------------------------- write contracts

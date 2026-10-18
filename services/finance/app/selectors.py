@@ -82,6 +82,7 @@ from app.schemas import (
     ItcBalanceOut,
     ItcHeadBalanceOut,
     ItcLedgerEntryOut,
+    LedgerAccount,
     LedgerReport,
     MonthlyRevenuePoint,
     OverviewKpi,
@@ -1827,16 +1828,141 @@ async def get_overview(
     )
 
 
-def get_ledger(*, today: date | None = None) -> LedgerReport:
-    """The trial-balance report. There is no general ledger behind it yet, so it carries no
-    accounts: `sample=True` and an empty list, never invented figures presented as an
-    organization's books."""
-    return LedgerReport(
-        period_label=domain.LEDGER_PERIOD_LABEL,
-        as_of=_today(today),
-        sample=True,
-        accounts=[],
+async def get_ledger(
+    session: AsyncSession,
+    org_id: uuid.UUID,
+    *,
+    today: date | None = None,
+) -> LedgerReport:
+    """The trial-balance report computed from this organization's booked outward invoices,
+    credit notes, and inward purchase documents for the financial year containing `today`.
+
+    Revenue is recognized from issued invoices broken down by line into goods, services, and freight;
+    credit notes reduce revenue through contra-revenue debit; and purchases are aggregated as expense.
+    """
+    resolved_today = _today(today)
+    fy_start, fy_end = domain.financial_year_bounds(resolved_today)
+    period_label = domain.financial_year_label(resolved_today)
+
+    max_date = resolved_today if today is not None else fy_end
+
+    inv_stmt = (
+        select(Invoice)
+        .where(
+            Invoice.organization_id == org_id,
+            Invoice.deleted_at.is_(None),
+            Invoice.status.notin_(("draft", "void")),
+            Invoice.issued_date >= fy_start,
+            Invoice.issued_date <= max_date,
+        )
+        .options(selectinload(Invoice.lines))
+        .order_by(Invoice.issued_date.asc(), Invoice.number.asc())
     )
+    invoices = list((await session.execute(inv_stmt)).scalars().all())
+
+    purch_stmt = (
+        select(PurchaseDocument)
+        .where(
+            PurchaseDocument.organization_id == org_id,
+            PurchaseDocument.deleted_at.is_(None),
+            PurchaseDocument.document_date >= fy_start,
+            PurchaseDocument.document_date <= max_date,
+        )
+        .order_by(PurchaseDocument.document_date.asc(), PurchaseDocument.number.asc())
+    )
+    purchases = list((await session.execute(purch_stmt)).scalars().all())
+
+    goods_minor = 0
+    services_minor = 0
+    freight_minor = 0
+    returns_minor = 0
+
+    for inv in invoices:
+        if inv.document_type == "credit_note":
+            returns_minor += abs(inv.subtotal_minor)
+            continue
+
+        if not inv.lines:
+            goods_minor += inv.subtotal_minor
+            continue
+
+        for line in inv.lines:
+            amt = line.amount_minor
+            if amt < 0:
+                returns_minor += abs(amt)
+            elif domain.is_freight_line(line.description, line.hsn_sac):
+                freight_minor += amt
+            elif domain.is_services_line(line.description, line.hsn_sac):
+                services_minor += amt
+            else:
+                goods_minor += amt
+
+    cost_of_goods_minor = 0
+    for doc in purchases:
+        if doc.document_type == "credit_note":
+            cost_of_goods_minor -= abs(doc.taxable_minor)
+        else:
+            cost_of_goods_minor += doc.taxable_minor
+
+    accounts: list[LedgerAccount] = []
+    if goods_minor > 0:
+        accounts.append(
+            LedgerAccount(
+                code="4000",
+                name="Sales — Goods",
+                type="revenue",
+                debit_minor=0,
+                credit_minor=goods_minor,
+            )
+        )
+    if services_minor > 0:
+        accounts.append(
+            LedgerAccount(
+                code="4100",
+                name="Sales — Services",
+                type="revenue",
+                debit_minor=0,
+                credit_minor=services_minor,
+            )
+        )
+    if freight_minor > 0:
+        accounts.append(
+            LedgerAccount(
+                code="4200",
+                name="Freight & delivery recovered",
+                type="revenue",
+                debit_minor=0,
+                credit_minor=freight_minor,
+            )
+        )
+    if returns_minor > 0:
+        accounts.append(
+            LedgerAccount(
+                code="4900",
+                name="Sales returns & credit notes",
+                type="contra_revenue",
+                debit_minor=returns_minor,
+                credit_minor=0,
+            )
+        )
+    if cost_of_goods_minor > 0:
+        accounts.append(
+            LedgerAccount(
+                code="5000",
+                name="Cost of goods & purchases",
+                type="expense",
+                debit_minor=cost_of_goods_minor,
+                credit_minor=0,
+            )
+        )
+
+    return LedgerReport(
+        period_label=period_label,
+        as_of=resolved_today,
+        sample=False,
+        accounts=accounts,
+    )
+
 
 
 # --------------------------------------------------------------------- GST returns
