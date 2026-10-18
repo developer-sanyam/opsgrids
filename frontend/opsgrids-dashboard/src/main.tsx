@@ -1,7 +1,7 @@
 import { lazy, StrictMode, Suspense } from "react";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
+import { createBrowserRouter, Navigate, Outlet, RouterProvider } from "react-router-dom";
 
 import { configureSession, RequireAuth, RequirePermission } from "@opsgrids/client";
 import { Skeleton, ThemeProvider, Toaster } from "@opsgrids/ui";
@@ -84,12 +84,9 @@ const router = createBrowserRouter([
           </RequireAuth>
         ),
         children: [
-          // Home is the Owner/Executive dashboard (dashboard audit §5.4). The Marketplace it
-          // replaced here moved to `/products`; the sidebar's "Products" entry and the search
-          // box's `to` both still point at `/`, which is shell/layout territory owned by
-          // `ui/p3-shell` — they need to move to `/products` when that branch lands.
           { index: true, element: <HomePage /> },
           { path: "products", element: <MarketplacePage /> },
+          { path: "marketplace", element: <Navigate to="/products" replace /> },
           { path: "subscriptions", element: <SubscriptionsPage /> },
           { path: "invoices", element: <InvoicesPage /> },
           { path: "integrations", element: <IntegrationsPage /> },

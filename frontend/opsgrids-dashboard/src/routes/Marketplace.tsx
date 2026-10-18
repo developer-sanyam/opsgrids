@@ -3,13 +3,13 @@ import { useSearchParams } from "react-router-dom";
 
 import { ApiError, getPlatformHost, PLATFORM_PRODUCTS } from "@opsgrids/client";
 import type { PlatformProductKey } from "@opsgrids/client";
-import { EmptyState, ErrorState, SearchInput, Skeleton, useToast } from "@opsgrids/ui";
+import { EmptyState, ErrorState, SearchInput, Skeleton, StatusBadge, useToast } from "@opsgrids/ui";
 
-import { listActivations, listPlans, listProducts, listSubscriptions, startTrial } from "@/api";
-import type { Activation, Plan, PlanVersion, Product, Subscription } from "@/api/types";
+import { listActivations, listPlans, listProducts, listSubscriptionPlanSummaries, listSubscriptions, startTrial } from "@/api";
+import type { Activation, Plan, PlanVersion, Product, Subscription, SubscriptionPlanSummary } from "@/api/types";
 import { bundleMembers, bundlesIncluding, joinNames, productNames } from "@/lib/bundles";
-import { daysUntil, formatDate } from "@/lib/money";
-import { trialTerms } from "@/lib/subscriptionCopy";
+import { daysUntil } from "@/lib/money";
+import { billedPhrase, statusLine, trialTerms } from "@/lib/subscriptionCopy";
 import { Button, Card, PageHeader } from "@/ui";
 import { shortProductName } from "../lib/productName";
 
@@ -58,6 +58,7 @@ interface Row {
   product: Product;
   plans: Plan[];
   subscription: Subscription | null;
+  summary: SubscriptionPlanSummary | null;
   activation: Activation | null;
   /** The bundles this product is included in, by the name the customer bought them under. */
   includedIn: string[];
@@ -101,24 +102,30 @@ export function MarketplacePage() {
   const refresh = useCallback(async () => {
     setLoad({ state: "loading" });
     try {
-      const [products, activations, subscriptions] = await Promise.all([
+      const [products, activations, subscriptions, summaries] = await Promise.all([
         listProducts(),
         listActivations().catch(() => [] as Activation[]),
         listSubscriptions().catch(() => [] as Subscription[]),
+        Promise.resolve(listSubscriptionPlanSummaries?.() ?? []).catch(() => [] as SubscriptionPlanSummary[]),
       ]);
       const sellable = products.filter((p) => !p.is_platform);
       const plans = await Promise.all(
         sellable.map((p) => (p.status === "available" ? listPlans(p.key).catch(() => [] as Plan[]) : Promise.resolve([] as Plan[]))),
       );
       const plansByKey = new Map(sellable.map((p, i) => [p.key, plans[i] ?? []]));
-      const rows: Row[] = sellable.map((product, i) => ({
-        product,
-        plans: plans[i] ?? [],
-        subscription: subscriptions.find((s) => s.product_key === product.key && s.state !== "cancelled") ?? null,
-        activation: activations.find((a) => a.product_key === product.key) ?? null,
-        includedIn: bundlesIncluding(product.key, subscriptions).map((s) => bundleLabel(s, products, plansByKey)),
-        rungs: rungsOf(product, plans[i] ?? [], products),
-      }));
+      const summariesBySubId = new Map(summaries.map((s) => [s.subscription_id, s]));
+      const rows: Row[] = sellable.map((product, i) => {
+        const sub = subscriptions.find((s) => s.product_key === product.key && s.state !== "cancelled") ?? null;
+        return {
+          product,
+          plans: plans[i] ?? [],
+          subscription: sub,
+          summary: sub ? (summariesBySubId.get(sub.id) ?? null) : null,
+          activation: activations.find((a) => a.product_key === product.key) ?? null,
+          includedIn: bundlesIncluding(product.key, subscriptions).map((s) => bundleLabel(s, products, plansByKey)),
+          rungs: rungsOf(product, plans[i] ?? [], products),
+        };
+      });
       setLoad({ state: "ready", rows });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Something went wrong.";
@@ -230,104 +237,132 @@ export function MarketplacePage() {
 }
 
 function ProductCard({ row, busy, onStart }: { row: Row; busy: boolean; onStart: () => void }) {
-  const { product, subscription, activation } = row;
+  const { product, subscription, activation, summary } = row;
   const offer = trialOffer(row.plans);
   const host = productHost(product.key);
   const entitled = activation?.entitles === true;
   const trialDays = daysUntil(subscription?.trial_ends_at ?? null);
+  const isActive = subscription?.state === "active";
+  const isTrial = subscription?.state === "trial";
+  const isBundled = !subscription && row.includedIn.length > 0;
+
+  const activePlanName =
+    summary?.current?.plan_name ??
+    row.plans.find((p) => p.versions.some((v) => v.id === subscription?.plan_version_id))?.name ??
+    "Standard Plan";
+  const cadence = billedPhrase(summary?.current?.billing_interval ?? "month");
+  const renewal = subscription ? statusLine(subscription) : null;
 
   return (
     <li className="flex">
       <Card className="flex w-full flex-col gap-4 p-6">
-      <div className="flex flex-col gap-1">
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted">{product.category ?? "Product"}</p>
-        <h2 className="display text-xl font-extrabold">{shortProductName(product.name)}</h2>
-        {product.tagline ? <p className="text-sm text-muted">{product.tagline}</p> : null}
-      </div>
-
-      {row.rungs.length > 0 ? (
-        <ul className="flex list-none flex-col gap-1 p-0 text-sm">
-          {row.rungs.map((rung) => (
-            <li key={rung.id}>
-              <span className="font-semibold text-ink">{rung.name}</span>{" "}
-              <span className="text-muted">— {joinNames(rung.members)}</span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-
-      {product.status !== "available" ? (
-        <p className="text-sm font-semibold text-ink-soft">Coming soon</p>
-      ) : offer ? (
-        <div className="flex flex-col gap-1">
-          <p className="text-sm font-semibold text-ink-soft">Free 14-day trial</p>
-          <p className="text-xs text-muted">{trialTerms()}</p>
-          <p className="text-xs text-muted">
-            Pricing is agreed with OpsGrids for your organisation — contact {PRICING_CONTACT_EMAIL}.{" "}
-            <a
-              href={`mailto:${PRICING_CONTACT_EMAIL}`}
-              className="font-medium text-accent-ink underline-offset-2 hover:underline"
-            >
-              Email us
-            </a>
-          </p>
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex flex-col gap-1">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted">{product.category ?? "Product"}</p>
+            <h2 className="display text-xl font-extrabold text-ink">{shortProductName(product.name)}</h2>
+          </div>
+          {isActive ? (
+            <StatusBadge status="active" />
+          ) : isTrial ? (
+            <StatusBadge tone="info" label={trialDays !== null && trialDays > 0 ? `Trial · ${trialDays}d left` : "Trial"} />
+          ) : isBundled ? (
+            <StatusBadge tone="success" label="Included" />
+          ) : subscription?.state === "past_due" ? (
+            <StatusBadge status="past_due" />
+          ) : product.status !== "available" ? (
+            <StatusBadge tone="neutral" label="Coming Soon" />
+          ) : offer ? (
+            <StatusBadge tone="neutral" label="Available" />
+          ) : null}
         </div>
-      ) : (
-        <p className="text-sm font-semibold text-ink-soft">Not available to start yet</p>
-      )}
 
-      <div className="mt-auto flex flex-col gap-2">
-        {row.includedIn.length > 0 ? (
-          <p className="text-sm font-medium text-ink-soft">Included in {joinNames(row.includedIn)}</p>
+        {product.tagline ? <p className="text-sm text-muted">{product.tagline}</p> : null}
+
+        {row.rungs.length > 0 ? (
+          <ul className="flex list-none flex-col gap-1 p-0 text-sm">
+            {row.rungs.map((rung) => (
+              <li key={rung.id}>
+                <span className="font-semibold text-ink">{rung.name}</span>{" "}
+                <span className="text-muted">— {joinNames(rung.members)}</span>
+              </li>
+            ))}
+          </ul>
         ) : null}
 
-        {product.is_bundle && subscription ? (
-          <p className="text-xs text-muted">Each product it includes opens from its own card.</p>
-        ) : null}
-
-        {!subscription && row.includedIn.length > 0 ? (
-          host && entitled ? (
-            <a
-              href={host}
-              className="inline-flex h-11 items-center justify-center rounded-full bg-accent px-5 font-semibold text-on-accent transition-colors hover:bg-accent-strong"
-            >
-              Open {shortProductName(product.name)}
-            </a>
-          ) : (
+        {isActive ? (
+          <div className="flex flex-col gap-1.5 rounded-tile border border-faint bg-ground/80 p-3.5">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-semibold uppercase tracking-wide text-muted">Current Plan</span>
+              <span className="flex items-center gap-1.5 font-semibold text-positive">
+                <span className="inline-block size-1.5 rounded-full bg-positive" /> Active Plan
+              </span>
+            </div>
+            <p className="text-sm font-bold text-ink">{activePlanName}</p>
+            <div className="flex flex-wrap items-center gap-x-2 text-xs text-muted">
+              <span>{cadence}</span>
+              {renewal?.primary ? <span>· {renewal.primary}</span> : null}
+            </div>
+          </div>
+        ) : isTrial ? (
+          <div className="flex flex-col gap-2 rounded-tile border border-accent/20 bg-accent-soft/40 p-3.5">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-semibold uppercase tracking-wide text-accent-ink">Free Trial</span>
+              <span className="font-medium text-accent-ink">
+                {trialDays !== null && trialDays > 0 ? `On trial — ${trialDays} days left` : "On trial — ends today"}
+              </span>
+            </div>
+            <p className="text-xs text-muted">{trialTerms(subscription.trial_ends_at)}</p>
+          </div>
+        ) : isBundled ? (
+          <div className="flex flex-col gap-1 rounded-tile border border-faint bg-ground/80 p-3.5">
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted">Included in Bundle</span>
+            <p className="text-sm font-semibold text-ink">Included in {joinNames(row.includedIn)}</p>
+            <p className="text-xs text-muted">Included with your organisation&apos;s active bundle.</p>
+          </div>
+        ) : product.status !== "available" ? (
+          <p className="text-sm font-semibold text-ink-soft">Coming soon</p>
+        ) : offer ? (
+          <div className="flex flex-col gap-1">
+            <p className="text-sm font-semibold text-ink-soft">Free 14-day trial</p>
+            <p className="text-xs text-muted">{trialTerms()}</p>
             <p className="text-xs text-muted">
-              {entitled ? "Its console is not on this deployment yet." : "Getting ready — refresh in a moment."}
+              Pricing is agreed with OpsGrids for your organisation — contact {PRICING_CONTACT_EMAIL}.{" "}
+              <a
+                href={`mailto:${PRICING_CONTACT_EMAIL}`}
+                className="font-medium text-accent-ink underline-offset-2 hover:underline"
+              >
+                Email us
+              </a>
             </p>
-          )
-        ) : null}
+          </div>
+        ) : (
+          <p className="text-sm font-semibold text-ink-soft">Not available to start yet</p>
+        )}
 
-        {subscription ? (
-          <p className="text-sm text-muted">
-            {subscription.state === "trial" && trialDays !== null
-              ? `On trial — ${trialDays > 0 ? `${trialDays} days left` : "ends today"} (${formatDate(subscription.trial_ends_at)})`
-              : `Subscription: ${subscription.state}`}
-          </p>
-        ) : null}
-        {subscription?.state === "trial" ? <p className="text-xs text-muted">{trialTerms(subscription.trial_ends_at)}</p> : null}
+        <div className="mt-auto flex flex-col gap-2 pt-2">
+          {product.is_bundle && subscription ? (
+            <p className="text-xs text-muted">Each product it includes opens from its own card.</p>
+          ) : null}
 
-        {product.is_bundle ? null : subscription ? (
-          host && entitled ? (
-            <a
-              href={host}
-              className="inline-flex h-11 items-center justify-center rounded-full bg-accent px-5 font-semibold text-on-accent transition-colors hover:bg-accent-strong"
-            >
-              Open {shortProductName(product.name)}
-            </a>
-          ) : (
-            <p className="text-xs text-muted">
-              {entitled ? "Its console is not on this deployment yet." : "Getting ready — refresh in a moment."}
-            </p>
-          )
-        ) : product.status === "available" && offer && row.includedIn.length === 0 ? (
-          <Button type="button" disabled={busy} onClick={onStart}>
-            {busy ? "Starting…" : "Start 14-day trial"}
-          </Button>
-        ) : null}
-      </div>
+          {product.is_bundle ? null : isActive || isTrial || isBundled ? (
+            host && entitled ? (
+              <a
+                href={host}
+                className="inline-flex h-11 items-center justify-center rounded-full bg-accent px-5 font-semibold text-on-accent transition-colors hover:bg-accent-strong"
+              >
+                Open {shortProductName(product.name)}
+              </a>
+            ) : (
+              <p className="text-xs text-muted">
+                {entitled ? "Its console is not on this deployment yet." : "Getting ready — refresh in a moment."}
+              </p>
+            )
+          ) : product.status === "available" && offer && row.includedIn.length === 0 ? (
+            <Button type="button" disabled={busy} onClick={onStart}>
+              {busy ? "Starting…" : "Start 14-day trial"}
+            </Button>
+          ) : null}
+        </div>
       </Card>
     </li>
   );

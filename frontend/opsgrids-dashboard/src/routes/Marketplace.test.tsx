@@ -12,6 +12,7 @@ vi.mock("@/api", () => ({
   listProducts: vi.fn(),
   listActivations: vi.fn(),
   listSubscriptions: vi.fn(),
+  listSubscriptionPlanSummaries: vi.fn(),
   listPlans: vi.fn(),
   startTrial: vi.fn(),
 }));
@@ -56,10 +57,11 @@ const plans = [
   },
 ];
 
-function arrange(overrides: Partial<{ subscriptions: unknown[]; activations: unknown[] }> = {}) {
+function arrange(overrides: Partial<{ subscriptions: unknown[]; activations: unknown[]; summaries: unknown[] }> = {}) {
   vi.mocked(api.listProducts).mockResolvedValue([inventory, soon, platform] as never);
   vi.mocked(api.listActivations).mockResolvedValue((overrides.activations ?? []) as never);
   vi.mocked(api.listSubscriptions).mockResolvedValue((overrides.subscriptions ?? []) as never);
+  vi.mocked(api.listSubscriptionPlanSummaries).mockResolvedValue((overrides.summaries ?? []) as never);
   vi.mocked(api.listPlans).mockResolvedValue(plans as never);
   vi.mocked(api.startTrial).mockResolvedValue({
     id: "sub-1",
@@ -108,6 +110,7 @@ describe("MarketplacePage", () => {
     vi.mocked(api.listProducts).mockResolvedValue([inventory] as never);
     vi.mocked(api.listActivations).mockResolvedValue([] as never);
     vi.mocked(api.listSubscriptions).mockResolvedValue([] as never);
+    vi.mocked(api.listSubscriptionPlanSummaries).mockResolvedValue([] as never);
     vi.mocked(api.listPlans).mockResolvedValue([] as never);
 
     render(
@@ -230,6 +233,67 @@ describe("MarketplacePage", () => {
     expect(screen.queryByRole("button", { name: "Start 14-day trial" })).toBeNull();
     expect(screen.getByText(/On trial/).textContent).toContain("days left");
   });
+
+  it("an active subscription shows active plan name and renewal info without trial terms", async () => {
+    arrange({
+      subscriptions: [
+        {
+          id: "sub-1",
+          product_key: "operations",
+          plan_version_id: "ver-1",
+          state: "active",
+          trial_ends_at: null,
+          current_period_start: "2026-10-01T00:00:00Z",
+          current_period_end: "2026-11-01T00:00:00Z",
+          cancel_at: null,
+          currency: "INR",
+        },
+      ],
+      activations: [
+        {
+          product_key: "operations",
+          status: "active",
+          entitles: true,
+          activated_at: "2026-09-20T00:00:00Z",
+          trial_ends_at: null,
+          deactivated_at: null,
+        },
+      ],
+      summaries: [
+        {
+          subscription_id: "sub-1",
+          current: {
+            plan_version_id: "ver-1",
+            plan_id: "plan-1",
+            plan_name: "Operations Growth Plan",
+            version_no: 1,
+            billing_interval: "month",
+            negotiated: false,
+            amount_visible: false,
+            currency: "INR",
+            recurring_minor: null,
+            prices: null,
+          },
+          pending: null,
+          pending_effective_at: null,
+          pending_scheduled_by: null,
+        },
+      ],
+    });
+    render(
+      <MemoryRouter>
+        <MarketplacePage />
+      </MemoryRouter>,
+    );
+    const link = await screen.findByRole("link", { name: "Open Inventory" });
+    expect(link.getAttribute("href")).toBe("https://ops.opsgrids.com");
+    expect(screen.getByText("Operations Growth Plan")).toBeTruthy();
+    expect(screen.getByText(/Active Plan/)).toBeTruthy();
+    expect(screen.getByText(/Renews 1 Nov 2026/)).toBeTruthy();
+    // Must NOT show trial boilerplate
+    expect(screen.queryByText("Free 14-day trial")).toBeNull();
+    expect(screen.queryByText(/When a trial ends/)).toBeNull();
+  });
 });
 
 describe("MarketplacePage — bundles", () => {
@@ -267,6 +331,7 @@ describe("MarketplacePage — bundles", () => {
     vi.mocked(api.listProducts).mockResolvedValue([inventory, crm, suite] as never);
     vi.mocked(api.listActivations).mockResolvedValue(activations as never);
     vi.mocked(api.listSubscriptions).mockResolvedValue(subscriptions as never);
+    vi.mocked(api.listSubscriptionPlanSummaries).mockResolvedValue([] as never);
     vi.mocked(api.listPlans).mockImplementation(((key: string) =>
       Promise.resolve(key === "suite" ? suitePlans : plans)) as never);
   }

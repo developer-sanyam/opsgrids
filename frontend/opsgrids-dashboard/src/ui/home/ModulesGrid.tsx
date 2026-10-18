@@ -67,14 +67,14 @@ export function ModulesGrid() {
   if (modules.length === 0) return null;
 
   return (
-    <section aria-label="Your modules" className="flex flex-col gap-3 md:hidden">
+    <section aria-label="Your modules" className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
-        <h2 className="text-base font-bold text-ink">Your Modules</h2>
+        <h2 className="text-base font-bold text-ink">Your Apps</h2>
         <Link to="/products" className="hit-44 relative text-sm font-semibold text-accent-ink transition-colors hover:text-accent">
           View All
         </Link>
       </div>
-      <ul className="grid list-none grid-cols-3 gap-3 p-0">
+      <ul className="grid list-none grid-cols-3 gap-3 p-0 sm:grid-cols-4 md:grid-cols-6">
         {modules.map((module) => {
           const Icon = ICONS[module.iconKey] ?? BoxIcon;
           const tone = TONES[module.key] ?? "accent";

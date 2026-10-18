@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 
 import { getPlatformHost, NotificationsBell, useAuth, useCan, useCurrentUser, usePermissions, usePlatformModules } from "@opsgrids/client";
@@ -27,6 +28,15 @@ export function AppShell() {
   const modules = usePlatformModules();
   const canIssueInvoice = useCan("finance.billing.invoice.issue", "ORG");
 
+  const roleLabel = useMemo(() => {
+    if (!currentUser?.roleDisplay) return null;
+    const parts = currentUser.roleDisplay.split(", ");
+    if (parts.includes("Organization owner")) return "Organization owner";
+    if (parts.includes("Administrator")) return "Administrator";
+    if (parts.length > 2) return `${parts.slice(0, 2).join(", ")} +${parts.length - 2} more`;
+    return currentUser.roleDisplay;
+  }, [currentUser?.roleDisplay]);
+
   if (user?.must_change_password === true && location.pathname !== "/account/security") {
     return <Navigate to="/account/security" replace state={{ from: location.pathname }} />;
   }
@@ -54,9 +64,9 @@ export function AppShell() {
       nav={groups}
       pinned={pinned}
       modules={modules.map((m) => ({ key: m.key, label: m.label, href: m.href, icon: moduleIcon(m.iconKey) }))}
-      user={{ name: currentUser.name, email: currentUser.email, roleLabel: currentUser.roleDisplay }}
+      user={{ name: currentUser.name, email: currentUser.email, roleLabel }}
       onSignOut={() => void logout()}
-      search={{ placeholder: "Search products", fallback: { label: "Search products for", to: "/" } }}
+      search={{ placeholder: "Search products", fallback: { label: "Search products for", to: "/products" } }}
       notifications={<NotificationsBell />}
       helpHref="/help"
       quickActions={quickActions}

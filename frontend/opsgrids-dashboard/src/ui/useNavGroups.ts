@@ -4,6 +4,7 @@ import {
   BoxIcon,
   BuildingIcon,
   GlobeIcon,
+  HomeIcon,
   KeyIcon,
   LifeBuoyIcon,
   MapPinIcon,
@@ -17,23 +18,14 @@ import {
 import type { NavEntry, NavGroup } from "@opsgrids/ui";
 
 /**
- * The dashboard's own navigation, for `AppShell`'s `nav`/`pinned` props. "Products" is the
- * marketplace and the home page, because a customer who has just signed up has one job here —
- * start something.
- *
- * This app's "Administration" group is its own routes (`/admin/*`), gated per item by the read
- * permission its screen requires (ADR-0013 §4) — richer than `useAdminLinks()`'s three, so it
- * stays here rather than moving to `AppShell`'s `adminLinks` prop, which is for every *other* app
- * linking back to this one. Hiding is a courtesy, not the boundary: the routes stay reachable by
- * URL, and every endpoint behind them refuses on its own.
+ * The dashboard's own navigation, for `AppShell`'s `nav`/`pinned` props.
  */
 const PRODUCT_GROUP: NavGroup = {
-  title: "Your OpsGrids",
+  title: "Your Workspace",
   items: [
-    { to: "/", label: "Products", icon: BoxIcon, end: true },
+    { to: "/", label: "Dashboard", icon: HomeIcon, end: true },
+    { to: "/products", label: "Products", icon: BoxIcon },
     { to: "/subscriptions", label: "Subscriptions", icon: SettingsIcon },
-    // `ReceiptIcon`, not `LifeBuoyIcon` — the pinned Help entry below used to share that icon
-    // with Invoices, which is confusing when both are visible at once.
     { to: "/invoices", label: "Invoices", icon: ReceiptIcon },
     { to: "/integrations", label: "Integrations", icon: PlugIcon },
   ],
