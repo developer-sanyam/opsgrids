@@ -45,3 +45,4 @@ edge_selfserve_tenant.json
 *.pem
 *.key
 graphify-out/
+.agents/

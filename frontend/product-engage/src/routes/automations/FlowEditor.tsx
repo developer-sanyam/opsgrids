@@ -1,6 +1,17 @@
 import { useEffect, useRef } from "react";
 
-import { AlertTriangleIcon, ArrowDown, ArrowUp, CloseIcon, Menu } from "@opsgrids/ui";
+import {
+  AlertTriangleIcon,
+  ArrowDown,
+  ArrowUp,
+  ClipboardCheckIcon,
+  ClockIcon,
+  CloseIcon,
+  FilterIcon,
+  MailIcon,
+  Menu,
+  SparkIcon,
+} from "@opsgrids/ui";
 
 import type { GraphNode, ValidationProblem } from "@/api/automations";
 import { Button } from "@/ui";
@@ -8,7 +19,7 @@ import { NODE_LABEL, PALETTE, isWarning, summarize, tailPoint } from "./graph";
 import type { AddableType, Flow, FlowSlot, FlowStep, InsertPoint, MoveDirection } from "./graph";
 
 /**
- * The flow as a vertical list of steps, not a canvas. A step is a real button that selects it; the
+ * The flow as a visual flowchart list of steps. A step is a real button that selects it; the
  * controls to move or delete it are real buttons beside it; "Add step" is a real menu after each
  * step and at the start of each empty branch. Everything is reachable by Tab and operable with the
  * keyboard, and every control names the step it acts on ("Delete step 3, Wait") because a flow can
@@ -38,8 +49,49 @@ function stepName(node: GraphNode, numbers: Map<string, number>): string {
   return `step ${numbers.get(node.id) ?? "?"}, ${NODE_LABEL[node.type]}`;
 }
 
+function StepIcon({ type, className = "size-4.5" }: { type: GraphNode["type"]; className?: string }) {
+  switch (type) {
+    case "trigger":
+      return <SparkIcon className={className} aria-hidden />;
+    case "send_message":
+      return <MailIcon className={className} aria-hidden />;
+    case "wait":
+      return <ClockIcon className={className} aria-hidden />;
+    case "condition":
+      return <FilterIcon className={className} aria-hidden />;
+    case "create_task":
+      return <ClipboardCheckIcon className={className} aria-hidden />;
+    default:
+      return <SparkIcon className={className} aria-hidden />;
+  }
+}
+
+function stepBadgeStyle(type: GraphNode["type"]): string {
+  switch (type) {
+    case "trigger":
+      return "bg-blue-50 text-blue-600 border-blue-100";
+    case "send_message":
+      return "bg-blue-50 text-blue-600 border-blue-100";
+    case "wait":
+      return "bg-amber-50 text-amber-600 border-amber-200/80";
+    case "condition":
+      return "bg-emerald-50 text-emerald-600 border-emerald-200/80";
+    case "create_task":
+      return "bg-blue-50 text-blue-600 border-blue-100";
+    default:
+      return "bg-slate-50 text-slate-600 border-slate-200";
+  }
+}
+
 function Connector() {
-  return <span aria-hidden className="ml-6 block h-4 w-px bg-line" />;
+  return (
+    <div className="flex flex-col items-center justify-center my-1" aria-hidden="true">
+      <div className="h-5 w-px bg-slate-300" />
+      <svg className="size-3 text-slate-400 -mt-0.5" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth={2}>
+        <path d="M2 5l4 4 4-4" />
+      </svg>
+    </div>
+  );
 }
 
 function AddStep({
@@ -52,24 +104,26 @@ function AddStep({
   onAdd: (at: InsertPoint, type: AddableType) => void;
 }) {
   return (
-    <Menu
-      label={label}
-      size="sm"
-      variant="secondary"
-      items={PALETTE.map((entry) => ({ label: entry.label, onSelect: () => onAdd(at, entry.type) }))}
-    />
+    <div className="flex justify-center my-1">
+      <Menu
+        label={label}
+        size="sm"
+        variant="secondary"
+        items={PALETTE.map((entry) => ({ label: entry.label, onSelect: () => onAdd(at, entry.type) }))}
+      />
+    </div>
   );
 }
 
 function ProblemList({ id, problems }: { id: string; problems: ValidationProblem[] }) {
   return (
-    <ul id={id} className="flex flex-col gap-1 border-t border-line pt-2">
+    <ul id={id} className="mt-2.5 flex flex-col gap-1.5 rounded-xl border border-red-200/80 bg-red-50/70 p-2.5">
       {problems.map((problem) => (
         <li
           key={`${problem.code}-${problem.message}`}
-          className={`flex items-start gap-2 text-sm ${isWarning(problem) ? "text-late" : "text-negative"}`}
+          className={`flex items-start gap-2 text-xs font-medium ${isWarning(problem) ? "text-amber-800" : "text-red-700"}`}
         >
-          <AlertTriangleIcon className="mt-1 size-4 shrink-0" aria-hidden />
+          <AlertTriangleIcon className="mt-0.5 size-3.5 shrink-0 text-red-600" aria-hidden />
           <span>
             <span className="sr-only">{isWarning(problem) ? "Warning: " : "Problem: "}</span>
             {problem.message}
@@ -93,65 +147,93 @@ function StepCard({
   const name = stepName(node, numbers);
   const problemsId = `step-problems-${node.id}`;
   const removable = node.type !== "trigger" && !readOnly;
+  const num = numbers.get(node.id);
 
   return (
     <article
-      className={`flex min-w-0 flex-col gap-2 rounded-card bg-surface p-3 shadow-card ${
-        selected ? "outline outline-2 outline-accent" : ""
+      className={`group relative flex min-w-0 flex-col rounded-2xl border bg-white p-3.5 transition-all shadow-2xs ${
+        selected
+          ? "border-blue-500 ring-2 ring-blue-500/20 shadow-xs"
+          : "border-slate-200/90 hover:border-slate-300 hover:shadow-xs"
       }`}
     >
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-3">
         <button
           type="button"
           data-step-button={node.id}
           aria-pressed={selected}
           aria-describedby={problems.length > 0 ? problemsId : undefined}
           onClick={() => props.onSelect(node.id)}
-          className="flex min-w-0 flex-1 flex-col items-start gap-1 rounded-tile px-2 py-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+          className="flex min-w-0 flex-1 items-center gap-3 rounded-xl p-1 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
         >
-          <span className="text-xs font-bold uppercase tracking-wider text-faint">
-            {numbers.get(node.id) ?? ""} · {NODE_LABEL[node.type]}
-          </span>
-          <span className="max-w-full truncate text-sm font-semibold text-ink">
-            {summarize(node, triggerLabels)}
-          </span>
+          <div
+            className={`flex size-10 shrink-0 items-center justify-center rounded-full border ${stepBadgeStyle(
+              node.type,
+            )}`}
+          >
+            <StepIcon type={node.type} className="size-4.5" />
+          </div>
+
+          <div className="flex min-w-0 flex-1 flex-col">
+            <span className="sr-only">
+              {num ?? ""} · {NODE_LABEL[node.type]}
+            </span>
+            <span aria-hidden="true" className="text-xs font-medium text-slate-500">
+              {num ? `${num}. ` : ""}{NODE_LABEL[node.type]}
+            </span>
+            <span className="max-w-full truncate text-sm font-semibold text-slate-900">
+              {summarize(node, triggerLabels)}
+            </span>
+          </div>
         </button>
+
         {removable ? (
-          <div className="flex shrink-0 items-center">
+          <div className="flex shrink-0 items-center gap-0.5">
             {node.type === "condition" ? null : (
               <>
                 <Button
                   variant="ghost"
                   size="sm"
+                  className="h-7 w-7 p-0 text-slate-400 hover:text-slate-700"
                   aria-label={`Move ${name} up`}
                   disabled={!props.canMove(node.id, "up")}
                   onClick={() => props.onMove(node.id, "up")}
                 >
-                  <ArrowUp className="size-4" aria-hidden />
+                  <ArrowUp className="size-3.5" aria-hidden />
                 </Button>
                 <Button
                   variant="ghost"
                   size="sm"
+                  className="h-7 w-7 p-0 text-slate-400 hover:text-slate-700"
                   aria-label={`Move ${name} down`}
                   disabled={!props.canMove(node.id, "down")}
                   onClick={() => props.onMove(node.id, "down")}
                 >
-                  <ArrowDown className="size-4" aria-hidden />
+                  <ArrowDown className="size-3.5" aria-hidden />
                 </Button>
               </>
             )}
             <Button
               variant="ghost"
               size="sm"
-              className="text-negative"
+              className="h-7 w-7 p-0 text-slate-400 hover:text-red-600"
               aria-label={`Delete ${name}`}
               onClick={() => props.onRemove(node.id)}
             >
-              <CloseIcon className="size-4" aria-hidden />
+              <CloseIcon className="size-3.5" aria-hidden />
             </Button>
           </div>
-        ) : null}
+        ) : (
+          <div className="flex shrink-0 items-center text-slate-400 px-1.5 py-1">
+            <svg className="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+              <circle cx="12" cy="12" r="1" />
+              <circle cx="12" cy="5" r="1" />
+              <circle cx="12" cy="19" r="1" />
+            </svg>
+          </div>
+        )}
       </div>
+
       {problems.length > 0 ? <ProblemList id={problemsId} problems={problems} /> : null}
     </article>
   );
@@ -159,9 +241,20 @@ function StepCard({
 
 function BranchLabel({ label }: { label: "yes" | "no" }) {
   return (
-    <h3 className="text-xs font-bold uppercase tracking-wider text-muted">
-      {label === "yes" ? "Yes" : "No"}
-    </h3>
+    <div className="flex flex-col items-center">
+      <span
+        className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ring-1 ring-inset ${
+          label === "yes"
+            ? "bg-emerald-50 text-emerald-700 ring-emerald-600/20"
+            : "bg-rose-50 text-rose-700 ring-rose-600/20"
+        }`}
+      >
+        {label === "yes" ? "Yes" : "No"}
+      </span>
+      <svg className="size-3 text-slate-400 my-1" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth={2}>
+        <path d="M2 5l4 4 4-4" />
+      </svg>
+    </div>
   );
 }
 
@@ -169,10 +262,12 @@ function Branch({ label, slot, props, parent }: { label: "yes" | "no"; slot: Flo
   return (
     <section
       aria-label={`${label === "yes" ? "Yes" : "No"} path of step ${props.numbers.get(parent) ?? "?"}`}
-      className="flex min-w-0 flex-col gap-3 rounded-tile bg-sunken p-3"
+      className="flex min-w-0 flex-1 flex-col items-center gap-2"
     >
       <BranchLabel label={label} />
-      <SlotView slot={slot} props={props} branchLabel={label} parent={parent} />
+      <div className="w-full">
+        <SlotView slot={slot} props={props} branchLabel={label} parent={parent} />
+      </div>
     </section>
   );
 }
@@ -181,12 +276,19 @@ function StepItem({ step, props }: { step: FlowStep; props: FlowEditorProps }) {
   const { node, branches } = step;
   const number = props.numbers.get(node.id) ?? "?";
   return (
-    <li className="flex min-w-0 flex-col gap-3">
+    <li className="flex min-w-0 flex-col items-stretch w-full">
       <StepCard node={node} props={props} />
       {branches !== undefined ? (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Branch label="yes" slot={branches.yes} props={props} parent={node.id} />
-          <Branch label="no" slot={branches.no} props={props} parent={node.id} />
+        <div className="flex flex-col items-center w-full">
+          {/* Connector branching split */}
+          <div className="flex flex-col items-center w-full my-1" aria-hidden="true">
+            <div className="h-4 w-px bg-slate-300" />
+            <div className="w-3/4 border-t border-slate-300" />
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 w-full mt-1">
+            <Branch label="yes" slot={branches.yes} props={props} parent={node.id} />
+            <Branch label="no" slot={branches.no} props={props} parent={node.id} />
+          </div>
         </div>
       ) : (
         <>
@@ -218,13 +320,13 @@ function SlotView({
   return (
     <>
       {slot.steps.length > 0 ? (
-        <ol className="flex flex-col gap-3">
+        <ol className="flex flex-col gap-0 w-full items-stretch">
           {slot.steps.map((step) => (
             <StepItem key={step.node.id} step={step} props={props} />
           ))}
         </ol>
       ) : props.readOnly ? (
-        <p className="text-sm text-muted">Nothing on this path.</p>
+        <p className="text-xs text-slate-500 text-center py-2">Nothing on this path.</p>
       ) : (
         <AddStep at={tailPoint(slot)} label={emptyLabel} onAdd={props.onAdd} />
       )}
@@ -246,7 +348,7 @@ export function FlowEditor(props: FlowEditorProps) {
 
   if (flow.root === null) {
     return (
-      <p className="text-sm text-muted">
+      <p className="text-sm text-slate-500 text-center py-8">
         This automation has no trigger. Every automation starts from one event.
       </p>
     );
@@ -254,9 +356,11 @@ export function FlowEditor(props: FlowEditorProps) {
 
   const triggerNumber = props.numbers.get(flow.root.node.id) ?? 1;
   return (
-    <section ref={containerRef} aria-label="Automation flow" className="flex flex-col gap-3">
+    <section ref={containerRef} aria-label="Automation flow" className="flex flex-col items-center w-full py-2">
       <h2 className="sr-only">Steps in this automation</h2>
-      <StepCard node={flow.root.node} props={props} />
+      <div className="w-full">
+        <StepCard node={flow.root.node} props={props} />
+      </div>
       <Connector />
       {flow.path !== null && flow.path.steps.length > 0 ? (
         <>
@@ -267,15 +371,15 @@ export function FlowEditor(props: FlowEditorProps) {
               onAdd={props.onAdd}
             />
           )}
-          <Connector />
-          <ol className="flex flex-col gap-3">
+          {props.readOnly ? null : <Connector />}
+          <ol className="flex flex-col gap-0 w-full items-stretch">
             {flow.path.steps.map((step) => (
               <StepItem key={step.node.id} step={step} props={props} />
             ))}
           </ol>
         </>
       ) : props.readOnly ? (
-        <p className="text-sm text-muted">No steps after the trigger.</p>
+        <p className="text-sm text-slate-500 py-4 text-center">No steps after the trigger.</p>
       ) : (
         <AddStep
           at={{ from: flow.root.node.id }}
@@ -287,10 +391,10 @@ export function FlowEditor(props: FlowEditorProps) {
       {flow.orphans.length > 0 ? (
         <section
           aria-label="Steps not connected to the trigger"
-          className="flex flex-col gap-2 rounded-tile bg-sunken p-3"
+          className="flex flex-col gap-2 rounded-2xl border border-slate-200/80 bg-slate-50/80 p-4 mt-6 w-full"
         >
-          <h3 className="text-sm font-bold text-ink">Not connected</h3>
-          <p className="text-sm text-muted">The trigger can't reach these steps, so they never run.</p>
+          <h3 className="text-sm font-bold text-slate-900">Not connected</h3>
+          <p className="text-xs text-slate-500">The trigger can't reach these steps, so they never run.</p>
           <ul className="flex flex-col gap-2">
             {flow.orphans.map((node) => (
               <li key={node.id}>

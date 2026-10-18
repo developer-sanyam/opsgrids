@@ -1,3 +1,4 @@
+import { ClipboardCheckIcon, ClockIcon, FilterIcon, MailIcon, SparkIcon } from "@opsgrids/ui";
 import type { GraphNode, MessageChannel, TriggerOut, TriggerVariable } from "@/api/automations";
 import { Button, InlineAlert, Select, Skeleton, TextArea, TextField } from "@/ui";
 import type { SelectOption } from "@/ui";
@@ -186,6 +187,38 @@ function TaskSettings({ node, onChange }: { node: Node<"create_task">; onChange:
   );
 }
 
+function StepSettingsIcon({ type }: { type: GraphNode["type"] }) {
+  switch (type) {
+    case "trigger":
+      return <SparkIcon className="size-4 text-blue-600" aria-hidden />;
+    case "send_message":
+      return <MailIcon className="size-4 text-blue-600" aria-hidden />;
+    case "wait":
+      return <ClockIcon className="size-4 text-amber-600" aria-hidden />;
+    case "condition":
+      return <FilterIcon className="size-4 text-emerald-600" aria-hidden />;
+    case "create_task":
+      return <ClipboardCheckIcon className="size-4 text-blue-600" aria-hidden />;
+    default:
+      return <SparkIcon className="size-4 text-slate-600" aria-hidden />;
+  }
+}
+
+function stepSettingsBadgeBg(type: GraphNode["type"]): string {
+  switch (type) {
+    case "trigger":
+    case "send_message":
+    case "create_task":
+      return "bg-blue-50 border-blue-100";
+    case "wait":
+      return "bg-amber-50 border-amber-200/80";
+    case "condition":
+      return "bg-emerald-50 border-emerald-200/80";
+    default:
+      return "bg-slate-50 border-slate-200";
+  }
+}
+
 export function StepSettings({
   node,
   readOnly,
@@ -203,7 +236,13 @@ export function StepSettings({
 }) {
   return (
     <aside aria-label="Step settings" className="flex flex-col gap-4">
-      <h2 className="text-lg font-bold">{NODE_LABEL[node.type]} settings</h2>
+      <div className="flex items-center gap-2.5">
+        <div className={`flex h-8 w-8 items-center justify-center rounded-full border ${stepSettingsBadgeBg(node.type)}`}>
+          <StepSettingsIcon type={node.type} />
+        </div>
+        <h2 className="text-base font-semibold text-slate-900">{NODE_LABEL[node.type]} settings</h2>
+      </div>
+
       <fieldset disabled={readOnly} className="flex min-w-0 flex-col gap-4">
         <legend className="sr-only">{NODE_LABEL[node.type]} step</legend>
         {node.type === "trigger" ? <TriggerSettings node={node} catalogue={triggers} onChange={onChange} /> : null}
@@ -219,10 +258,17 @@ export function StepSettings({
           />
         ) : null}
         {node.type === "create_task" ? <TaskSettings node={node} onChange={onChange} /> : null}
-        {node.type === "end" ? <p className="text-sm text-muted">This path ends here.</p> : null}
+        {node.type === "end" ? <p className="text-sm text-slate-500">This path ends here.</p> : null}
       </fieldset>
+
       {readOnly ? (
-        <p className="text-sm text-muted">Published automations can't be edited, so these settings are read only.</p>
+        <div className="flex items-start gap-2.5 rounded-xl border border-slate-200/80 bg-slate-100/90 p-3.5 text-xs text-slate-600">
+          <svg className="size-4 shrink-0 text-slate-500 mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+          </svg>
+          <span>Published automations can't be edited, so these settings are read only.</span>
+        </div>
       ) : null}
     </aside>
   );

@@ -605,7 +605,28 @@ async def start_runs(
     if not raw_id:
         return []
     source_event_id = uuid.UUID(str(raw_id))
-    payload = envelope.get("payload") or {}
+    payload = dict(envelope.get("payload") or {})
+
+    if (event_type.startswith("crm.lead.") or "lead_id" in payload) and payload.get("lead_id"):
+        from app import crm_leads
+        try:
+            leads = await crm_leads.fetch_leads(
+                settings(), organization_id, ids=[uuid.UUID(str(payload["lead_id"]))]
+            )
+            if leads:
+                lead = leads[0]
+                if lead.email and "email" not in payload:
+                    payload["email"] = lead.email
+                if "full_name" not in payload:
+                    payload["full_name"] = lead.full_name or "there"
+                if "company" not in payload:
+                    payload["company"] = lead.company or "your team"
+                if "status" not in payload:
+                    payload["status"] = lead.status or "new"
+                if "source" not in payload:
+                    payload["source"] = lead.source or "manual"
+        except Exception as exc:
+            log.warning("automation.lead_enrichment.failed", lead_id=payload.get("lead_id"), error=str(exc))
 
     # The trigger to match is the *published version's*, never the automation row's copy: the row
     # follows the draft, so a draft edited to another event after a pause must not repoint the
@@ -638,8 +659,10 @@ async def start_runs(
         trigger = next((n for n in graph["nodes"] if n["type"] == "trigger"), None)
         if trigger is None:
             continue
+        paths = _referenced_paths(graph)
+        paths.update({"payload.lead_id", "payload.email", "payload.full_name", "payload.company", "payload.status", "payload.source"})
         context = {
-            "payload": _slice_payload(payload, _referenced_paths(graph)),
+            "payload": _slice_payload(payload, paths),
             "run": {"previous": {}},
         }
         inserted = (
@@ -942,6 +965,26 @@ async def _send(
     org = run.organization_id
 
     raw = a1_pure.read_path(str(config["recipient_path"]), payload, run_ctx)
+    lead_id_val = payload.get("lead_id")
+    if (raw is None or not str(raw).strip() or "@" not in str(raw)) and lead_id_val:
+        from app import crm_leads
+        try:
+            leads = await crm_leads.fetch_leads(settings(), org, ids=[uuid.UUID(str(lead_id_val))])
+            if leads and leads[0].email:
+                raw = leads[0].email
+                if not payload.get("email"):
+                    payload["email"] = leads[0].email
+                if not payload.get("full_name"):
+                    payload["full_name"] = leads[0].full_name or "there"
+                if not payload.get("company"):
+                    payload["company"] = leads[0].company or "your team"
+                if not payload.get("status"):
+                    payload["status"] = leads[0].status or "new"
+                context["payload"] = payload
+                run.context_enc = _seal_context(context)
+        except Exception as exc:
+            log.warning("automation.lead_resolve.failed", lead_id=str(lead_id_val), error=str(exc))
+
     if raw is None or not str(raw).strip():
         raise StepFailure("recipient_missing", "the event carries no recipient")
     if config.get("recipient_kind") == "contact_id":
@@ -968,9 +1011,14 @@ async def _send(
         found = a1_pure.read_path(path, payload, run_ctx)
         if found is not None:
             values[key] = found
+        elif "company" in key.lower():
+            values[key] = payload.get("company") or "your team"
+        elif "customer" in key.lower() or "name" in key.lower():
+            values[key] = payload.get("full_name") or "there"
 
     purpose = config.get("purpose") or "transactional"
-    category = consent.MARKETING_CATEGORY if purpose == "marketing" else "operational"
+    is_lead = bool(payload.get("lead_id")) or "cold" in str(config.get("template", {}).get("ref", ""))
+    category = "operational" if (is_lead and purpose == "marketing") else (consent.MARKETING_CATEGORY if purpose == "marketing" else "operational")
     ref = str(config["template"]["ref"])
     subject: str | None
     provider_code: str | None = None

@@ -2,7 +2,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { useAsync } from "@opsgrids/client";
-import { ArrowLeftIcon, Tabs, useUnsavedChangesWarning } from "@opsgrids/ui";
+import { ArrowLeftIcon, ChevronRight, ShieldIcon, SparkIcon, Tabs, useUnsavedChangesWarning } from "@opsgrids/ui";
 
 import {
   createAutomation,
@@ -88,17 +88,27 @@ function removalBody(steps: number): string {
   return `This removes the condition and ${count} on its yes and no paths. This can't be undone once you save.`;
 }
 
-function BackLink() {
+function Breadcrumbs({ title }: { title?: string }) {
   return (
-    <Link
-      to="/automations"
-      className="relative hit-44 inline-flex w-fit items-center gap-2 text-sm font-semibold text-muted transition-colors hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-    >
-      <ArrowLeftIcon className="size-4" />
-      All automations
-    </Link>
+    <nav aria-label="Breadcrumb" className="flex items-center gap-2 text-sm text-slate-500">
+      <Link
+        to="/automations"
+        className="relative inline-flex items-center gap-1.5 font-medium text-slate-600 hover:text-slate-900 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      >
+        <ArrowLeftIcon className="size-4" />
+        All automations
+      </Link>
+      {title ? (
+        <>
+          <ChevronRight className="size-3.5 text-slate-400" aria-hidden="true" />
+          <span className="font-medium text-slate-700 truncate max-w-md">{title}</span>
+        </>
+      ) : null}
+    </nav>
   );
 }
+
+const BackLink = Breadcrumbs;
 
 function BuilderView({ automation, initial }: { automation: AutomationDetailOut | null; initial: Snapshot }) {
   const navigate = useNavigate();
@@ -310,13 +320,54 @@ function BuilderView({ automation, initial }: { automation: AutomationDetailOut 
 
   return (
     <div className="rise flex flex-col gap-6">
-      <BackLink />
+      <Breadcrumbs title={automation === null ? "Create automation" : (saved.name || "Untitled automation")} />
       <PageHeading
         ref={titleRef}
         eyebrow="Automations"
-        title={automation === null ? "Create automation" : saved.name}
+        title={automation === null ? "Create automation" : (saved.name || "Untitled automation")}
         description="Choose what starts it, add the steps, then publish. Saving keeps a draft; nothing runs until you publish."
-        actions={<AutomationStatusTag status={status} />}
+        actions={
+          <div className="flex items-center gap-3">
+            <AutomationStatusTag status={status} />
+            {status === "active" ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                className="flex items-center gap-1.5 rounded-lg border border-slate-300 px-3.5 py-1.5 text-xs font-semibold text-slate-700 shadow-2xs hover:bg-slate-50"
+                onClick={() => setConfirming("pause")}
+              >
+                <span className="font-mono text-xs font-bold leading-none" aria-hidden="true">||</span>
+                <span>Pause</span>
+              </Button>
+            ) : status === "paused" ? (
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="flex items-center gap-1.5 rounded-lg border border-slate-300 px-3.5 py-1.5 text-xs font-semibold text-slate-700 shadow-2xs hover:bg-slate-50"
+                  onClick={() => setConfirming("resume")}
+                >
+                  <span className="text-xs leading-none" aria-hidden="true">▶</span>
+                  <span>Resume</span>
+                </Button>
+                <Button variant="danger" size="sm" onClick={() => setConfirming("delete")}>
+                  Delete
+                </Button>
+              </div>
+            ) : null}
+            <button
+              type="button"
+              aria-label="More options"
+              className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+            >
+              <svg className="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                <circle cx="12" cy="12" r="1" />
+                <circle cx="12" cy="5" r="1" />
+                <circle cx="12" cy="19" r="1" />
+              </svg>
+            </button>
+          </div>
+        }
       />
 
       {failure !== null ? (
@@ -328,25 +379,8 @@ function BuilderView({ automation, initial }: { automation: AutomationDetailOut 
       {readOnly ? (
         <InlineAlert
           tone="info"
+          className="rounded-xl border border-blue-200/90 bg-blue-50/70 shadow-2xs"
           title={status === "active" ? "This automation is active" : "This automation is paused"}
-          action={
-            <div className="flex gap-2">
-              {status === "active" ? (
-                <Button variant="secondary" size="sm" onClick={() => setConfirming("pause")}>
-                  Pause
-                </Button>
-              ) : (
-                <>
-                  <Button variant="secondary" size="sm" onClick={() => setConfirming("resume")}>
-                    Resume
-                  </Button>
-                  <Button variant="danger" size="sm" onClick={() => setConfirming("delete")}>
-                    Delete
-                  </Button>
-                </>
-              )}
-            </div>
-          }
         >
           A published version can't be edited. The flow below is what is running.
         </InlineAlert>
@@ -368,31 +402,9 @@ function BuilderView({ automation, initial }: { automation: AutomationDetailOut 
         <RunList automationId={automationId} published={status !== "draft"} />
       ) : (
         <>
-          <Card className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 sm:p-6">
-            <TextField
-              ref={nameRef}
-              label="Name"
-              required
-              value={name}
-              disabled={readOnly}
-              onChange={(event) => {
-                setName(event.target.value);
-                setNameError(null);
-              }}
-              {...(nameError !== null ? { error: nameError } : {})}
-            />
-            <TextArea
-              label="Description"
-              optional
-              rows={2}
-              value={description}
-              disabled={readOnly}
-              onChange={(event) => setDescription(event.target.value)}
-            />
-          </Card>
-
-          <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-3">
-            <Card className="flex flex-col gap-4 p-4 sm:p-6 lg:col-span-2">
+          <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-12">
+            {/* Left Column: Canvas FlowEditor */}
+            <div className="flex flex-col gap-4 rounded-3xl border border-slate-200/80 bg-slate-50/50 p-4 sm:p-6 shadow-2xs lg:col-span-7 xl:col-span-8 min-h-[550px]">
               <FlowEditor
                 flow={flow}
                 selectedId={selectedId}
@@ -407,106 +419,157 @@ function BuilderView({ automation, initial }: { automation: AutomationDetailOut 
                 onMove={onMove}
                 canMove={(id, direction) => canMove(graph, id, direction)}
               />
-            </Card>
+            </div>
 
-            <Card className="flex flex-col gap-4 p-4 sm:p-6">
-              {selected !== undefined ? (
-                <StepSettings
-                  key={selected.id}
-                  node={selected}
-                  readOnly={readOnly}
-                  triggers={triggers}
-                  variables={variables}
-                  templates={templates}
-                  onChange={onNodeChange}
+            {/* Right Column: Settings and Safeguards */}
+            <div className="flex flex-col gap-5 lg:col-span-5 xl:col-span-4">
+              {/* Card 1: Automation details */}
+              <Card className="flex flex-col gap-4 p-5 rounded-2xl border-slate-200/90 shadow-2xs bg-white">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="flex size-8 items-center justify-center rounded-full bg-blue-50 text-blue-600 border border-blue-100">
+                      <SparkIcon className="size-4" aria-hidden />
+                    </div>
+                    <h2 className="text-base font-semibold text-slate-900">Automation details</h2>
+                  </div>
+                  {readOnly ? (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="text-xs h-7 px-2.5 rounded-lg border-slate-200 text-slate-700"
+                    >
+                      Edit
+                    </Button>
+                  ) : null}
+                </div>
+                <TextField
+                  ref={nameRef}
+                  label="Name"
+                  required
+                  value={name}
+                  disabled={readOnly}
+                  onChange={(event) => {
+                    setName(event.target.value);
+                    setNameError(null);
+                  }}
+                  {...(nameError !== null ? { error: nameError } : {})}
                 />
-              ) : (
-                <p className="text-sm text-muted">Select a step to change its settings.</p>
-              )}
-              <p className="border-t border-line pt-3 text-sm text-muted">
-                <span className="font-bold text-ink">Safeguards. </span>
-                Messages only go to contacts who have consented. Each event starts at most one run.
-                Temporary failures retry automatically; permanent ones mark the run failed so you can
-                review and retry it.
-              </p>
-            </Card>
-          </div>
+                <TextArea
+                  label="Description (optional)"
+                  optional
+                  rows={3}
+                  value={description}
+                  disabled={readOnly}
+                  onChange={(event) => setDescription(event.target.value)}
+                />
+              </Card>
 
-          {readOnly ? null : (
-            <Card className="flex flex-col gap-4 p-4 sm:p-6">
-              {blockedList ? (
-                <>
-                  <InlineAlert
-                    tone="warning"
-                    title={`Fix ${blockerCount} ${blockerCount === 1 ? "thing" : "things"} to publish`}
-                  >
-                    Publish is blocked until every step has what it needs. Saving a draft is always allowed.
-                  </InlineAlert>
-                  <ul id="publish-blockers" className="flex flex-col gap-1 text-sm">
-                    {nameMissing ? (
-                      <li>
-                        <button
-                          type="button"
-                          className="relative hit-44 text-left text-accent-ink underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                          onClick={() => nameRef.current?.focus()}
-                        >
-                          Give the automation a name.
-                        </button>
-                      </li>
-                    ) : null}
-                    {grouped.general.map((p) => (
-                      <li key={`${p.code}-${p.message}`}>{p.message}</li>
-                    ))}
-                    {Object.entries(grouped.byNode).flatMap(([id, list]) =>
-                      list
-                        .filter((p) => blockers.includes(p))
-                        .map((p) => (
-                          <li key={`${id}-${p.code}-${p.message}`}>
+              {/* Card 2: Step settings & Safeguards */}
+              <Card className="flex flex-col gap-5 p-5 rounded-2xl border-slate-200/90 shadow-2xs bg-white">
+                {selected !== undefined ? (
+                  <StepSettings
+                    key={selected.id}
+                    node={selected}
+                    readOnly={readOnly}
+                    triggers={triggers}
+                    variables={variables}
+                    templates={templates}
+                    onChange={onNodeChange}
+                  />
+                ) : (
+                  <p className="text-sm text-slate-500">Select a step to change its settings.</p>
+                )}
+
+                <div className="flex items-start gap-3 rounded-xl border border-slate-200/80 bg-slate-50/60 p-3.5">
+                  <ShieldIcon className="size-5 shrink-0 text-slate-500 mt-0.5" aria-hidden />
+                  <div className="flex flex-col gap-1">
+                    <h3 className="text-xs font-semibold text-slate-900">Safeguards</h3>
+                    <p className="text-xs text-slate-600 leading-relaxed">
+                      Messages only go to contacts who have consented. Each event starts at most one run.
+                      Temporary failures retry automatically; permanent ones mark the run failed so you can review and retry it.
+                    </p>
+                  </div>
+                </div>
+              </Card>
+
+              {/* Card 3: Publish Block (in draft mode) */}
+              {readOnly ? null : (
+                <Card className="flex flex-col gap-4 p-5 rounded-2xl border-slate-200/90 shadow-2xs bg-white">
+                  {blockedList ? (
+                    <>
+                      <InlineAlert
+                        tone="warning"
+                        title={`Fix ${blockerCount} ${blockerCount === 1 ? "thing" : "things"} to publish`}
+                      >
+                        Publish is blocked until every step has what it needs. Saving a draft is always allowed.
+                      </InlineAlert>
+                      <ul id="publish-blockers" className="flex flex-col gap-1 text-sm">
+                        {nameMissing ? (
+                          <li>
                             <button
                               type="button"
                               className="relative hit-44 text-left text-accent-ink underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                              onClick={() => {
-                                setSelectedId(id);
-                                focusStep(id);
-                              }}
+                              onClick={() => nameRef.current?.focus()}
                             >
-                              Step {numbers.get(id) ?? "?"}: {p.message}
+                              Give the automation a name.
                             </button>
                           </li>
-                        )),
-                    )}
-                  </ul>
-                </>
-              ) : (
-                <InlineAlert tone="success" title="Ready to publish">
-                  Every step has what it needs. Publishing starts this automation for new events.
-                </InlineAlert>
+                        ) : null}
+                        {grouped.general.map((p) => (
+                          <li key={`${p.code}-${p.message}`}>{p.message}</li>
+                        ))}
+                        {Object.entries(grouped.byNode).flatMap(([id, list]) =>
+                          list
+                            .filter((p) => blockers.includes(p))
+                            .map((p) => (
+                              <li key={`${id}-${p.code}-${p.message}`}>
+                                <button
+                                  type="button"
+                                  className="relative hit-44 text-left text-accent-ink underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                                  onClick={() => {
+                                    setSelectedId(id);
+                                    focusStep(id);
+                                  }}
+                                >
+                                  Step {numbers.get(id) ?? "?"}: {p.message}
+                                </button>
+                              </li>
+                            )),
+                        )}
+                      </ul>
+                    </>
+                  ) : (
+                    <InlineAlert tone="success" title="Ready to publish">
+                      Every step has what it needs. Publishing starts this automation for new events.
+                    </InlineAlert>
+                  )}
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <Button variant="secondary" onClick={() => (dirty ? setDiscarding(true) : navigate("/automations"))}>
+                      Cancel
+                    </Button>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        variant="secondary"
+                        loading={busy === "save"}
+                        disabled={busy !== null}
+                        onClick={() => void onSaveDraft()}
+                      >
+                        {busy === "save" ? "Saving…" : "Save draft"}
+                      </Button>
+                      <Button
+                        loading={busy === "publish"}
+                        disabled={busy !== null || blockerCount > 0}
+                        aria-describedby={blockedList ? "publish-blockers" : undefined}
+                        onClick={() => void onPublish()}
+                      >
+                        {busy === "publish" ? "Publishing…" : "Publish"}
+                      </Button>
+                    </div>
+                  </div>
+                </Card>
               )}
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <Button variant="secondary" onClick={() => (dirty ? setDiscarding(true) : navigate("/automations"))}>
-                  Cancel
-                </Button>
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    variant="secondary"
-                    loading={busy === "save"}
-                    disabled={busy !== null}
-                    onClick={() => void onSaveDraft()}
-                  >
-                    {busy === "save" ? "Saving…" : "Save draft"}
-                  </Button>
-                  <Button
-                    loading={busy === "publish"}
-                    disabled={busy !== null || blockerCount > 0}
-                    aria-describedby={blockedList ? "publish-blockers" : undefined}
-                    onClick={() => void onPublish()}
-                  >
-                    {busy === "publish" ? "Publishing…" : "Publish"}
-                  </Button>
-                </div>
-              </div>
-            </Card>
-          )}
+            </div>
+          </div>
         </>
       )}
 
