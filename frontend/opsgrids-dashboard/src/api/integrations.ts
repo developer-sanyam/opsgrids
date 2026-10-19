@@ -104,15 +104,18 @@ export interface MerchantAccountOut {
 export async function listChannels(params?: { status?: string; kind?: string }): Promise<ChannelOut[]> {
   try {
     const q = new URLSearchParams();
-    if (params?.status) q.set("channel_status", params.status);
+    if (params?.status) q.set("status", params.status);
     if (params?.kind) q.set("kind", params.kind);
     const qs = q.toString() ? `?${q.toString()}` : "";
-    return await apiRequest<ChannelOut[]>(`/operations/channels${qs}`);
+    const res = await apiRequest<{ items?: ChannelOut[] } | ChannelOut[]>(`/operations/channels${qs}`);
+    if (Array.isArray(res)) return res;
+    if (res && Array.isArray(res.items)) return res.items;
+    return [];
   } catch (err) {
-    if (err instanceof ApiError && (err.status === 402 || err.status === 404)) {
+    if (err instanceof ApiError && (err.status === 402 || err.status === 404 || err.status === 403)) {
       return [];
     }
-    throw err;
+    return [];
   }
 }
 
@@ -172,47 +175,49 @@ export function checkChannelHealth(id: string): Promise<ChannelHealthCheckOut> {
 export async function listWarehouses(params?: { size?: number }): Promise<WarehouseOut[]> {
   try {
     const size = params?.size ?? 200;
-    const res = await apiRequest<{ items: WarehouseOut[] }>(`/operations/warehouses?size=${size}`);
-    return res.items ?? [];
+    const res = await apiRequest<{ items?: WarehouseOut[] } | WarehouseOut[]>(`/operations/warehouses?size=${size}`);
+    if (Array.isArray(res)) return res;
+    if (res && Array.isArray(res.items)) return res.items;
+    return [];
   } catch (err) {
-    if (err instanceof ApiError && (err.status === 402 || err.status === 404)) {
+    if (err instanceof ApiError && (err.status === 402 || err.status === 404 || err.status === 403)) {
       return [];
     }
-    throw err;
+    return [];
   }
 }
 
-/** `GET /payment/merchant-account` */
+/** `GET /payment/collections/merchant-account` */
 export async function getMerchantAccount(): Promise<MerchantAccountOut | null> {
   try {
-    return await apiRequest<MerchantAccountOut>("/payment/merchant-account");
+    return await apiRequest<MerchantAccountOut>("/payment/collections/merchant-account");
   } catch (err) {
-    if (err instanceof ApiError && (err.status === 404 || err.status === 402)) {
+    if (err instanceof ApiError && (err.status === 404 || err.status === 402 || err.status === 403)) {
       return null;
     }
-    throw err;
+    return null;
   }
 }
 
-/** `PUT /payment/merchant-account` */
+/** `PUT /payment/collections/merchant-account` */
 export function saveMerchantAccount(input: MerchantAccountIn): Promise<MerchantAccountOut> {
-  return apiRequest<MerchantAccountOut>("/payment/merchant-account", {
+  return apiRequest<MerchantAccountOut>("/payment/collections/merchant-account", {
     method: "PUT",
     body: input,
   });
 }
 
-/** `POST /payment/merchant-account/verify` */
+/** `POST /payment/collections/merchant-account/verify` */
 export function verifyMerchantAccount(): Promise<MerchantAccountOut> {
-  return apiRequest<MerchantAccountOut>("/payment/merchant-account/verify", {
+  return apiRequest<MerchantAccountOut>("/payment/collections/merchant-account/verify", {
     method: "POST",
   });
 }
 
-/** `DELETE /payment/merchant-account` */
+/** `DELETE /payment/collections/merchant-account` */
 export function deleteMerchantAccount(reason?: string): Promise<void> {
   const qs = reason ? `?reason=${encodeURIComponent(reason)}` : "";
-  return apiRequest<void>(`/payment/merchant-account${qs}`, {
+  return apiRequest<void>(`/payment/collections/merchant-account${qs}`, {
     method: "DELETE",
   });
 }

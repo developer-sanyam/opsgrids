@@ -5,7 +5,7 @@ import { useAsync } from "@opsgrids/client";
 import { Button, Card, EmptyState, PageHeader, SearchInput, StatusBadge } from "@opsgrids/ui";
 
 import { getMerchantAccount, listChannels, listWarehouses } from "@/api/integrations";
-import type { ChannelOut, MerchantAccountOut } from "@/api/integrations";
+import type { ChannelOut, MerchantAccountOut, WarehouseOut } from "@/api/integrations";
 import { CATEGORIES, groupConnectors } from "@/lib/integrations";
 import type { Connector } from "@/lib/integrations";
 
@@ -22,13 +22,23 @@ export function IntegrationsPage() {
 
   // Data fetching
   const channelsState = useAsync(() => listChannels(), []);
-  const channels = channelsState.status === "success" ? channelsState.data : [];
+  const channels: ChannelOut[] = Array.isArray(channelsState.data)
+    ? channelsState.data
+    : (channelsState.data as unknown as { items?: ChannelOut[] })?.items &&
+        Array.isArray((channelsState.data as unknown as { items: ChannelOut[] }).items)
+      ? (channelsState.data as unknown as { items: ChannelOut[] }).items
+      : [];
 
   const merchantState = useAsync(() => getMerchantAccount(), []);
-  const merchantAccount = merchantState.status === "success" ? merchantState.data : null;
+  const merchantAccount = merchantState.status === "success" && merchantState.data ? merchantState.data : null;
 
   const warehousesState = useAsync(() => listWarehouses(), []);
-  const warehouses = warehousesState.status === "success" ? warehousesState.data : [];
+  const warehouses: WarehouseOut[] = Array.isArray(warehousesState.data)
+    ? warehousesState.data
+    : (warehousesState.data as unknown as { items?: WarehouseOut[] })?.items &&
+        Array.isArray((warehousesState.data as unknown as { items: WarehouseOut[] }).items)
+      ? (warehousesState.data as unknown as { items: WarehouseOut[] }).items
+      : [];
 
   // Dialog state
   const [connectConnector, setConnectConnector] = useState<Connector | null>(null);
@@ -37,6 +47,7 @@ export function IntegrationsPage() {
 
   // Helper to determine live connection status
   function getConnectedChannel(key: string): ChannelOut | undefined {
+    if (!Array.isArray(channels)) return undefined;
     return channels.find((c) => c.provider === key && c.status === "connected");
   }
 
@@ -65,7 +76,8 @@ export function IntegrationsPage() {
     .filter((g): g is NonNullable<typeof g> => g !== null);
 
   const totalConnected =
-    channels.filter((c) => c.status === "connected").length + (merchantAccount ? 1 : 0);
+    (Array.isArray(channels) ? channels.filter((c) => c.status === "connected").length : 0) +
+    (merchantAccount ? 1 : 0);
   const totalCount = filteredGroups.reduce((acc, g) => acc + g.connectors.length, 0);
 
   function handleConnectClick(connector: Connector) {
