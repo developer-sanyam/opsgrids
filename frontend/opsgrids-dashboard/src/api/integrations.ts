@@ -32,27 +32,27 @@ export interface ChannelOut {
 
 export interface ChannelConnectIn {
   provider: string;
-  kind?: ChannelKind;
+  kind?: ChannelKind | undefined;
   name: string;
   external_shop_id: string;
   api_key: string;
-  api_secret?: string;
-  webhook_secret?: string;
+  api_secret?: string | undefined;
+  webhook_secret?: string | undefined;
   default_warehouse_id: string;
-  default_currency?: string;
-  auto_accept_orders?: boolean;
+  default_currency?: string | undefined;
+  auto_accept_orders?: boolean | undefined;
 }
 
 export interface ChannelConfigPatch {
-  name?: string;
-  default_warehouse_id?: string;
-  auto_accept_orders?: boolean;
+  name?: string | undefined;
+  default_warehouse_id?: string | undefined;
+  auto_accept_orders?: boolean | undefined;
 }
 
 export interface ChannelReconnectIn {
   api_key: string;
-  api_secret?: string;
-  webhook_secret?: string;
+  api_secret?: string | undefined;
+  webhook_secret?: string | undefined;
 }
 
 export interface ChannelSyncResultOut {
@@ -83,9 +83,9 @@ export interface MerchantAccountIn {
   provider: CollectionsProvider;
   key_id: string;
   key_secret: string;
-  webhook_secret?: string;
+  webhook_secret?: string | undefined;
   mode: "sandbox" | "production";
-  config?: Record<string, string | number | boolean>;
+  config?: Record<string, string | number | boolean> | undefined;
 }
 
 export interface MerchantAccountOut {

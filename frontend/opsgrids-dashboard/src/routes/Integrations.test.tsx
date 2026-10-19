@@ -3,43 +3,13 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
-import { CONNECTORS } from "@/lib/integrations";
+import * as api from "@/api/integrations";
 import { IntegrationsPage } from "./Integrations";
 
 vi.mock("@/api/integrations", () => ({
-  listChannels: vi.fn().mockResolvedValue([
-    {
-      id: "chan-1",
-      provider: "shopify",
-      kind: "sales",
-      name: "My Shopify Store",
-      status: "connected",
-      external_shop_id: "demo-store.myshopify.com",
-      api_key_masked: "shpat_...1234",
-      default_warehouse_id: "wh-1",
-      default_currency: "INR",
-      auto_accept_orders: true,
-      consecutive_failures: 0,
-      connected_at: "2026-10-18T10:00:00Z",
-      created_at: "2026-10-18T10:00:00Z",
-      updated_at: "2026-10-18T10:00:00Z",
-    },
-  ]),
-  getMerchantAccount: vi.fn().mockResolvedValue({
-    id: "merch-1",
-    provider: "razorpay",
-    key_id: "rzp_live_testkey123",
-    mode: "sandbox",
-    webhook_registered: true,
-    verified: true,
-    last_verified_at: "2026-10-18T10:00:00Z",
-    created_at: "2026-10-18T10:00:00Z",
-    updated_at: "2026-10-18T10:00:00Z",
-  }),
-  listWarehouses: vi.fn().mockResolvedValue([
-    { id: "wh-1", code: "WH-MUM", name: "Mumbai Central", active: true },
-    { id: "wh-2", code: "WH-DEL", name: "Delhi Hub", active: true },
-  ]),
+  listChannels: vi.fn(),
+  getMerchantAccount: vi.fn(),
+  listWarehouses: vi.fn(),
   connectChannel: vi.fn(),
   updateChannelConfig: vi.fn(),
   reconnectChannel: vi.fn(),
@@ -52,7 +22,51 @@ vi.mock("@/api/integrations", () => ({
   deleteMerchantAccount: vi.fn(),
 }));
 
+const mockChannel: api.ChannelOut = {
+  id: "chan-1",
+  provider: "shopify",
+  kind: "sales",
+  name: "My Shopify Store",
+  status: "connected",
+  external_shop_id: "demo-store.myshopify.com",
+  api_key_masked: "shpat_...1234",
+  default_warehouse_id: "wh-1",
+  default_currency: "INR",
+  auto_accept_orders: true,
+  consecutive_failures: 0,
+  last_orders_synced_at: null,
+  last_inventory_synced_at: null,
+  last_health_check_at: null,
+  last_error_code: null,
+  last_error_message: null,
+  disconnected_at: null,
+  connected_at: "2026-10-18T10:00:00Z",
+  created_at: "2026-10-18T10:00:00Z",
+  updated_at: "2026-10-18T10:00:00Z",
+};
+
+const mockMerchant: api.MerchantAccountOut = {
+  id: "merch-1",
+  provider: "razorpay",
+  key_id: "rzp_live_testkey123",
+  mode: "sandbox",
+  webhook_registered: true,
+  verified: true,
+  last_verified_at: "2026-10-18T10:00:00Z",
+  created_at: "2026-10-18T10:00:00Z",
+  updated_at: "2026-10-18T10:00:00Z",
+};
+
+const mockWarehouses: api.WarehouseOut[] = [
+  { id: "wh-1", code: "WH-MUM", name: "Mumbai Central", active: true },
+  { id: "wh-2", code: "WH-DEL", name: "Delhi Hub", active: true },
+];
+
 function arrange() {
+  vi.mocked(api.listChannels).mockResolvedValue([mockChannel]);
+  vi.mocked(api.getMerchantAccount).mockResolvedValue(mockMerchant);
+  vi.mocked(api.listWarehouses).mockResolvedValue(mockWarehouses);
+
   return render(
     <MemoryRouter initialEntries={["/integrations"]}>
       <IntegrationsPage />

@@ -102,7 +102,8 @@ export function ConnectPaymentDialog({
       ) : null}
 
       <RadioGroup
-        label="Environment"
+        legend="Environment"
+        name="payment-mode"
         value={mode}
         onChange={(val) => setMode(val as "sandbox" | "production")}
         options={[
