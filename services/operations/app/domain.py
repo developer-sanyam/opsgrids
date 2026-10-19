@@ -1019,7 +1019,35 @@ def shortest_walk_path(
 #: this environment (see `app/channels/mock_marketplace.py`). A real provider is a new
 #: `ChannelClient` (`app/channels/base.py`) plus a new entry here; nothing else about the module
 #: changes shape.
-CHANNEL_PROVIDERS: tuple[str, ...] = ("mock_marketplace", "shopify", "shiprocket", "delhivery")
+CHANNEL_PROVIDERS: tuple[str, ...] = (
+    "mock_marketplace",
+    "shopify",
+    "amazon",
+    "troology",
+    "bng",
+    "petpooja",
+    "gofrugal",
+    "gofrugal_hq",
+    "easyecom",
+    "rdep",
+    "unicommerce",
+    "shiprocket",
+    "delhivery",
+    "shiprocket_hyperlocal",
+    "delhivery_hyperlocal",
+    "fedex",
+    "dhl",
+    "qwqer",
+    "volta",
+    "borzo",
+    "borzo_eod",
+    "quickshift",
+    "dtdc",
+    "india_post",
+    "skye_air",
+    "mover",
+    "mover_on_demand",
+)
 
 #: `Channel.kind`'s vocabulary: what a connection is for. Only `sales` channels import orders.
 CHANNEL_KINDS: tuple[str, ...] = ("sales", "erp", "pos", "carrier")
@@ -1030,12 +1058,35 @@ CHANNEL_KINDS: tuple[str, ...] = ("sales", "erp", "pos", "carrier")
 CHANNEL_PROVIDER_KINDS: dict[str, str] = {
     "mock_marketplace": "sales",
     "shopify": "sales",
+    "amazon": "sales",
+    "troology": "sales",
+    "bng": "pos",
+    "petpooja": "pos",
+    "gofrugal": "erp",
+    "gofrugal_hq": "erp",
+    "easyecom": "erp",
+    "rdep": "erp",
+    "unicommerce": "erp",
     "shiprocket": "carrier",
     "delhivery": "carrier",
+    "shiprocket_hyperlocal": "carrier",
+    "delhivery_hyperlocal": "carrier",
+    "fedex": "carrier",
+    "dhl": "carrier",
+    "qwqer": "carrier",
+    "volta": "carrier",
+    "borzo": "carrier",
+    "borzo_eod": "carrier",
+    "quickshift": "carrier",
+    "dtdc": "carrier",
+    "india_post": "carrier",
+    "skye_air": "carrier",
+    "mover": "carrier",
+    "mover_on_demand": "carrier",
 }
 
 #: Carriers whose account login is two values (an email and a password), not one token.
-CARRIER_NEEDS_SECRET: frozenset[str] = frozenset({"shiprocket"})
+CARRIER_NEEDS_SECRET: frozenset[str] = frozenset({"shiprocket", "shiprocket_hyperlocal"})
 
 #: `Channel.status`'s vocabulary. `error` means the last sync attempt hit an auth failure (an
 #: expired or revoked credential) — the row is still configured, but nothing syncs again until it

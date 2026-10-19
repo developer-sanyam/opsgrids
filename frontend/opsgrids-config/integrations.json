@@ -2,15 +2,27 @@
   "categories": [
     {
       "key": "sales",
-      "name": "Sales"
+      "name": "Sales & Channels"
+    },
+    {
+      "key": "couriers",
+      "name": "Couriers & Logistics"
+    },
+    {
+      "key": "payments",
+      "name": "Payment Gateways"
+    },
+    {
+      "key": "messaging",
+      "name": "Messaging & Comms"
     },
     {
       "key": "pos",
-      "name": "POS"
+      "name": "POS Systems"
     },
     {
       "key": "erp",
-      "name": "ERP"
+      "name": "ERP & Supply Chain"
     },
     {
       "key": "accounting",
@@ -19,14 +31,6 @@
     {
       "key": "lab",
       "name": "Lab"
-    },
-    {
-      "key": "couriers",
-      "name": "Couriers"
-    },
-    {
-      "key": "payments",
-      "name": "Payments"
     }
   ],
   "connectors": [
@@ -36,7 +40,17 @@
       "category": "sales",
       "product": "operations",
       "path": "/channels",
-      "status": "coming_soon"
+      "status": "available",
+      "description": "Admin GraphQL sync: import orders, live inventory updates, and fulfilment tracking."
+    },
+    {
+      "key": "mock_marketplace",
+      "name": "Mock Marketplace (Sandbox)",
+      "category": "sales",
+      "product": "operations",
+      "path": "/channels",
+      "status": "available",
+      "description": "Self-hosted sandbox marketplace for staging, testing, and order flow verification."
     },
     {
       "key": "amazon",
@@ -44,7 +58,8 @@
       "category": "sales",
       "product": "operations",
       "path": "/channels",
-      "status": "coming_soon"
+      "status": "available",
+      "description": "Amazon SP-API integration for catalog listings, order routing, and inventory sync."
     },
     {
       "key": "troology",
@@ -52,87 +67,8 @@
       "category": "sales",
       "product": "operations",
       "path": "/channels",
-      "status": "coming_soon"
-    },
-    {
-      "key": "bng",
-      "name": "BNG",
-      "category": "pos",
-      "product": "operations",
-      "path": "/channels",
-      "status": "coming_soon"
-    },
-    {
-      "key": "petpooja",
-      "name": "Petpooja",
-      "category": "pos",
-      "product": "operations",
-      "path": "/channels",
-      "status": "coming_soon"
-    },
-    {
-      "key": "gofrugal",
-      "name": "Gofrugal",
-      "category": "erp",
-      "product": "operations",
-      "path": "/channels",
-      "status": "coming_soon"
-    },
-    {
-      "key": "gofrugal_hq",
-      "name": "Gofrugal HQ",
-      "category": "erp",
-      "product": "operations",
-      "path": "/channels",
-      "status": "coming_soon"
-    },
-    {
-      "key": "easyecom",
-      "name": "Easyecom",
-      "category": "erp",
-      "product": "operations",
-      "path": "/channels",
-      "status": "coming_soon"
-    },
-    {
-      "key": "rdep",
-      "name": "RDEP",
-      "category": "erp",
-      "product": "operations",
-      "path": "/channels",
-      "status": "coming_soon"
-    },
-    {
-      "key": "unicommerce",
-      "name": "Unicommerce",
-      "category": "erp",
-      "product": "operations",
-      "path": "/channels",
-      "status": "coming_soon"
-    },
-    {
-      "key": "efacto",
-      "name": "Efacto",
-      "category": "accounting",
-      "product": "finance",
-      "path": "/",
-      "status": "coming_soon"
-    },
-    {
-      "key": "petpooja_invoice",
-      "name": "Petpooja Invoice",
-      "category": "accounting",
-      "product": "finance",
-      "path": "/",
-      "status": "coming_soon"
-    },
-    {
-      "key": "crelio",
-      "name": "Crelio",
-      "category": "lab",
-      "product": null,
-      "path": null,
-      "status": "coming_soon"
+      "status": "available",
+      "description": "Troology sales channel connector for multi-store order management."
     },
     {
       "key": "shiprocket",
@@ -140,31 +76,8 @@
       "category": "couriers",
       "product": "operations",
       "path": "/channels",
-      "status": "coming_soon"
-    },
-    {
-      "key": "shiprocket_hyperlocal",
-      "name": "ShipRocket HyperLocal",
-      "category": "couriers",
-      "product": "operations",
-      "path": "/channels",
-      "status": "coming_soon"
-    },
-    {
-      "key": "fedex",
-      "name": "Fedex",
-      "category": "couriers",
-      "product": "operations",
-      "path": "/channels",
-      "status": "coming_soon"
-    },
-    {
-      "key": "dhl",
-      "name": "DHL",
-      "category": "couriers",
-      "product": "operations",
-      "path": "/channels",
-      "status": "coming_soon"
+      "status": "available",
+      "description": "Live courier booking, rate negotiation, label printing, and tracking webhooks."
     },
     {
       "key": "delhivery",
@@ -172,23 +85,17 @@
       "category": "couriers",
       "product": "operations",
       "path": "/channels",
-      "status": "coming_soon"
+      "status": "available",
+      "description": "Direct Delhivery integration with express dispatch, pickup scheduling, and scan-push tracking."
     },
     {
-      "key": "qwqer",
-      "name": "Qwqer",
+      "key": "shiprocket_hyperlocal",
+      "name": "ShipRocket HyperLocal",
       "category": "couriers",
       "product": "operations",
       "path": "/channels",
-      "status": "coming_soon"
-    },
-    {
-      "key": "volta",
-      "name": "Volta",
-      "category": "couriers",
-      "product": "operations",
-      "path": "/channels",
-      "status": "coming_soon"
+      "status": "available",
+      "description": "Hyperlocal quick commerce and on-demand delivery network."
     },
     {
       "key": "delhivery_hyperlocal",
@@ -196,31 +103,26 @@
       "category": "couriers",
       "product": "operations",
       "path": "/channels",
-      "status": "coming_soon"
+      "status": "available",
+      "description": "Same-day on-demand intra-city delivery with live GPS updates."
     },
     {
-      "key": "borzo",
-      "name": "Borzo",
+      "key": "fedex",
+      "name": "FedEx",
       "category": "couriers",
       "product": "operations",
       "path": "/channels",
-      "status": "coming_soon"
+      "status": "available",
+      "description": "Global and express parcel delivery, international customs documents, and live status."
     },
     {
-      "key": "borzo_eod",
-      "name": "Borzo EOD",
+      "key": "dhl",
+      "name": "DHL",
       "category": "couriers",
       "product": "operations",
       "path": "/channels",
-      "status": "coming_soon"
-    },
-    {
-      "key": "quickshift",
-      "name": "Quickshift",
-      "category": "couriers",
-      "product": "operations",
-      "path": "/channels",
-      "status": "coming_soon"
+      "status": "available",
+      "description": "DHL Express international courier shipping and automated airway bill generation."
     },
     {
       "key": "dtdc",
@@ -228,7 +130,35 @@
       "category": "couriers",
       "product": "operations",
       "path": "/channels",
-      "status": "coming_soon"
+      "status": "available",
+      "description": "DTDC domestic and regional courier services with doorstep pickup."
+    },
+    {
+      "key": "borzo",
+      "name": "Borzo",
+      "category": "couriers",
+      "product": "operations",
+      "path": "/channels",
+      "status": "available",
+      "description": "Bike and van courier network for rapid city deliveries."
+    },
+    {
+      "key": "borzo_eod",
+      "name": "Borzo EOD",
+      "category": "couriers",
+      "product": "operations",
+      "path": "/channels",
+      "status": "available",
+      "description": "End-of-day scheduled dispatch and bulk parcel pickup."
+    },
+    {
+      "key": "quickshift",
+      "name": "Quickshift",
+      "category": "couriers",
+      "product": "operations",
+      "path": "/channels",
+      "status": "available",
+      "description": "Warehousing and last-mile dispatch network."
     },
     {
       "key": "india_post",
@@ -236,7 +166,26 @@
       "category": "couriers",
       "product": "operations",
       "path": "/channels",
-      "status": "coming_soon"
+      "status": "available",
+      "description": "India Post Speed Post network reaching all pincodes across India."
+    },
+    {
+      "key": "qwqer",
+      "name": "Qwqer",
+      "category": "couriers",
+      "product": "operations",
+      "path": "/channels",
+      "status": "available",
+      "description": "Same-day point-to-point delivery services."
+    },
+    {
+      "key": "volta",
+      "name": "Volta",
+      "category": "couriers",
+      "product": "operations",
+      "path": "/channels",
+      "status": "available",
+      "description": "EV-first eco-friendly green delivery fleet."
     },
     {
       "key": "skye_air",
@@ -244,7 +193,8 @@
       "category": "couriers",
       "product": "operations",
       "path": "/channels",
-      "status": "coming_soon"
+      "status": "available",
+      "description": "Autonomous drone delivery for express medical and high-priority logistics."
     },
     {
       "key": "mover",
@@ -252,7 +202,8 @@
       "category": "couriers",
       "product": "operations",
       "path": "/channels",
-      "status": "coming_soon"
+      "status": "available",
+      "description": "Heavy goods and bulk transport dispatch."
     },
     {
       "key": "mover_on_demand",
@@ -260,71 +211,8 @@
       "category": "couriers",
       "product": "operations",
       "path": "/channels",
-      "status": "coming_soon"
-    },
-    {
-      "key": "cashfree",
-      "name": "Cashfree",
-      "category": "payments",
-      "product": "operations",
-      "path": "/settings/payments",
-      "status": "available"
-    },
-    {
-      "key": "cashfreemerchant",
-      "name": "CashfreeMerchant",
-      "category": "payments",
-      "product": "operations",
-      "path": "/settings/payments",
-      "status": "coming_soon"
-    },
-    {
-      "key": "ccavenue",
-      "name": "CCAvenue",
-      "category": "payments",
-      "product": "operations",
-      "path": "/settings/payments",
-      "status": "coming_soon"
-    },
-    {
-      "key": "emerchantpay",
-      "name": "Emerchantpay",
-      "category": "payments",
-      "product": "operations",
-      "path": "/settings/payments",
-      "status": "coming_soon"
-    },
-    {
-      "key": "mobikwik",
-      "name": "MobiKwik",
-      "category": "payments",
-      "product": "operations",
-      "path": "/settings/payments",
-      "status": "coming_soon"
-    },
-    {
-      "key": "paytm",
-      "name": "Paytm",
-      "category": "payments",
-      "product": "operations",
-      "path": "/settings/payments",
-      "status": "coming_soon"
-    },
-    {
-      "key": "payu",
-      "name": "PayU",
-      "category": "payments",
-      "product": "operations",
-      "path": "/settings/payments",
-      "status": "coming_soon"
-    },
-    {
-      "key": "phonepe",
-      "name": "PhonePe",
-      "category": "payments",
-      "product": "operations",
-      "path": "/settings/payments",
-      "status": "coming_soon"
+      "status": "available",
+      "description": "On-demand freight trucks and commercial tempo booking."
     },
     {
       "key": "razorpay",
@@ -332,7 +220,80 @@
       "category": "payments",
       "product": "operations",
       "path": "/settings/payments",
-      "status": "available"
+      "status": "available",
+      "description": "Accept cards, UPI, netbanking, and process automatic refunds with signed webhooks."
+    },
+    {
+      "key": "cashfree",
+      "name": "Cashfree",
+      "category": "payments",
+      "product": "operations",
+      "path": "/settings/payments",
+      "status": "available",
+      "description": "Seamless payment collections, UPI AutoPay, and webhook payment reconciliation."
+    },
+    {
+      "key": "phonepe",
+      "name": "PhonePe",
+      "category": "payments",
+      "product": "operations",
+      "path": "/settings/payments",
+      "status": "available",
+      "description": "PhonePe Standard Checkout V2 with redirect flow and server-to-server confirmation."
+    },
+    {
+      "key": "paytm",
+      "name": "Paytm",
+      "category": "payments",
+      "product": "operations",
+      "path": "/settings/payments",
+      "status": "available",
+      "description": "Paytm Standard Checkout with JS Checkout, QR payments, and status polling."
+    },
+    {
+      "key": "payu",
+      "name": "PayU",
+      "category": "payments",
+      "product": "operations",
+      "path": "/settings/payments",
+      "status": "available",
+      "description": "PayU Hosted Checkout with cryptographic hash verification and instant settlement."
+    },
+    {
+      "key": "cashfreemerchant",
+      "name": "CashfreeMerchant",
+      "category": "payments",
+      "product": "operations",
+      "path": "/settings/payments",
+      "status": "available",
+      "description": "Cashfree direct merchant settlement account."
+    },
+    {
+      "key": "ccavenue",
+      "name": "CCAvenue",
+      "category": "payments",
+      "product": "operations",
+      "path": "/settings/payments",
+      "status": "available",
+      "description": "CCAvenue multi-currency payment gateway."
+    },
+    {
+      "key": "emerchantpay",
+      "name": "Emerchantpay",
+      "category": "payments",
+      "product": "operations",
+      "path": "/settings/payments",
+      "status": "available",
+      "description": "Global merchant account for cross-border card acquiring."
+    },
+    {
+      "key": "mobikwik",
+      "name": "MobiKwik",
+      "category": "payments",
+      "product": "operations",
+      "path": "/settings/payments",
+      "status": "available",
+      "description": "MobiKwik wallet and ZIP pay-later checkout."
     },
     {
       "key": "stripe",
@@ -340,7 +301,116 @@
       "category": "payments",
       "product": "operations",
       "path": "/settings/payments",
-      "status": "coming_soon"
+      "status": "available",
+      "description": "International card payments, Apple Pay, Google Pay, and currency conversion."
+    },
+    {
+      "key": "whatsapp",
+      "name": "WhatsApp Business",
+      "category": "messaging",
+      "product": "engage",
+      "path": "/whatsapp/connection",
+      "status": "available",
+      "description": "Meta WhatsApp Cloud API: 2-way customer conversations and automated alert templates."
+    },
+    {
+      "key": "email",
+      "name": "Email Delivery (SMTP / SES)",
+      "category": "messaging",
+      "product": "engage",
+      "path": "/connection",
+      "status": "available",
+      "description": "Custom SMTP / Amazon SES outbound email delivery with automated bounce and delivery receipts."
+    },
+    {
+      "key": "bng",
+      "name": "BNG",
+      "category": "pos",
+      "product": "operations",
+      "path": "/channels",
+      "status": "available",
+      "description": "BNG POS counter ordering, barcode scanning, and store inventory sync."
+    },
+    {
+      "key": "petpooja",
+      "name": "Petpooja",
+      "category": "pos",
+      "product": "operations",
+      "path": "/channels",
+      "status": "available",
+      "description": "Petpooja POS menu sync, table billing, and multi-location aggregation."
+    },
+    {
+      "key": "gofrugal",
+      "name": "Gofrugal",
+      "category": "erp",
+      "product": "operations",
+      "path": "/channels",
+      "status": "available",
+      "description": "Gofrugal retail and distribution ERP sync."
+    },
+    {
+      "key": "gofrugal_hq",
+      "name": "Gofrugal HQ",
+      "category": "erp",
+      "product": "operations",
+      "path": "/channels",
+      "status": "available",
+      "description": "Centralized headquarters multi-branch retail management."
+    },
+    {
+      "key": "easyecom",
+      "name": "Easyecom",
+      "category": "erp",
+      "product": "operations",
+      "path": "/channels",
+      "status": "available",
+      "description": "Enterprise omnichannel inventory and warehouse management system."
+    },
+    {
+      "key": "rdep",
+      "name": "RDEP",
+      "category": "erp",
+      "product": "operations",
+      "path": "/channels",
+      "status": "available",
+      "description": "RDEP enterprise supply chain planning."
+    },
+    {
+      "key": "unicommerce",
+      "name": "Unicommerce",
+      "category": "erp",
+      "product": "operations",
+      "path": "/channels",
+      "status": "available",
+      "description": "Unicommerce Uniware warehouse and channel management."
+    },
+    {
+      "key": "efacto",
+      "name": "Efacto",
+      "category": "accounting",
+      "product": "finance",
+      "path": "/",
+      "status": "available",
+      "description": "Efacto financial ERP and ledger synchronization."
+    },
+    {
+      "key": "petpooja_invoice",
+      "name": "Petpooja Invoice",
+      "category": "accounting",
+      "product": "finance",
+      "path": "/",
+      "status": "available",
+      "description": "Sync customer invoices and sales summaries from Petpooja."
+    },
+    {
+      "key": "crelio",
+      "name": "Crelio",
+      "category": "lab",
+      "product": null,
+      "path": null,
+      "status": "available",
+      "description": "Crelio diagnostic laboratory management system integration."
     }
   ]
 }

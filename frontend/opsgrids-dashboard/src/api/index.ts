@@ -430,3 +430,7 @@ export function listAuditLog(service: string, params: AuditQuery): Promise<Audit
     `/audit/${encodeURIComponent(service)}${query(params as Record<string, string | number | boolean | undefined>)}`,
   );
 }
+
+// ------------------------------------------------------------------ integrations & channels
+export * from "./integrations";
+

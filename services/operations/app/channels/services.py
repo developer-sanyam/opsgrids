@@ -117,17 +117,15 @@ def _aad(organization_id: uuid.UUID, channel_id: uuid.UUID) -> bytes:
 
 
 def build_client(channel: Channel, *, api_key: str) -> ChannelClient:
-    """Constructs the configured `ChannelClient` for `channel.provider`. Only the mock provider
-    exists today (`app.domain.CHANNEL_PROVIDERS`); a real provider is a new branch here returning
-    a new adapter, nothing else about this module changes."""
-    if channel.provider == "mock_marketplace":
+    """Constructs the configured `ChannelClient` for `channel.provider`."""
+    if channel.provider == "shopify":
+        token, _ = shopify.unpack_credential(api_key)
+        return ShopifyClient(shop_domain=channel.external_shop_id, access_token=token)
+    if channel.provider in domain.CHANNEL_PROVIDERS:
         base_url = channel.api_base_url or settings().mock_marketplace_api_base
         return MockMarketplaceClient(
             base_url=base_url, shop_id=channel.external_shop_id, api_key=api_key
         )
-    if channel.provider == "shopify":
-        token, _ = shopify.unpack_credential(api_key)
-        return ShopifyClient(shop_domain=channel.external_shop_id, access_token=token)
     raise ValidationProblem(f"{channel.provider!r} is not a channel provider this build supports")
 
 

@@ -7,6 +7,7 @@ export interface Connector {
   key: string;
   name: string;
   category: string;
+  description?: string;
   /** The product that owns the connect flow; `null` while no product does (Lab). */
   product: PlatformProductKey | null;
   /** The page on that product's host where the connector is connected. */

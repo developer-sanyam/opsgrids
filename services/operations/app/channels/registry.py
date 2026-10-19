@@ -9,6 +9,7 @@ from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any
 
+from app import domain
 from app.channels import delhivery, shiprocket
 from app.channels.carrier import CarrierClient, CarrierCredential
 from app.channels.webhooks import VERIFIERS as _BASE_VERIFIERS
@@ -35,13 +36,20 @@ TRACKING_MAPPERS: dict[str, Callable[[Mapping[str, Any]], tuple[str, str, dateti
 
 def build_carrier_client(provider: str, credential: CarrierCredential) -> CarrierClient:
     """The adapter for `provider`, built from the opened credential. No I/O here."""
-    if provider == "shiprocket":
+    if provider in ("shiprocket", "shiprocket_hyperlocal"):
         return shiprocket.ShiprocketClient(
             base_url=settings().shiprocket_api_base,
             email=credential.key,
             password=credential.secret,
         )
-    if provider == "delhivery":
+    if provider in ("delhivery", "delhivery_hyperlocal"):
+        return delhivery.DelhiveryClient(
+            base_url=settings().delhivery_api_base, token=credential.key
+        )
+    if (
+        provider in domain.CHANNEL_PROVIDERS
+        and domain.CHANNEL_PROVIDER_KINDS.get(provider) == "carrier"
+    ):
         return delhivery.DelhiveryClient(
             base_url=settings().delhivery_api_base, token=credential.key
         )

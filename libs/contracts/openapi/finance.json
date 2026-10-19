@@ -3290,7 +3290,7 @@
             "type": "string"
           },
           "sample": {
-            "default": true,
+            "default": false,
             "title": "Sample",
             "type": "boolean"
           }
@@ -6882,7 +6882,27 @@
     },
     "/api/v1/finance/ledger": {
       "get": {
+        "description": "The trial-balance report computed from this organization's booked invoices, credit notes,\nand purchase documents.",
         "operationId": "get_ledger_api_v1_finance_ledger_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "as_of",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As Of"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -6893,6 +6913,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Ledger / trial balance",

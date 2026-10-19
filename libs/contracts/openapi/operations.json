@@ -2164,12 +2164,6 @@
             "type": "string"
           },
           "provider": {
-            "enum": [
-              "mock_marketplace",
-              "shopify",
-              "shiprocket",
-              "delhivery"
-            ],
             "title": "Provider",
             "type": "string"
           },
