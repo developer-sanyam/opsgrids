@@ -827,6 +827,7 @@ export async function updateOwner(id: string, patch: OwnerPatch): Promise<Owner>
 // server-side and never returned. `converted_*` are set together, once, by `convertLead`.
 
 export interface ListLeadsParams {
+  q?: string | undefined;
   status?: LeadStatus | "all";
   source?: LeadSource | "all";
   ownerId?: string | "all";
@@ -839,16 +840,24 @@ export async function listLeads(params: ListLeadsParams = {}): Promise<Page<Lead
   const page = params.page ?? 1;
   const size = params.size ?? DEFAULT_PAGE_SIZE;
   if (USE_FIXTURES) {
+    const qLower = params.q?.trim().toLowerCase();
     const filtered = LEADS.filter((l) => {
       const matchesStatus = !params.status || params.status === "all" || l.status === params.status;
       const matchesSource = !params.source || params.source === "all" || l.source === params.source;
       const matchesOwner =
         !params.ownerId || params.ownerId === "all" || l.owner_id === params.ownerId;
-      return matchesStatus && matchesSource && matchesOwner;
+      const matchesQ =
+        !qLower ||
+        l.full_name.toLowerCase().includes(qLower) ||
+        Boolean(l.company && l.company.toLowerCase().includes(qLower)) ||
+        Boolean(l.email && l.email.toLowerCase().includes(qLower)) ||
+        Boolean(l.phone && l.phone.toLowerCase().includes(qLower));
+      return matchesStatus && matchesSource && matchesOwner && matchesQ;
     });
     return settle(paginateFixture(filtered, page, size));
   }
   const query = new URLSearchParams({ page: String(page), size: String(size) });
+  if (params.q) query.set("q", params.q.trim());
   if (params.status && params.status !== "all") query.set("status", params.status);
   if (params.source && params.source !== "all") query.set("source", params.source);
   if (params.ownerId && params.ownerId !== "all") query.set("owner_id", params.ownerId);

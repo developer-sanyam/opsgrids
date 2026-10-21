@@ -10,7 +10,7 @@ import { leadImport } from "@/data/importExport/leads";
 import type { LeadFilters } from "@/data/importExport/leads";
 import { formatDate } from "@/lib/format";
 import { Can, problemMessage, useAsync, useCan, useEntitlement, useImportExport } from "@opsgrids/client";
-import { ImportExportButton, MailIcon, PlusIcon, UserPlusIcon, ChipRow, useToast } from "@opsgrids/ui";
+import { ImportExportButton, MailIcon, PlusIcon, UserPlusIcon, ChipRow, useDebouncedValue, useToast } from "@opsgrids/ui";
 import {
   Button,
   Card,
@@ -22,6 +22,7 @@ import {
   PageHeader,
   Pagination,
   Pill,
+  SearchInput,
   Select,
   Skeleton,
 } from "@/ui";
@@ -105,6 +106,8 @@ function buildColumns(): Column<Lead>[] {
 export function LeadsPage() {
   const directory = useDirectory();
   const myRep = useMyRep();
+  const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search, 250);
   const [status, setStatus] = useState<StatusFilter>("all");
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(PAGE_SIZE);
@@ -115,10 +118,17 @@ export function LeadsPage() {
   const toast = useToast();
 
   const loader = useCallback(
-    () => listLeads({ status, source, page, size }),
-    [status, source, page, size],
+    () =>
+      listLeads({
+        ...(debouncedSearch.trim() ? { q: debouncedSearch.trim() } : {}),
+        status,
+        source,
+        page,
+        size,
+      }),
+    [debouncedSearch, status, source, page, size],
   );
-  const leads = useAsync(loader, [status, source, page, size]);
+  const leads = useAsync(loader, [debouncedSearch, status, source, page, size]);
   const columns = useMemo(() => buildColumns(), []);
   const canCreate = useCan("crm.lead.lead.write", "OWN");
   // Hides the control only; the server checks the entitlement, both permissions and lead scope.
@@ -191,32 +201,45 @@ export function LeadsPage() {
       />
 
       <Card className="flex flex-col gap-4 p-4 sm:p-5">
-        <ChipRow label="Filter leads by status">
-          {STATUS_FILTERS.map((f) => (
-            <Pill
-              key={f.value}
-              active={status === f.value}
-              onClick={() => {
-                setStatus(f.value);
-                setPage(1);
-                setSelected(new Set());
-              }}
-            >
-              {f.label}
-            </Pill>
-          ))}
-        </ChipRow>
-        <Select
-          label="Source"
-          containerClassName="sm:max-w-xs"
-          value={source}
-          onChange={(e) => {
-            setSource(e.target.value as SourceFilter);
-            setPage(1);
-            setSelected(new Set());
-          }}
-          options={SOURCE_FILTERS}
-        />
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+          <SearchInput
+            label="Search leads"
+            placeholder="Search by name, company, email or phone…"
+            value={search}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(1);
+              setSelected(new Set());
+            }}
+            containerClassName="w-full lg:max-w-xs"
+          />
+          <ChipRow label="Filter leads by status" className="overflow-x-auto">
+            {STATUS_FILTERS.map((f) => (
+              <Pill
+                key={f.value}
+                active={status === f.value}
+                onClick={() => {
+                  setStatus(f.value);
+                  setPage(1);
+                  setSelected(new Set());
+                }}
+              >
+                {f.label}
+              </Pill>
+            ))}
+          </ChipRow>
+          <Select
+            label="Source"
+            containerClassName="w-full sm:max-w-xs lg:w-44"
+            value={source}
+            onChange={(e) => {
+              setSource(e.target.value as SourceFilter);
+              setPage(1);
+              setSelected(new Set());
+            }}
+            options={SOURCE_FILTERS}
+          />
+        </div>
       </Card>
 
       {leads.status === "loading" ? (
@@ -244,14 +267,32 @@ export function LeadsPage() {
           <Card className="p-6">
             <EmptyState
               icon={<UserPlusIcon className="size-6" />}
-              title="No leads yet"
-              description="Capture the first one by hand, or wait for the web form and imports to start flowing in."
+              title={search ? "No leads match that search" : "No leads yet"}
+              description={
+                search
+                  ? "Try a different name, company or clear the search to see all leads."
+                  : "Capture the first one by hand, or wait for the web form and imports to start flowing in."
+              }
               action={
-                <Can permission="crm.lead.lead.write" scope="OWN">
-                  <Button size="sm" onClick={() => setCreating(true)}>
-                    Capture lead
+                search ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setSearch("");
+                      setPage(1);
+                      setSelected(new Set());
+                    }}
+                  >
+                    Clear search
                   </Button>
-                </Can>
+                ) : (
+                  <Can permission="crm.lead.lead.write" scope="OWN">
+                    <Button size="sm" onClick={() => setCreating(true)}>
+                      Capture lead
+                    </Button>
+                  </Can>
+                )
               }
             />
           </Card>

@@ -165,11 +165,12 @@ async def list_leads(
     session: SessionDep,
     ctx: LeadRead,
     params: PageQuery,
+    q: Annotated[str | None, Query(description="Search by name, company, email or phone")] = None,
     lead_status: Annotated[str | None, Query(alias="status")] = None,
     owner_id: Annotated[uuid.UUID | None, Query()] = None,
     source: Annotated[LeadSource | None, Query()] = None,
 ) -> Page[LeadOut]:
-    stmt = selectors.leads_stmt(ctx, status=lead_status, owner_id=owner_id, source=source)
+    stmt = selectors.leads_stmt(ctx, q=q, status=lead_status, owner_id=owner_id, source=source)
     rows, total = await paginate(session, stmt, params)
     return Page.build([selectors.lead_out(lead) for lead in rows], total=total, params=params)
 

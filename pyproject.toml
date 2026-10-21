@@ -144,6 +144,7 @@ ignore = [
 # subprocesses and printing diagnostics is the job rather than a smell. The password is a
 # seeded test credential that never leaves the local database.
 "e2e/**" = ["S105", "S603", "S607", "T201"]
+"tools/whatsapp_personal/**" = ["S603", "S607"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["platform_core", "app"]

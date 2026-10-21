@@ -15,7 +15,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import domain
@@ -29,6 +29,7 @@ from platform_core.auth import ScopeContext
 def leads_stmt(
     ctx: ScopeContext,
     *,
+    q: str | None = None,
     status: str | None = None,
     owner_id: uuid.UUID | None = None,
     source: str | None = None,
@@ -39,6 +40,16 @@ def leads_stmt(
         Lead.deleted_at.is_(None),
     )
     stmt = ctx.apply(stmt, owner_col=Lead.owner_id)
+    if q:
+        needle = f"%{q.lower().strip()}%"
+        stmt = stmt.where(
+            or_(
+                func.lower(Lead.full_name).like(needle),
+                func.lower(Lead.company).like(needle),
+                func.lower(Lead.email_masked).like(needle),
+                func.lower(Lead.phone_masked).like(needle),
+            )
+        )
     if status is not None:
         stmt = stmt.where(Lead.status == status)
     if owner_id is not None:
