@@ -141,19 +141,34 @@ describe("connecting", () => {
 });
 
 describe("personal whatsapp qr", () => {
-  it("renders personal whatsapp qr instructions and ai simulator", async () => {
+  it("renders personal whatsapp qr bridge and self-service portal", async () => {
     vi.spyOn(client, "getWhatsAppConnection").mockResolvedValue(page([]));
     const user = userEvent.setup();
     renderPage();
 
     expect(await screen.findByText("Personal WhatsApp (QR Code Multi-Device)")).toBeTruthy();
     expect(screen.getByText("Bridge Ready")).toBeTruthy();
-    expect(screen.getByText(/uv run python -m tools.whatsapp_personal.cli connect/)).toBeTruthy();
+    expect(screen.getByText("Zero Code • Self-Service")).toBeTruthy();
+    expect(screen.getByText("1. Scan QR Code & Connect")).toBeTruthy();
+    expect(screen.getByText("Open WhatsApp on your mobile phone")).toBeTruthy();
 
-    const simBtn = screen.getByRole("button", { name: "Simulate Auto-Reply" });
-    expect(simBtn).toBeTruthy();
-    await user.click(simBtn);
+    // Click Confirm Scanned Phone
+    const confirmBtn = screen.getByRole("button", { name: /Confirm Scanned Phone/i });
+    expect(confirmBtn).toBeTruthy();
+    await user.click(confirmBtn);
+    expect(screen.getByText(/Connected: \+91 98765 43210/)).toBeTruthy();
 
-    expect(await screen.findByText(/AI Response \(WhatsApp channel\):/)).toBeTruthy();
+    // Switch to Messages tab
+    const messagesTab = screen.getByRole("button", { name: /2\. Messages \(Inbound & Outgoing\)/i });
+    await user.click(messagesTab);
+    expect(await screen.findByText(/Abhay Pharma/)).toBeTruthy();
+    expect(screen.getByText(/Orex Pharma/)).toBeTruthy();
+    expect(screen.getByText(/Inbound & Outgoing Message Stream/)).toBeTruthy();
+
+    // Switch to AI Configuration tab
+    const configTab = screen.getByRole("button", { name: /3\. AI Configuration/i });
+    await user.click(configTab);
+    expect(await screen.findByText("AI Model Provider")).toBeTruthy();
+    expect(screen.getByText("Spam & Duplicate Shield")).toBeTruthy();
   });
 });
