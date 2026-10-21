@@ -139,3 +139,21 @@ describe("connecting", () => {
     expect(spy).not.toHaveBeenCalled();
   });
 });
+
+describe("personal whatsapp qr", () => {
+  it("renders personal whatsapp qr instructions and ai simulator", async () => {
+    vi.spyOn(client, "getWhatsAppConnection").mockResolvedValue(page([]));
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(await screen.findByText("Personal WhatsApp (QR Code Multi-Device)")).toBeTruthy();
+    expect(screen.getByText("Bridge Ready")).toBeTruthy();
+    expect(screen.getByText(/uv run python -m tools.whatsapp_personal.cli connect/)).toBeTruthy();
+
+    const simBtn = screen.getByRole("button", { name: "Simulate Auto-Reply" });
+    expect(simBtn).toBeTruthy();
+    await user.click(simBtn);
+
+    expect(await screen.findByText(/AI Response \(WhatsApp channel\):/)).toBeTruthy();
+  });
+});
