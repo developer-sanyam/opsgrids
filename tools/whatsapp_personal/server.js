@@ -334,31 +334,243 @@ function getRecentConversationHistory(senderPhone, limit = 8) {
   }));
 }
 
+function analyzePastConversation(pastHistory) {
+  if (!Array.isArray(pastHistory)) return { lastBotMsg: '', userTopics: new Set() };
+
+  let lastBotMsg = '';
+  const userTopics = new Set();
+
+  // Traverse in reverse to find the previous assistant message and extract topics from user turns
+  for (let i = pastHistory.length - 1; i >= 0; i--) {
+    const item = pastHistory[i];
+    if (item.role === 'assistant' && !lastBotMsg && item.content) {
+      lastBotMsg = item.content;
+    }
+    if (item.role === 'user' && item.content) {
+      const text = item.content.toLowerCase();
+      if (text.includes('crm') || text.includes('sales') || text.includes('pipeline') || text.includes('deal')) {
+        userTopics.add('crm');
+      }
+      if (
+        text.includes('attendance') ||
+        text.includes('hrms') ||
+        text.includes('leave') ||
+        text.includes('clock') ||
+        text.includes('shift')
+      ) {
+        userTopics.add('attendance');
+      }
+      if (
+        text.includes('invoice') ||
+        text.includes('billing') ||
+        text.includes('payment') ||
+        text.includes('gst')
+      ) {
+        userTopics.add('invoicing');
+      }
+      if (
+        text.includes('inventory') ||
+        text.includes('stock') ||
+        text.includes('warehouse')
+      ) {
+        userTopics.add('inventory');
+      }
+      if (
+        text.includes('demo') ||
+        text.includes('walkthrough') ||
+        text.includes('trial') ||
+        text.includes('schedule')
+      ) {
+        userTopics.add('demo');
+      }
+      if (
+        text.includes('price') ||
+        text.includes('cost') ||
+        text.includes('quot') ||
+        text.includes('how much')
+      ) {
+        userTopics.add('pricing');
+      }
+    }
+  }
+
+  return { lastBotMsg, userTopics };
+}
+
 function generateSmartFallback(incomingText, pastHistory, senderPhone) {
   const lower = incomingText.toLowerCase().trim();
-  const company = aiConfig.businessName || 'our company';
+  const company = aiConfig.businessName || 'OpsGrids';
   const desc = aiConfig.businessDescription || '';
   const isOpsGrids = company.toLowerCase().includes('opsgrids');
 
-  // 1. Acknowledgements
-  if (/^(ok|okay|k|thx|thanks|thank you|cool|sure|got it|noted|alright|fine)\b/.test(lower)) {
-    return `You're welcome! Feel free to ask any other questions about ${company} or let us know if you need anything else.`;
+  const { lastBotMsg, userTopics } = analyzePastConversation(pastHistory);
+  const lastBotLower = (lastBotMsg || '').toLowerCase();
+
+  // 1. Check if user is sharing date, time, availability or email address
+  const hasEmail = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/.test(incomingText);
+  const hasDateTime =
+    /\b(tomorrow|today|tonight|morning|afternoon|evening|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}\s*(am|pm)|\d{1,2}:\d{2})\b/i.test(lower) ||
+    lower.includes('this week') ||
+    lower.includes('next week') ||
+    lower.includes('at 3') ||
+    lower.includes('at 4') ||
+    lower.includes('at 5') ||
+    lower.includes('at 11') ||
+    lower.includes('at 12');
+
+  if (hasEmail || (hasDateTime && (lastBotLower.includes('time') || lastBotLower.includes('date') || lastBotLower.includes('schedule') || lastBotLower.includes('walkthrough') || lastBotLower.includes('demo')))) {
+    return `Thank you! We've noted your availability for the ${company} walkthrough. Our specialist will confirm and send the calendar invite to your WhatsApp and email. Feel free to ask if you have any questions in the meantime!`;
   }
 
-  // 2. Demo, Walkthrough, Consultation or Meeting
+  // 2. Affirmative / agreement answers ("yes", "sure", "yeah", "yep", "please", "okay", "interested", "ok", "haan", "show me")
+  const isAffirmative = /^(yes|yeah|yep|sure|definitely|absolutely|certainly|ok|okay|please|yup|ya|ha|haan|s|1|show me|interested|book it|schedule it)\b/i.test(lower);
+
+  if (isAffirmative) {
+    if (
+      lastBotLower.includes('walkthrough') ||
+      lastBotLower.includes('demo') ||
+      lastBotLower.includes('schedule') ||
+      lastBotLower.includes('see how it works') ||
+      lastBotLower.includes('more details')
+    ) {
+      if (userTopics.has('crm') || lastBotLower.includes('crm')) {
+        return `Awesome! What day, time, and email address work best for your live ${company} CRM walkthrough? We will send the calendar invite right away.`;
+      }
+      if (userTopics.has('attendance') || lastBotLower.includes('attendance') || lastBotLower.includes('hrms')) {
+        return `Awesome! What day, time, and email address work best for your live ${company} HRMS & Attendance walkthrough? We will send the calendar invite right away.`;
+      }
+      if (userTopics.has('invoicing') || lastBotLower.includes('invoice') || lastBotLower.includes('billing')) {
+        return `Awesome! What day, time, and email address work best for your live ${company} Invoicing & Finance walkthrough? We will send the calendar invite right away.`;
+      }
+      if (userTopics.has('inventory') || lastBotLower.includes('inventory')) {
+        return `Awesome! What day, time, and email address work best for your live ${company} Inventory walkthrough? We will send the calendar invite right away.`;
+      }
+      return `Awesome! What day, time, and email address work best for your live walkthrough with our product specialist?`;
+    }
+
+    if (lastBotLower.includes('which solution') || lastBotLower.includes('most interested in')) {
+      return `We would be happy to give you a complete walkthrough covering CRM, Attendance, Invoicing, and Inventory. What date and time this week works best for you?`;
+    }
+
+    if (lastBotLower.includes('price') || lastBotLower.includes('pricing') || lastBotLower.includes('quote')) {
+      return `Great! How many team members will be using ${company}, and which modules do you need? We'll provide an instant pricing estimate.`;
+    }
+
+    return `Great! How can our team at ${company} assist you further today?`;
+  }
+
+  // 3. User requests / confirms scheduling a demo or walkthrough
   if (
     lower.includes('demo') ||
     lower.includes('walkthrough') ||
     lower.includes('trial') ||
-    lower.includes('meeting') ||
+    lower.includes('schedule') ||
     lower.includes('appointment') ||
     lower.includes('consultation') ||
-    lower.includes('presentation')
+    lower.includes('meeting')
   ) {
-    return `We would be delighted to arrange a demo for ${company}! Could you please share your preferred date/time or email address so our team can coordinate?`;
+    // If the bot ALREADY asked or mentioned scheduling a demo, advance to asking for date/time/email!
+    if (lastBotLower.includes('walkthrough') || lastBotLower.includes('demo') || lastBotLower.includes('schedule')) {
+      return `Perfect! What date and time this week works best for you? Please also share your email address so our specialist can send the calendar invite.`;
+    }
+    return `We would be delighted to schedule a demo for ${company}! Could you please share your preferred date/time and email address so our team can coordinate?`;
   }
 
-  // 3. Pricing, Cost, Rates, Quotation
+  // 4. Acknowledgements ("thanks", "thank you", "cool", "got it", "noted")
+  if (/^(thx|thanks|thank you|cool|got it|noted|alright|fine)\b/.test(lower)) {
+    return `You're welcome! Feel free to ask any other questions about ${company} or let us know if you need anything else.`;
+  }
+
+  // 5. Specific Product Inquiries (CRM, Attendance, Invoicing, Inventory)
+  if (
+    lower.includes('crm') ||
+    lower.includes('lead') ||
+    lower.includes('sales') ||
+    lower.includes('pipeline') ||
+    lower.includes('deal') ||
+    lower.includes('contact')
+  ) {
+    if (isOpsGrids) {
+      return 'OpsGrids CRM manages your complete sales pipeline, customer contacts, deal stages, and conversion tracking in one unified place. Would you like to see how it works?';
+    }
+    return `${company} provides customer relationship management and sales tracking. Would you like a demo?`;
+  }
+
+  if (
+    lower.includes('attendance') ||
+    lower.includes('hrms') ||
+    lower.includes('leave') ||
+    lower.includes('employee') ||
+    lower.includes('clock') ||
+    lower.includes('shift') ||
+    lower.includes('payroll')
+  ) {
+    if (isOpsGrids) {
+      return 'OpsGrids HRMS includes real-time mobile and biometric attendance tracking, shift scheduling, and leave approval workflows. Would you like more details?';
+    }
+    return `${company} provides employee attendance and workforce management solutions. Would you like more details?`;
+  }
+
+  if (
+    lower.includes('invoice') ||
+    lower.includes('billing') ||
+    lower.includes('payment') ||
+    lower.includes('gst') ||
+    lower.includes('tax') ||
+    lower.includes('subscription')
+  ) {
+    if (isOpsGrids) {
+      return 'OpsGrids Finance creates GST-compliant invoices and collects payments via UPI, cards, and net banking with automated reconciliation. Can we help set this up for your team?';
+    }
+    return `${company} provides invoicing and billing management solutions. Can we share a walkthrough?`;
+  }
+
+  if (
+    lower.includes('inventory') ||
+    lower.includes('stock') ||
+    lower.includes('warehouse') ||
+    lower.includes('sku') ||
+    lower.includes('purchase order') ||
+    lower.includes('dispatch')
+  ) {
+    if (isOpsGrids) {
+      return 'OpsGrids Inventory tracks multi-warehouse stock levels, SKU movements, purchase orders, and vendor shipments in real time. Would you like a demo?';
+    }
+    return `${company} provides stock and inventory tracking. Would you like more details?`;
+  }
+
+  if (
+    lower.includes('whatsapp') ||
+    lower.includes('engage') ||
+    lower.includes('campaign') ||
+    lower.includes('inbox')
+  ) {
+    return 'OpsGrids Engage provides 2-way WhatsApp shared inboxes, automated AI auto-replies 24/7, and broadcast marketing campaigns with zero platform dependency.';
+  }
+
+  // 6. Products / Services overview
+  if (
+    lower.includes('product') ||
+    lower.includes('software') ||
+    lower.includes('feature') ||
+    lower.includes('service') ||
+    lower.includes('what do you do') ||
+    lower.includes('what do you sell') ||
+    lower.includes('catalog') ||
+    lower.includes('catalogue') ||
+    lower.includes('all the products') ||
+    lower.includes('walk through me')
+  ) {
+    if (isOpsGrids) {
+      return 'OpsGrids provides unified software for CRM, Attendance & HRMS, Invoicing, Inventory, and WhatsApp customer communication. Which solution are you most interested in?';
+    }
+    if (desc) {
+      return `${company}: ${desc}. Would you like more details or a customized proposal?`;
+    }
+    return `Thank you for your interest in ${company}! Please let us know which products or services you are looking for.`;
+  }
+
+  // 7. Pricing, Cost & Rates
   if (
     lower.includes('price') ||
     lower.includes('pricing') ||
@@ -367,82 +579,13 @@ function generateSmartFallback(incomingText, pastHistory, senderPhone) {
     lower.includes('rate') ||
     lower.includes('how much')
   ) {
-    return `Thank you for inquiring about ${company} pricing. Please let us know which items or requirements you are interested in so we can provide a tailored quote.`;
-  }
-
-  // 4. Products / Services / About
-  if (
-    lower.includes('product') ||
-    lower.includes('service') ||
-    lower.includes('what do you do') ||
-    lower.includes('what do you sell') ||
-    lower.includes('catalog') ||
-    lower.includes('catalogue') ||
-    lower.includes('about')
-  ) {
-    if (desc) {
-      return `${company}: ${desc}. Would you like more details or a customized proposal?`;
-    }
     if (isOpsGrids) {
-      return 'OpsGrids provides unified software for CRM, Attendance & HRMS, GST Invoicing, Inventory, and WhatsApp customer communication. Which solution are you most interested in?';
+      return 'OpsGrids pricing is modular based on the features your business needs (CRM, Attendance, Invoicing, Inventory). Would you like to schedule a 10-minute live walkthrough this week?';
     }
-    return `Thank you for your interest in ${company}! Please let us know what specific products or services you are looking for.`;
+    return `Thank you for inquiring about ${company} pricing. Please let us know your requirements so we can provide a tailored quote.`;
   }
 
-  // 5. If company is OpsGrids specifically, check product keywords
-  if (isOpsGrids) {
-    if (
-      lower.includes('crm') ||
-      lower.includes('lead') ||
-      lower.includes('sales') ||
-      lower.includes('pipeline') ||
-      lower.includes('deal') ||
-      lower.includes('contact')
-    ) {
-      return 'OpsGrids CRM manages your complete sales pipeline, customer contacts, deal stages, and conversion tracking in one unified place. Would you like to see how it works?';
-    }
-    if (
-      lower.includes('attendance') ||
-      lower.includes('hrms') ||
-      lower.includes('leave') ||
-      lower.includes('employee') ||
-      lower.includes('clock') ||
-      lower.includes('shift') ||
-      lower.includes('payroll')
-    ) {
-      return 'OpsGrids HRMS includes real-time mobile and biometric attendance tracking, shift scheduling, and leave approval workflows. Would you like more details?';
-    }
-    if (
-      lower.includes('invoice') ||
-      lower.includes('billing') ||
-      lower.includes('payment') ||
-      lower.includes('gst') ||
-      lower.includes('tax') ||
-      lower.includes('subscription')
-    ) {
-      return 'OpsGrids Finance creates GST-compliant invoices and collects payments via UPI, cards, and net banking with automated reconciliation. Can we help set this up for your team?';
-    }
-    if (
-      lower.includes('inventory') ||
-      lower.includes('stock') ||
-      lower.includes('warehouse') ||
-      lower.includes('sku') ||
-      lower.includes('purchase order') ||
-      lower.includes('dispatch')
-    ) {
-      return 'OpsGrids Inventory tracks multi-warehouse stock levels, SKU movements, purchase orders, and vendor shipments in real time. Would you like a demo?';
-    }
-    if (
-      lower.includes('whatsapp') ||
-      lower.includes('engage') ||
-      lower.includes('campaign') ||
-      lower.includes('inbox')
-    ) {
-      return 'OpsGrids Engage provides 2-way WhatsApp shared inboxes, automated AI auto-replies 24/7, and broadcast marketing campaigns with zero platform dependency.';
-    }
-  }
-
-  // 6. Greetings
+  // 8. Greetings
   if (/^(hi|hello|hey|namaste|good morning|good afternoon|good evening)\b/.test(lower)) {
     const greeted = hasBeenGreetedRecently(senderPhone, 12);
     if (greeted) {
@@ -451,7 +594,17 @@ function generateSmartFallback(incomingText, pastHistory, senderPhone) {
     return renderWelcomeMessage(aiConfig.welcomeMessage, company);
   }
 
-  // 7. General inquiry
+  // 9. Contextual fallback based on previous topics
+  if (userTopics.has('crm')) {
+    return `Is there anything specific you would like to know about OpsGrids CRM, or would you like to schedule a quick live demo?`;
+  }
+  if (userTopics.has('attendance')) {
+    return `Would you like to schedule a live demo of OpsGrids Attendance & HRMS, or can we send you a feature summary?`;
+  }
+  if (userTopics.has('demo')) {
+    return `What date and time works best for your demo session? Our team will be happy to assist you!`;
+  }
+
   const greeted = hasBeenGreetedRecently(senderPhone, 12);
   if (greeted) {
     return `Thank you for your message! Our team at ${company} has received it and will reply shortly.`;
@@ -603,10 +756,26 @@ CRITICAL RULES:
     reply = generateSmartFallback(incomingText, pastHistory, senderPhone);
   }
 
-  // 4. Anti-duplication check
+  // 4. Anti-duplication check: if reply matches a recent outbound, select a progressive alternative
   if (reply && isDuplicateOrRecentOutbound(senderPhone, reply)) {
-    console.log(`[ℹ️ Suppressed] Duplicate reply suppressed for ${cleanPhone}: "${reply}"`);
-    return null;
+    console.log(`[ℹ️ Duplication Detected] Offering progressive alternative for ${cleanPhone}`);
+    const lowerIn = incomingText.toLowerCase();
+    if (lowerIn.includes('demo') || lowerIn.includes('walkthrough') || lowerIn.includes('schedule')) {
+      reply = `What date and time works best for your live walkthrough? Please share your email address and we'll send the calendar invite.`;
+    } else if (lowerIn.includes('price') || lowerIn.includes('cost')) {
+      reply = `Our pricing is flexible and modular based on your active modules. How many team members will be using ${company}?`;
+    } else if (lowerIn.includes('crm')) {
+      reply = `Would you like us to schedule a live CRM screen-share walkthrough or send you a product overview?`;
+    } else if (/^(yes|yeah|sure|ok|okay)\b/.test(lowerIn)) {
+      reply = `Awesome! Please share your preferred day/time and email address, and our specialist will connect with you.`;
+    } else {
+      reply = null;
+    }
+
+    if (reply && isDuplicateOrRecentOutbound(senderPhone, reply)) {
+      console.log(`[ℹ️ Suppressed] Progressive alternative also recently sent to ${cleanPhone}.`);
+      return null;
+    }
   }
 
   return reply;
