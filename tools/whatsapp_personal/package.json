@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "node index.js",
+    "server": "node server.js",
     "connect": "node index.js --pair-only",
     "status": "node index.js --status"
   },

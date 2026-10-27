@@ -81,6 +81,13 @@
 	# A deploy that recreates the gateway leaves a few seconds where the dial fails. Caddy
 	# retries a failed *dial* — never a request the gateway received — so holding the request
 	# for up to 20s turns that window into a slow answer instead of a 502, for POSTs too.
+	handle /api/whatsapp-personal/* {
+		reverse_proxy whatsapp-personal:3100 {
+			lb_try_duration 10s
+			lb_try_interval 250ms
+		}
+	}
+
 	handle /api/* {
 		reverse_proxy app-gateway:8000 {
 			lb_try_duration 20s

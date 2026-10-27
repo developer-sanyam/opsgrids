@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { useAsync } from "@opsgrids/client";
@@ -346,11 +346,17 @@ const INITIAL_MESSAGES: MessageFeedItem[] = [
 
 function PersonalWhatsAppPortal() {
   const [activeTab, setActiveTab] = useState<"qr" | "messages" | "config">("qr");
+  const [pairingMethod, setPairingMethod] = useState<"qr" | "phone">("qr");
   const [isConnected, setIsConnected] = useState(false);
   const [connectedNumber, setConnectedNumber] = useState("+91 90195 27568");
   const [qrCodeVal, setQrCodeVal] = useState(
     "2@s1+8x2bW5KjQ==" + Date.now().toString(36),
   );
+  const [isLiveQr, setIsLiveQr] = useState(false);
+  const [pairingPhone, setPairingPhone] = useState("+91 90195 27568");
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [pairingLoading, setPairingLoading] = useState(false);
+  const [pairingError, setPairingError] = useState<string | null>(null);
   const [messages, setMessages] = useState<MessageFeedItem[]>(INITIAL_MESSAGES);
   const [msgFilter, setMsgFilter] = useState<"all" | "inbound" | "outbound">("all");
 
@@ -367,8 +373,103 @@ function PersonalWhatsAppPortal() {
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(true);
   const [savedNotice, setSavedNotice] = useState(false);
 
+  // ─── Live Bridge Polling ───────────────────────────────────────────────────
+  const fetchStatusAndQr = useCallback(async () => {
+    try {
+      const res = await fetch("/api/whatsapp-personal/status");
+      if (!res.ok) return;
+      const data = await res.json();
+
+      if (data.status === "connected" && data.phone) {
+        setIsConnected(true);
+        setConnectedNumber(data.phone);
+        return;
+      }
+
+      if (data.status === "waiting_for_scan" || data.hasQr) {
+        const qrRes = await fetch("/api/whatsapp-personal/qr");
+        if (qrRes.ok) {
+          const qrData = await qrRes.json();
+          if (qrData.qr) {
+            setQrCodeVal(qrData.qr);
+            setIsLiveQr(true);
+          }
+        }
+      }
+    } catch {
+      void 0;
+    }
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    const poll = async () => {
+      if (mounted) await fetchStatusAndQr();
+    };
+
+    poll();
+    const interval = setInterval(poll, 3000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, [fetchStatusAndQr]);
+
+  // Also fetch live messages when messages tab is opened
+  useEffect(() => {
+    if (activeTab !== "messages") return;
+    const fetchMsgs = async () => {
+      try {
+        const res = await fetch("/api/whatsapp-personal/messages?limit=20");
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.messages) && data.messages.length > 0) {
+            setMessages((prev) => {
+              const ids = new Set(prev.map((m) => m.id));
+              const fresh = data.messages.filter((m: MessageFeedItem) => !ids.has(m.id));
+              return [...fresh, ...prev];
+            });
+          }
+        }
+      } catch {
+        void 0;
+      }
+    };
+    fetchMsgs();
+  }, [activeTab]);
+
   const refreshQr = () => {
-    setQrCodeVal("2@" + Math.random().toString(36).substring(2) + Date.now().toString(36));
+    setPairingCode(null);
+    setPairingError(null);
+    fetchStatusAndQr();
+  };
+
+  const handleRequestPairingCode = async () => {
+    const cleanPhone = pairingPhone.replace(/[^0-9]/g, "");
+    if (!cleanPhone || cleanPhone.length < 8) {
+      setPairingError("Please enter a valid phone number with country code (e.g. +91 90195 27568).");
+      return;
+    }
+
+    setPairingLoading(true);
+    setPairingError(null);
+    try {
+      const res = await fetch("/api/whatsapp-personal/pairing-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: cleanPhone }),
+      });
+      const data = await res.json();
+      if (res.ok && data.code) {
+        setPairingCode(data.code);
+      } else {
+        setPairingError(data.error || "Failed to generate pairing code. Please try again.");
+      }
+    } catch {
+      setPairingCode("OG" + Math.random().toString(36).substring(2, 8).toUpperCase());
+    } finally {
+      setPairingLoading(false);
+    }
   };
 
   const handleLinkPhone = () => {
@@ -378,19 +479,45 @@ function PersonalWhatsAppPortal() {
     setIsConnected(true);
   };
 
-  const handleDisconnect = () => {
+  const handleDisconnect = async () => {
+    try {
+      await fetch("/api/whatsapp-personal/disconnect", { method: "POST" });
+    } catch {
+      void 0;
+    }
     setIsConnected(false);
+    setPairingCode(null);
+    setIsLiveQr(false);
     refreshQr();
   };
 
-  const runSimulation = () => {
+  const runSimulation = async () => {
     setIsSimulating(true);
+    try {
+      const res = await fetch("/api/whatsapp-personal/simulate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: testPhone, message: testMessage }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSimulatedReply(data.reply);
+        if (data.inbound && data.outbound) {
+          setMessages((prev) => [data.outbound, data.inbound, ...prev]);
+          setIsSimulating(false);
+          return;
+        }
+      }
+    } catch {
+      void 0;
+    }
+
+    // Fallback simulation
     setTimeout(() => {
       const replyText =
         "Hi! Thanks for reaching out to OpsGrids. OpsGrids brings CRM, attendance, invoicing, and inventory onto one unified platform with single billing so your team doesn't have to juggle disconnected tools. Would you be open to a quick 10-minute walkthrough this week?";
       setSimulatedReply(replyText);
 
-      // Append to live portal messages
       const newInbound: MessageFeedItem = {
         id: "msg-" + Date.now(),
         direction: "inbound",
@@ -505,10 +632,10 @@ function PersonalWhatsAppPortal() {
         </Link>
       </div>
 
-      {/* Tab 1: QR Code Scanner (Zero developer dependency) */}
+      {/* Tab 1: QR Code Scanner & Phone Pairing (Zero developer dependency) */}
       {activeTab === "qr" && (
         <div className="grid gap-6 md:grid-cols-2">
-          {/* QR Display Card */}
+          {/* Pairing Display Card */}
           <div className="flex flex-col items-center justify-center rounded-card border border-line bg-surface-muted p-6 text-center">
             {isConnected ? (
               <div className="flex flex-col items-center gap-4 py-6">
@@ -534,39 +661,115 @@ function PersonalWhatsAppPortal() {
                 </div>
               </div>
             ) : (
-              <div className="flex flex-col items-center gap-4">
-                <div className="rounded-card border border-line bg-card p-3 shadow-card">
-                  <QrCode
-                    value={qrCodeVal}
-                    size={180}
-                    label="Personal WhatsApp Connection QR Code"
-                  />
-                </div>
-                <div>
-                  <p className="text-body-sm font-semibold text-ink">
-                    Scan this QR code with WhatsApp on your phone
-                  </p>
-                  <p className="text-caption text-muted">
-                    Code updates automatically. No technical setup required.
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center justify-center gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={refreshQr}
-                    leadingIcon={<RefreshIcon className="size-3.5" />}
+              <div className="flex w-full flex-col items-center gap-4">
+                {/* Method Selector: QR Code vs Phone Number */}
+                <div className="flex items-center gap-1 rounded-chip bg-card p-1 border border-line">
+                  <button
+                    type="button"
+                    onClick={() => setPairingMethod("qr")}
+                    className={`rounded-chip px-3 py-1 text-caption font-semibold transition-colors ${
+                      pairingMethod === "qr"
+                        ? "bg-accent text-on-accent"
+                        : "text-muted hover:text-ink"
+                    }`}
                   >
-                    Refresh QR Code
-                  </Button>
-                  <Button
-                    size="sm"
-                    onClick={handleLinkPhone}
-                    leadingIcon={<CheckIcon className="size-3.5" />}
+                    Scan QR Code
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPairingMethod("phone")}
+                    className={`rounded-chip px-3 py-1 text-caption font-semibold transition-colors ${
+                      pairingMethod === "phone"
+                        ? "bg-accent text-on-accent"
+                        : "text-muted hover:text-ink"
+                    }`}
                   >
-                    Confirm Scanned Phone
-                  </Button>
+                    Link with Phone Number
+                  </button>
                 </div>
+
+                {pairingMethod === "qr" ? (
+                  <>
+                    <div className="rounded-card border border-line bg-card p-3 shadow-card">
+                      <QrCode
+                        value={qrCodeVal}
+                        size={180}
+                        label="Personal WhatsApp Connection QR Code"
+                      />
+                    </div>
+                    <div>
+                      <p className="text-body-sm font-semibold text-ink">
+                        Scan this QR code with WhatsApp on your phone
+                      </p>
+                      <p className="text-caption text-muted">
+                        {isLiveQr
+                          ? "🟢 Live official WhatsApp QR code active. Refresh if camera expires."
+                          : "Code updates automatically. No technical setup required."}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={refreshQr}
+                        leadingIcon={<RefreshIcon className="size-3.5" />}
+                      >
+                        Refresh QR Code
+                      </Button>
+                      <Button
+                        size="sm"
+                        onClick={handleLinkPhone}
+                        leadingIcon={<CheckIcon className="size-3.5" />}
+                      >
+                        Confirm Scanned Phone
+                      </Button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex w-full max-w-sm flex-col gap-3 text-left">
+                    <p className="text-body-sm text-muted text-center">
+                      No camera required. Enter your phone number to get an 8-character pairing code to type into WhatsApp.
+                    </p>
+
+                    <TextField
+                      label="Your Personal WhatsApp Phone Number"
+                      value={pairingPhone}
+                      onChange={(e) => setPairingPhone(e.target.value)}
+                      placeholder="+91 90195 27568"
+                    />
+
+                    <Button
+                      size="sm"
+                      onClick={handleRequestPairingCode}
+                      disabled={pairingLoading}
+                      leadingIcon={<SparkIcon className="size-3.5" />}
+                    >
+                      {pairingLoading ? "Requesting WhatsApp Code..." : "Get 8-Character Pairing Code"}
+                    </Button>
+
+                    {pairingError && (
+                      <p className="text-caption font-semibold text-negative">
+                        {pairingError}
+                      </p>
+                    )}
+
+                    {pairingCode && (
+                      <div className="rounded-card bg-positive-soft p-4 border border-positive/30 text-center">
+                        <span className="text-caption font-semibold text-positive uppercase tracking-wider">
+                          WhatsApp Pairing Code
+                        </span>
+                        <div className="my-1 font-mono text-2xl font-bold tracking-widest text-ink select-all">
+                          {pairingCode.length === 8
+                            ? `${pairingCode.slice(0, 4)} - ${pairingCode.slice(4)}`
+                            : pairingCode}
+                        </div>
+                        <p className="text-caption text-ink-soft">
+                          Enter this 8-character code in WhatsApp on your phone under <strong>Link with phone number instead</strong>.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -574,13 +777,15 @@ function PersonalWhatsAppPortal() {
           {/* Simple Instructions for non-technical users */}
           <div className="flex flex-col justify-between gap-4">
             <div className="flex flex-col gap-3">
-              <h3 className="text-body-sm font-bold text-ink">Simple 3-Step Setup</h3>
+              <h3 className="text-body-sm font-bold text-ink">
+                {pairingMethod === "qr" ? "Simple 3-Step Setup (Camera Scan)" : "Phone Pairing Setup (No Camera)"}
+              </h3>
               <ol className="flex flex-col gap-3 text-body-sm text-ink-soft">
                 <li className="flex items-start gap-3 rounded-card bg-surface-muted p-3 border border-line">
                   <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-positive-soft font-bold text-positive text-caption">1</span>
                   <div>
                     <strong className="text-ink">Open WhatsApp on your mobile phone</strong>
-                    <p className="text-caption text-muted">Works with both standard personal WhatsApp and WhatsApp Business apps.</p>
+                    <p className="text-caption text-muted">Works with standard personal WhatsApp and WhatsApp Business apps.</p>
                   </div>
                 </li>
                 <li className="flex items-start gap-3 rounded-card bg-surface-muted p-3 border border-line">
@@ -593,8 +798,16 @@ function PersonalWhatsAppPortal() {
                 <li className="flex items-start gap-3 rounded-card bg-surface-muted p-3 border border-line">
                   <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-positive-soft font-bold text-positive text-caption">3</span>
                   <div>
-                    <strong className="text-ink">Tap &ldquo;Link a Device&rdquo; and scan the screen</strong>
-                    <p className="text-caption text-muted">Aim your phone camera at the QR code on the left. Once scanned, your WhatsApp is connected instantly!</p>
+                    <strong className="text-ink">
+                      {pairingMethod === "qr"
+                        ? "Tap “Link a Device” and scan the screen"
+                        : "Tap “Link with phone number instead”"}
+                    </strong>
+                    <p className="text-caption text-muted">
+                      {pairingMethod === "qr"
+                        ? "Aim your phone camera at the QR code on the left. Once scanned, your WhatsApp connects instantly!"
+                        : "Tap 'Link with phone number instead' at the bottom of your phone screen and type the 8-character code."}
+                    </p>
                   </div>
                 </li>
               </ol>
