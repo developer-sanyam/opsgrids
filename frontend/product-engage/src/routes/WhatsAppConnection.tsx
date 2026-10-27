@@ -1210,7 +1210,7 @@ function PersonalWhatsAppPortal() {
                 className="rounded-chip border border-line bg-card p-2 text-body-sm text-ink"
               >
                 <option value="auto">Auto (Detects GEMINI_API_KEY or OPENAI_API_KEY)</option>
-                <option value="gemini">Google Gemini 1.5 Flash (Fast & High-Intelligence)</option>
+                <option value="gemini">Google Gemini (Fast & High-Intelligence)</option>
                 <option value="openai">OpenAI ChatGPT (gpt-4o-mini)</option>
               </select>
             </div>

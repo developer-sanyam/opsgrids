@@ -82,7 +82,7 @@ function isOperatorActive(convId) {
 let aiConfig = {
   provider: 'auto', // 'auto' | 'gemini' | 'openai'
   geminiKey: process.env.GEMINI_API_KEY || '',
-  geminiModel: process.env.GEMINI_MODEL || 'gemini-1.5-flash',
+  geminiModel: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
   openaiKey: process.env.OPENAI_API_KEY || '',
   openaiModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
   businessName: 'OpsGrids',
@@ -715,7 +715,8 @@ CRITICAL RULES:
   // 1. Google Gemini (if selected or auto)
   if ((provider === 'auto' || provider === 'gemini') && geminiKey) {
     try {
-      const model = aiConfig.geminiModel || process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+      let model = aiConfig.geminiModel || process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+      if (model === 'gemini-1.5-flash') model = 'gemini-2.5-flash';
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
       const contents = pastHistory.map((h) => ({
         role: h.role === 'assistant' ? 'model' : 'user',
@@ -1465,7 +1466,9 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${testGeminiKey}`;
+        let testModel = aiConfig.geminiModel || 'gemini-2.5-flash';
+        if (testModel === 'gemini-1.5-flash') testModel = 'gemini-2.5-flash';
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${testModel}:generateContent?key=${testGeminiKey}`;
         const resp = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1478,7 +1481,7 @@ const server = http.createServer(async (req, res) => {
           lastAiError = null;
           sendJson(res, req, 200, {
             ok: true,
-            message: '✓ Google Gemini 1.5 Flash is active and responding successfully!',
+            message: `✓ Google Gemini (${testModel}) is active and responding successfully!`,
           });
           return;
         } else {
