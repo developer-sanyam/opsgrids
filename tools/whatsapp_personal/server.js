@@ -153,6 +153,7 @@ function buildConversationsList(statusFilter) {
       convMap.set(convId, {
         id: convId,
         wa_address: m.phone.startsWith('+') ? m.phone : '+' + m.phone,
+        remoteJid: m.remoteJid || null,
         channel: 'whatsapp',
         status,
         last_customer_message_at: mTime,
@@ -166,6 +167,7 @@ function buildConversationsList(statusFilter) {
     } else {
       existing.updated_at = mTime;
       existing.last_customer_message_at = mTime;
+      if (m.remoteJid) existing.remoteJid = m.remoteJid;
       if (m.senderName && m.direction === 'inbound') {
         existing.profile_name = m.senderName;
       }
@@ -360,15 +362,23 @@ async function initWhatsAppSocket() {
       if (m.type !== 'notify') return;
 
       for (const msg of m.messages) {
+        const remoteJid = msg.key.remoteJid || '';
+        if (!remoteJid || remoteJid.includes('@broadcast') || remoteJid.includes('@g.us')) {
+          continue; // Ignore status broadcasts & group messages
+        }
+
+        const rawSender = remoteJid.split('@')[0] || '';
+        const displayPhone = rawSender.startsWith('+') ? rawSender : '+' + rawSender;
+
         if (msg.key.fromMe) {
           const text =
             msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
           if (text) {
-            const phone = (msg.key.remoteJid || '').replace('@s.whatsapp.net', '');
             pushMessage({
               id: msg.key.id || 'out-' + Date.now(),
               direction: 'outbound',
-              phone: '+' + phone,
+              phone: displayPhone,
+              remoteJid,
               senderName: 'You (Personal WhatsApp)',
               message: text,
               timestamp: new Date().toISOString(),
@@ -378,23 +388,19 @@ async function initWhatsAppSocket() {
           continue;
         }
 
-        const remoteJid = msg.key.remoteJid;
-        if (!remoteJid || remoteJid.includes('@broadcast') || remoteJid.includes('@g.us')) {
-          continue; // Ignore status broadcasts & group messages
-        }
-
         const text =
           msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
         if (!text || text.trim().length === 0) continue;
 
-        const senderPhone = remoteJid.replace('@s.whatsapp.net', '');
-        console.log(`[💬 Inbound] From: +${senderPhone} | "${text}"`);
+        const senderName = msg.pushName || 'Customer Lead';
+        console.log(`[💬 Inbound] From: ${displayPhone} (${senderName}) | "${text}"`);
 
         pushMessage({
           id: msg.key.id || 'in-' + Date.now(),
           direction: 'inbound',
-          phone: '+' + senderPhone,
-          senderName: msg.pushName || 'Customer Lead',
+          phone: displayPhone,
+          remoteJid,
+          senderName,
           message: text,
           timestamp: new Date().toISOString(),
           status: 'received',
@@ -402,21 +408,22 @@ async function initWhatsAppSocket() {
 
         // Generate AI reply
         try {
-          const replyText = await generateAIReply(text, senderPhone);
-          console.log(`[📤 Sending Reply] To +${senderPhone}: "${replyText}"`);
+          const replyText = await generateAIReply(text, rawSender);
+          console.log(`[📤 Sending Reply] To ${displayPhone}: "${replyText}"`);
           await sock.sendMessage(remoteJid, { text: replyText });
 
           pushMessage({
             id: 'reply-' + Date.now(),
             direction: 'outbound',
-            phone: '+' + senderPhone,
+            phone: displayPhone,
+            remoteJid,
             senderName: 'OpsGrids AI',
             message: replyText,
             timestamp: new Date().toISOString(),
             status: 'ai_replied',
           });
         } catch (err) {
-          console.error(`[!] Failed to reply to +${senderPhone}:`, err.message);
+          console.error(`[!] Failed to reply to ${displayPhone}:`, err.message);
         }
       }
     });
@@ -710,13 +717,17 @@ const server = http.createServer(async (req, res) => {
     let providerMessageId = 'out-' + Date.now();
     let sentLive = false;
 
-    if (sock && connectionStatus === 'connected' && digits) {
+    const convItems = buildConversationsList();
+    const targetConv = convItems.find((c) => c.id === convId);
+    let jid = targetConv?.remoteJid || `${digits}@s.whatsapp.net`;
+    if (!jid.includes('@')) jid = `${digits}@s.whatsapp.net`;
+
+    if (sock && connectionStatus === 'connected') {
       try {
-        const jid = `${digits}@s.whatsapp.net`;
         const sent = await sock.sendMessage(jid, { text });
         if (sent?.key?.id) providerMessageId = sent.key.id;
         sentLive = true;
-        console.log(`[💬 Outbound Reply] Sent to +${digits}: "${text}"`);
+        console.log(`[💬 Outbound Reply] Sent to ${jid}: "${text}"`);
       } catch (err) {
         console.error('[!] Failed to send WhatsApp reply via socket:', err.message);
       }
@@ -726,6 +737,7 @@ const server = http.createServer(async (req, res) => {
       id: providerMessageId,
       direction: 'outbound',
       phone: '+' + digits,
+      remoteJid: jid,
       senderName: 'You (Personal WhatsApp)',
       message: text,
       timestamp: new Date().toISOString(),
