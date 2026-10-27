@@ -841,7 +841,8 @@ export async function listCampaignRecipients(
 
 /* ----------------------------------- inbox (WhatsApp) ----------------------------------- */
 
-/** WhatsApp conversations, most recently active first — `GET /engage/conversations`. */
+/** WhatsApp conversations, most recently active first — `GET /engage/conversations`.
+ *  Seamlessly unifies Meta Cloud API conversations and Personal WhatsApp multi-device conversations. */
 export async function listConversations(
   options: { status?: ConversationStatus } = {},
 ): Promise<Page<ConversationOut>> {
@@ -851,9 +852,64 @@ export async function listConversations(
       status === undefined ? CONVERSATIONS : CONVERSATIONS.filter((c) => c.status === status);
     return settle(fixturePage(rows));
   }
-  const query = new URLSearchParams({ size: String(FULL_PAGE) });
-  if (status !== undefined) query.set("status", status);
-  return apiRequest<Page<ConversationOut>>(`/engage/conversations?${query.toString()}`);
+
+  let metaPage: Page<ConversationOut> | null = null;
+  let metaError: unknown = null;
+  try {
+    const query = new URLSearchParams({ size: String(FULL_PAGE) });
+    if (status !== undefined) query.set("status", status);
+    metaPage = await apiRequest<Page<ConversationOut>>(`/engage/conversations?${query.toString()}`);
+  } catch (err) {
+    metaError = err;
+  }
+
+  let personalPage: Page<ConversationOut> | null = null;
+  try {
+    const q = status ? `?status=${encodeURIComponent(status)}` : "";
+    const res = await fetch(`/api/whatsapp-personal/conversations${q}`);
+    if (res.ok) {
+      personalPage = await res.json();
+    }
+  } catch {
+    // Personal WhatsApp bridge offline or unconfigured
+  }
+
+  const metaItems = metaPage?.items ?? [];
+  const personalItems = personalPage?.items ?? [];
+
+  // If Meta failed and we have no personal items either, bubble up the Meta error
+  if (!metaPage && !personalPage && metaError) {
+    throw metaError;
+  }
+
+  // Combine items, deduplicating by phone digits
+  const seenAddresses = new Set<string>();
+  const combined: ConversationOut[] = [];
+
+  for (const c of [...personalItems, ...metaItems]) {
+    const norm = (c.wa_address || "").replace(/[^0-9]/g, "");
+    if (!seenAddresses.has(norm)) {
+      seenAddresses.add(norm);
+      if (status === undefined || c.status === status) {
+        combined.push(c);
+      }
+    }
+  }
+
+  // Sort by latest message desc
+  combined.sort((a, b) => {
+    const ta = a.last_customer_message_at ? new Date(a.last_customer_message_at).getTime() : 0;
+    const tb = b.last_customer_message_at ? new Date(b.last_customer_message_at).getTime() : 0;
+    return tb - ta;
+  });
+
+  return {
+    items: combined,
+    total: combined.length,
+    page: 1,
+    size: Math.max(combined.length, 50),
+    pages: Math.max(1, Math.ceil(combined.length / Math.max(combined.length, 50))),
+  };
 }
 
 /** One conversation — `GET /engage/conversations/{id}`. */
@@ -862,6 +918,16 @@ export async function getConversation(conversationId: string): Promise<Conversat
     const found = CONVERSATIONS.find((c) => c.id === conversationId);
     if (!found) throw new Error(`No such fixture conversation: ${conversationId}`);
     return settle(found);
+  }
+  if (conversationId.startsWith("wa-conv-")) {
+    try {
+      const res = await fetch(
+        `/api/whatsapp-personal/conversations/${encodeURIComponent(conversationId)}`,
+      );
+      if (res.ok) return await res.json();
+    } catch {
+      // Fall through to standard gateway
+    }
   }
   return apiRequest<ConversationOut>(
     `/engage/conversations/${encodeURIComponent(conversationId)}`,
@@ -876,6 +942,16 @@ export async function listConversationMessages(
   const { page = 1, size = FULL_PAGE } = options;
   if (USE_FIXTURES) {
     return settle(fixturePage(CONVERSATION_MESSAGES[conversationId] ?? []));
+  }
+  if (conversationId.startsWith("wa-conv-")) {
+    try {
+      const res = await fetch(
+        `/api/whatsapp-personal/conversations/${encodeURIComponent(conversationId)}/messages?page=${page}&size=${size}`,
+      );
+      if (res.ok) return await res.json();
+    } catch {
+      // Fall through to standard gateway
+    }
   }
   const query = new URLSearchParams({ page: String(page), size: String(size) });
   return apiRequest<Page<ConversationMessageOut>>(
@@ -894,6 +970,19 @@ export async function replyToConversation(
   input: ConversationReplyIn,
 ): Promise<ConversationReplyOut> {
   if (USE_FIXTURES) refuseWithoutService("Replying to a conversation");
+  if (conversationId.startsWith("wa-conv-")) {
+    const res = await fetch(
+      `/api/whatsapp-personal/conversations/${encodeURIComponent(conversationId)}/reply`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      },
+    );
+    if (res.ok) return res.json();
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error || "Failed to send WhatsApp reply");
+  }
   return apiRequest<ConversationReplyOut>(
     `/engage/conversations/${encodeURIComponent(conversationId)}/reply`,
     { method: "POST", body: input },
@@ -917,8 +1006,44 @@ export async function assignConversation(
  *  `POST .../{id}:close`. */
 export async function closeConversation(conversationId: string): Promise<ConversationOut> {
   if (USE_FIXTURES) refuseWithoutService("Closing a conversation");
+  if (conversationId.startsWith("wa-conv-")) {
+    try {
+      const res = await fetch(
+        `/api/whatsapp-personal/conversations/${encodeURIComponent(conversationId)}/close`,
+        { method: "POST" },
+      );
+      if (res.ok) return await res.json();
+    } catch {
+      // Fall through to standard gateway
+    }
+  }
   return apiRequest<ConversationOut>(
     `/engage/conversations/${encodeURIComponent(conversationId)}:close`,
     { method: "POST" },
   );
+}
+
+/** Check personal WhatsApp connection status. */
+export async function getPersonalWhatsAppStatus(): Promise<{
+  status: string;
+  phone: string | null;
+  hasQr: boolean;
+  hasCredentials: boolean;
+}> {
+  try {
+    const res = await fetch("/api/whatsapp-personal/status");
+    if (res.ok) return await res.json();
+  } catch {
+    // Offline
+  }
+  return { status: "disconnected", phone: null, hasQr: false, hasCredentials: false };
+}
+
+/** Simulate an inbound WhatsApp message for testing. */
+export async function simulateInboundWhatsApp(phone?: string, message?: string): Promise<void> {
+  await fetch("/api/whatsapp-personal/simulate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ phone, message }),
+  });
 }

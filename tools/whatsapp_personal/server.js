@@ -36,6 +36,9 @@ const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
 const AUTH_DIR = process.env.WA_AUTH_DIR || path.resolve(__dirname, 'auth_info_baileys');
+const DATA_DIR = path.dirname(AUTH_DIR);
+const MESSAGES_FILE = path.join(DATA_DIR, 'messages.json');
+const STATUS_FILE = path.join(DATA_DIR, 'conversations_status.json');
 const PORT = parseInt(process.env.WA_BRIDGE_PORT || '3100', 10);
 const logger = pino({ level: 'silent' });
 
@@ -50,6 +53,9 @@ let isStarting = false;
 
 // In-memory conversation context per phone number
 const conversationMemory = new Map();
+
+// Conversation status tracking (open | closed)
+const conversationStatusMap = new Map();
 
 // In-memory message log (recent inbound and outbound)
 const messageLog = [
@@ -74,9 +80,108 @@ const messageLog = [
 ];
 const MAX_LOG = 200;
 
+function loadPersistedState() {
+  try {
+    if (fs.existsSync(MESSAGES_FILE)) {
+      const data = fs.readFileSync(MESSAGES_FILE, 'utf8');
+      const loaded = JSON.parse(data);
+      if (Array.isArray(loaded) && loaded.length > 0) {
+        messageLog.length = 0;
+        messageLog.push(...loaded);
+      }
+    }
+  } catch (err) {
+    console.error('[!] Failed to load messages.json:', err.message);
+  }
+
+  try {
+    if (fs.existsSync(STATUS_FILE)) {
+      const data = fs.readFileSync(STATUS_FILE, 'utf8');
+      const loaded = JSON.parse(data);
+      for (const [k, v] of Object.entries(loaded)) {
+        conversationStatusMap.set(k, v);
+      }
+    }
+  } catch (err) {
+    console.error('[!] Failed to load conversations_status.json:', err.message);
+  }
+}
+
+function persistMessages() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    fs.writeFileSync(MESSAGES_FILE, JSON.stringify(messageLog, null, 2), 'utf8');
+  } catch (err) {
+    console.error('[!] Failed to persist messages.json:', err.message);
+  }
+}
+
+function persistConversationStatus() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    const obj = Object.fromEntries(conversationStatusMap);
+    fs.writeFileSync(STATUS_FILE, JSON.stringify(obj, null, 2), 'utf8');
+  } catch (err) {
+    console.error('[!] Failed to persist conversations_status.json:', err.message);
+  }
+}
+
 function pushMessage(entry) {
   messageLog.unshift(entry);
   if (messageLog.length > MAX_LOG) messageLog.length = MAX_LOG;
+  persistMessages();
+}
+
+function buildConversationsList(statusFilter) {
+  const convMap = new Map();
+  // Traverse messageLog backwards so earlier messages set created_at and later ones set last_customer_message_at
+  const reversed = [...messageLog].reverse();
+  for (const m of reversed) {
+    const rawDigits = (m.phone || '').replace(/[^0-9]/g, '');
+    if (!rawDigits) continue;
+    const convId = 'wa-conv-' + rawDigits;
+    const isClosed = conversationStatusMap.get(convId) === 'closed';
+    const status = isClosed ? 'closed' : 'open';
+    const mTime = m.timestamp || new Date().toISOString();
+
+    const existing = convMap.get(convId);
+    if (!existing) {
+      convMap.set(convId, {
+        id: convId,
+        wa_address: m.phone.startsWith('+') ? m.phone : '+' + m.phone,
+        channel: 'whatsapp',
+        status,
+        last_customer_message_at: mTime,
+        within_service_window: true,
+        contact_id: null,
+        assignee_membership_id: null,
+        created_at: mTime,
+        updated_at: mTime,
+        profile_name: m.senderName || null,
+      });
+    } else {
+      existing.updated_at = mTime;
+      existing.last_customer_message_at = mTime;
+      if (m.senderName && m.direction === 'inbound') {
+        existing.profile_name = m.senderName;
+      }
+    }
+  }
+
+  let items = Array.from(convMap.values());
+  if (statusFilter) {
+    items = items.filter((c) => c.status === statusFilter);
+  }
+  items.sort(
+    (a, b) =>
+      new Date(b.last_customer_message_at).getTime() -
+      new Date(a.last_customer_message_at).getTime(),
+  );
+  return items;
 }
 
 // ─── AI Reply Engine ─────────────────────────────────────────────────────────
@@ -520,6 +625,179 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // GET /api/whatsapp-personal/conversations
+  if (pathname === '/api/whatsapp-personal/conversations' && req.method === 'GET') {
+    const status = url.searchParams.get('status') || '';
+    const items = buildConversationsList(status);
+    sendJson(res, req, 200, {
+      items,
+      total: items.length,
+      page: 1,
+      size: 50,
+    });
+    return;
+  }
+
+  // GET /api/whatsapp-personal/conversations/:id
+  const convDetailMatch = pathname.match(/^\/api\/whatsapp-personal\/conversations\/([^/]+)$/);
+  if (convDetailMatch && req.method === 'GET') {
+    const convId = decodeURIComponent(convDetailMatch[1]);
+    const items = buildConversationsList();
+    const found = items.find((c) => c.id === convId);
+    if (found) {
+      sendJson(res, req, 200, found);
+    } else {
+      const digits = convId.replace(/[^0-9]/g, '');
+      sendJson(res, req, 200, {
+        id: convId,
+        wa_address: '+' + digits,
+        channel: 'whatsapp',
+        status: 'open',
+        last_customer_message_at: new Date().toISOString(),
+        within_service_window: true,
+        contact_id: null,
+        assignee_membership_id: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+    }
+    return;
+  }
+
+  // GET /api/whatsapp-personal/conversations/:id/messages
+  const convMsgsMatch = pathname.match(/^\/api\/whatsapp-personal\/conversations\/([^/]+)\/messages$/);
+  if (convMsgsMatch && req.method === 'GET') {
+    const convId = decodeURIComponent(convMsgsMatch[1]);
+    const digits = convId.replace(/[^0-9]/g, '');
+    const thread = messageLog
+      .filter((m) => {
+        const mDigits = (m.phone || '').replace(/[^0-9]/g, '');
+        return mDigits.endsWith(digits) || digits.endsWith(mDigits);
+      })
+      .map((m) => ({
+        id: m.id,
+        direction: m.direction,
+        message_type: 'text',
+        body: m.message,
+        occurred_at: m.timestamp,
+        provider_message_id: m.id,
+        profile_name: m.senderName || null,
+      }))
+      .sort((a, b) => new Date(a.occurred_at).getTime() - new Date(b.occurred_at).getTime());
+
+    sendJson(res, req, 200, {
+      items: thread,
+      total: thread.length,
+      page: 1,
+      size: 100,
+    });
+    return;
+  }
+
+  // POST /api/whatsapp-personal/conversations/:id/reply
+  const convReplyMatch = pathname.match(/^\/api\/whatsapp-personal\/conversations\/([^/]+)\/reply$/);
+  if (convReplyMatch && req.method === 'POST') {
+    const convId = decodeURIComponent(convReplyMatch[1]);
+    const digits = convId.replace(/[^0-9]/g, '');
+    const body = await parseBody(req);
+    const text = String(body.body || body.message || '').trim();
+
+    if (!text) {
+      sendJson(res, req, 400, { error: 'Reply text cannot be empty' });
+      return;
+    }
+
+    let providerMessageId = 'out-' + Date.now();
+    let sentLive = false;
+
+    if (sock && connectionStatus === 'connected' && digits) {
+      try {
+        const jid = `${digits}@s.whatsapp.net`;
+        const sent = await sock.sendMessage(jid, { text });
+        if (sent?.key?.id) providerMessageId = sent.key.id;
+        sentLive = true;
+        console.log(`[💬 Outbound Reply] Sent to +${digits}: "${text}"`);
+      } catch (err) {
+        console.error('[!] Failed to send WhatsApp reply via socket:', err.message);
+      }
+    }
+
+    const outbound = {
+      id: providerMessageId,
+      direction: 'outbound',
+      phone: '+' + digits,
+      senderName: 'You (Personal WhatsApp)',
+      message: text,
+      timestamp: new Date().toISOString(),
+      status: sentLive ? 'delivered' : 'pending',
+    };
+    pushMessage(outbound);
+
+    sendJson(res, req, 200, {
+      message_id: outbound.id,
+      state: outbound.status,
+      conversation_id: convId,
+    });
+    return;
+  }
+
+  // POST /api/whatsapp-personal/conversations/:id/close
+  const convCloseMatch = pathname.match(/^\/api\/whatsapp-personal\/conversations\/([^/]+)\/close$/);
+  if (convCloseMatch && req.method === 'POST') {
+    const convId = decodeURIComponent(convCloseMatch[1]);
+    conversationStatusMap.set(convId, 'closed');
+    persistConversationStatus();
+    const items = buildConversationsList();
+    const found = items.find((c) => c.id === convId);
+    sendJson(res, req, 200, found || { id: convId, status: 'closed' });
+    return;
+  }
+
+  // POST /api/whatsapp-personal/send (Direct outbound send)
+  if (pathname === '/api/whatsapp-personal/send' && req.method === 'POST') {
+    const body = await parseBody(req);
+    const cleanPhone = String(body.phone || '').replace(/[^0-9]/g, '');
+    const text = String(body.message || body.text || '').trim();
+
+    if (!cleanPhone || !text) {
+      sendJson(res, req, 400, { error: 'Phone and message are required' });
+      return;
+    }
+
+    let providerMessageId = 'out-' + Date.now();
+    let sentLive = false;
+
+    if (sock && connectionStatus === 'connected') {
+      try {
+        const jid = `${cleanPhone}@s.whatsapp.net`;
+        const sent = await sock.sendMessage(jid, { text });
+        if (sent?.key?.id) providerMessageId = sent.key.id;
+        sentLive = true;
+        console.log(`[💬 Direct Send] Sent to +${cleanPhone}: "${text}"`);
+      } catch (err) {
+        console.error('[!] Failed to send direct WhatsApp message:', err.message);
+      }
+    }
+
+    const outbound = {
+      id: providerMessageId,
+      direction: 'outbound',
+      phone: '+' + cleanPhone,
+      senderName: 'You (Personal WhatsApp)',
+      message: text,
+      timestamp: new Date().toISOString(),
+      status: sentLive ? 'delivered' : 'pending',
+    };
+    pushMessage(outbound);
+
+    sendJson(res, req, 200, {
+      ok: true,
+      message: outbound,
+      sentLive,
+    });
+    return;
+  }
+
   // GET /health
   if (pathname === '/health' && req.method === 'GET') {
     sendJson(res, req, 200, {
@@ -532,6 +810,8 @@ const server = http.createServer(async (req, res) => {
 
   sendJson(res, req, 404, { error: 'Not found' });
 });
+
+loadPersistedState();
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[*] WhatsApp Personal Bridge running on http://0.0.0.0:${PORT}`);

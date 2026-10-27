@@ -1,13 +1,18 @@
-import { useEffect } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 
 import { ArrowLeftIcon, InboxIcon } from "@opsgrids/ui";
 
-import { listConversations } from "@/api/client";
+import {
+  getPersonalWhatsAppStatus,
+  listConversations,
+  simulateInboundWhatsApp,
+} from "@/api/client";
 import type { ConversationOut, ConversationStatus } from "@/api/types";
 import { usePolling } from "@/lib/usePolling";
 import {
   Announcer,
+  Button,
   Card,
   ConversationStatusTag,
   EmptyState,
@@ -65,7 +70,9 @@ function ConversationListItem({
       >
         <span className="flex items-center justify-between gap-2">
           <span className="truncate font-mono text-sm font-medium text-ink">
-            {conversation.wa_address}
+            {conversation.profile_name
+              ? `${conversation.profile_name} (${conversation.wa_address})`
+              : conversation.wa_address}
           </span>
           <ConversationStatusTag status={conversation.status} />
         </span>
@@ -84,6 +91,26 @@ function Inbox() {
   const [params, setParams] = useSearchParams();
   const selectedId = params.get("id");
   const statusFilter = (params.get("status") ?? "") as ConversationStatus | "";
+  const [personalStatus, setPersonalStatus] = useState<{
+    status: string;
+    phone: string | null;
+  } | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    getPersonalWhatsAppStatus().then((s) => {
+      if (mounted) setPersonalStatus(s);
+    });
+    const timer = setInterval(() => {
+      getPersonalWhatsAppStatus().then((s) => {
+        if (mounted) setPersonalStatus(s);
+      });
+    }, 10000);
+    return () => {
+      mounted = false;
+      clearInterval(timer);
+    };
+  }, []);
 
   const state = usePolling(
     () =>
@@ -140,6 +167,26 @@ function Inbox() {
         <Card
           className={`flex flex-col gap-3 p-4 ${selectedId !== null ? "hidden lg:flex" : "flex"}`}
         >
+          {personalStatus?.status === "connected" ? (
+            <div className="flex items-center justify-between rounded-card border border-positive/30 bg-positive-soft px-3 py-2 text-xs">
+              <div className="flex items-center gap-2">
+                <span className="size-2 rounded-full bg-positive" />
+                <span className="font-semibold text-positive">WhatsApp Active</span>
+                <span className="font-mono text-ink">{personalStatus.phone}</span>
+              </div>
+              <Link to="/whatsapp/connection" className="font-semibold text-accent hover:underline">
+                Settings
+              </Link>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between rounded-card border border-line bg-surface-muted px-3 py-2 text-xs">
+              <span className="text-muted">Personal WhatsApp Not Linked</span>
+              <Link to="/whatsapp/connection" className="font-semibold text-accent hover:underline">
+                Connect QR
+              </Link>
+            </div>
+          )}
+
           <Select
             label="Filter by status"
             hideLabel
@@ -172,6 +219,29 @@ function Inbox() {
               icon={<InboxIcon className="size-6" />}
               title="No conversations yet"
               description="A conversation appears here the first time a customer messages your WhatsApp number."
+              action={
+                <div className="flex flex-col items-center gap-2">
+                  <Link
+                    to="/whatsapp/connection"
+                    className="inline-flex h-9 items-center justify-center gap-2 rounded-full bg-accent px-4 text-xs font-semibold text-on-accent transition-colors hover:bg-accent-strong"
+                  >
+                    Open WhatsApp QR Connection
+                  </Link>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      await simulateInboundWhatsApp(
+                        "+91 90195 27568",
+                        "Hi, I want to streamline operations with OpsGrids. Can you share details?",
+                      );
+                      state.refresh();
+                    }}
+                  >
+                    Simulate Test Inbound Message
+                  </Button>
+                </div>
+              }
             />
           ) : null}
 

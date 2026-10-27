@@ -366,6 +366,7 @@ export interface ConversationOut {
   assignee_membership_id: string | null;
   created_at: string;
   updated_at: string;
+  profile_name?: string | null;
 }
 
 /**

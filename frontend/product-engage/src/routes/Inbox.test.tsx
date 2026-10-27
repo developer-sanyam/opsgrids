@@ -249,3 +249,20 @@ describe("when a refresh is refused mid-poll", () => {
     }
   });
 });
+
+describe("personal WhatsApp integration in the inbox", () => {
+  it("displays WhatsApp Active badge when personal bridge is connected", async () => {
+    vi.spyOn(client, "listConversations").mockResolvedValue(page([]));
+    vi.spyOn(client, "getPersonalWhatsAppStatus").mockResolvedValue({
+      status: "connected",
+      phone: "+91 90195 27568",
+      hasQr: false,
+      hasCredentials: true,
+    });
+    renderInbox();
+    expect(await screen.findByText("WhatsApp Active")).toBeTruthy();
+    expect(screen.getByText("+91 90195 27568")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open WhatsApp QR Connection" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Simulate Test Inbound Message" })).toBeTruthy();
+  });
+});
