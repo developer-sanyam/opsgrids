@@ -729,7 +729,11 @@ CRITICAL RULES:
         body: JSON.stringify({
           system_instruction: { parts: [{ text: systemPrompt }] },
           contents,
-          generationConfig: { temperature: 0.3, maxOutputTokens: 250 },
+          generationConfig: {
+            temperature: 0.3,
+            maxOutputTokens: 500,
+            thinkingConfig: { thinkingBudget: 0 },
+          },
         }),
       });
 
