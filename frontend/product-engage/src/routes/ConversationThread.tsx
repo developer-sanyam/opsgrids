@@ -14,7 +14,9 @@ import {
   closeConversation,
   listConversationMessages,
   listWhatsAppTemplates,
+  pauseAiForConversation,
   replyToConversation,
+  resumeAiForConversation,
 } from "@/api/client";
 import type { ConversationMessageOut, ConversationOut } from "@/api/types";
 import { crmContactUrl } from "@/lib/dashboard";
@@ -286,9 +288,36 @@ export function ConversationThread({
   return (
     <Card className="flex h-full flex-col gap-4 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line pb-3">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-sm text-ink">{conversation.wa_address}</span>
           <WindowStatusTag withinWindow={conversation.within_service_window} />
+          {conversation.id.startsWith("wa-conv-") ? (
+            <div className="flex items-center gap-2 text-xs">
+              {conversation.operator_active ? (
+                <span className="rounded-full border border-line bg-surface-muted px-2 py-1 text-muted">
+                  👤 Operator Active (AI Paused)
+                </span>
+              ) : (
+                <span className="rounded-full border border-positive/30 bg-positive-soft px-2 py-1 font-semibold text-positive">
+                  🤖 AI Active
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={async () => {
+                  if (conversation.operator_active) {
+                    await resumeAiForConversation(conversation.id);
+                  } else {
+                    await pauseAiForConversation(conversation.id);
+                  }
+                  onChanged();
+                }}
+                className="font-semibold text-accent hover:underline"
+              >
+                {conversation.operator_active ? "Resume AI" : "Pause AI"}
+              </button>
+            </div>
+          ) : null}
         </div>
         {conversation.status === "open" ? (
           <Can permission="engage.inbox.conversation.write" scope="ORG">

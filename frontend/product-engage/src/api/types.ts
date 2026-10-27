@@ -367,6 +367,8 @@ export interface ConversationOut {
   created_at: string;
   updated_at: string;
   profile_name?: string | null;
+  operator_active?: boolean | null;
+  ai_paused?: boolean | null;
 }
 
 /**

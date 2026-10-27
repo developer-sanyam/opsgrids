@@ -1057,7 +1057,11 @@ export interface WhatsAppAiConfig {
   openaiKeyMasked: string;
   openaiModel: string;
   businessName: string;
+  businessDescription: string;
+  welcomeMessage: string;
   customKnowledge: string;
+  autoReplyMode: "all_inbound" | "welcome_only" | "paused";
+  humanTakeoverMinutes: number;
   autoReplyEnabled: boolean;
 }
 
@@ -1078,7 +1082,11 @@ export async function getWhatsAppAiConfig(): Promise<WhatsAppAiConfig> {
     openaiKeyMasked: "",
     openaiModel: "gpt-4o-mini",
     businessName: "OpsGrids",
+    businessDescription: "Enterprise business software suite unifying CRM, Attendance, Invoicing, and Inventory.",
+    welcomeMessage: "Hi! Thank you for contacting {businessName}. We received your message and will follow up shortly. How can we help you today?",
     customKnowledge: "",
+    autoReplyMode: "welcome_only",
+    humanTakeoverMinutes: 30,
     autoReplyEnabled: true,
   };
 }
@@ -1090,7 +1098,11 @@ export interface SaveWhatsAppAiConfigIn {
   openaiKey?: string | undefined;
   openaiModel?: string | undefined;
   businessName?: string | undefined;
+  businessDescription?: string | undefined;
+  welcomeMessage?: string | undefined;
   customKnowledge?: string | undefined;
+  autoReplyMode?: "all_inbound" | "welcome_only" | "paused" | undefined;
+  humanTakeoverMinutes?: number | undefined;
   autoReplyEnabled?: boolean | undefined;
 }
 
@@ -1106,4 +1118,18 @@ export async function saveWhatsAppAiConfig(
   if (res.ok) return await res.json();
   const err = (await res.json().catch(() => ({}))) as { error?: string };
   throw new Error(err.error || "Failed to save AI configuration");
+}
+
+/** Resume AI automated responses for a specific conversation after operator handling. */
+export async function resumeAiForConversation(conversationId: string): Promise<void> {
+  await fetch(`/api/whatsapp-personal/conversations/${encodeURIComponent(conversationId)}/resume-ai`, {
+    method: "POST",
+  });
+}
+
+/** Explicitly pause AI automated responses for a specific conversation. */
+export async function pauseAiForConversation(conversationId: string): Promise<void> {
+  await fetch(`/api/whatsapp-personal/conversations/${encodeURIComponent(conversationId)}/pause-ai`, {
+    method: "POST",
+  });
 }

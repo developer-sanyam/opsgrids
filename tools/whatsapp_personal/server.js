@@ -58,6 +58,26 @@ const conversationMemory = new Map();
 // Conversation status tracking (open | closed)
 const conversationStatusMap = new Map();
 
+// Human operator active takeover tracking (convId -> expiration timestamp)
+const operatorActiveMap = new Map();
+
+function markOperatorActive(convId) {
+  const takeoverMinutes = parseInt(aiConfig.humanTakeoverMinutes || '30', 10);
+  const takeoverMs = Math.max(1, takeoverMinutes) * 60 * 1000;
+  operatorActiveMap.set(convId, Date.now() + takeoverMs);
+  console.log(`[👤 Operator Active] Human takeover active for ${convId} (${takeoverMinutes} min)`);
+}
+
+function isOperatorActive(convId) {
+  const expiresAt = operatorActiveMap.get(convId);
+  if (!expiresAt) return false;
+  if (Date.now() > expiresAt) {
+    operatorActiveMap.delete(convId);
+    return false;
+  }
+  return true;
+}
+
 // AI Configuration state
 let aiConfig = {
   provider: 'auto', // 'auto' | 'gemini' | 'openai'
@@ -66,7 +86,11 @@ let aiConfig = {
   openaiKey: process.env.OPENAI_API_KEY || '',
   openaiModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
   businessName: 'OpsGrids',
+  businessDescription: 'Unified enterprise software suite for CRM, Attendance, Invoicing, and Inventory.',
+  welcomeMessage: 'Hi! Thank you for contacting {businessName}. We received your message and will follow up shortly. How can we help you today?',
   customKnowledge: '',
+  autoReplyMode: 'welcome_only', // 'all_inbound' | 'welcome_only' | 'paused'
+  humanTakeoverMinutes: 30,
   autoReplyEnabled: true,
 };
 
@@ -189,6 +213,9 @@ function buildConversationsList(statusFilter) {
     const mTime = m.timestamp || new Date().toISOString();
 
     const existing = convMap.get(convId);
+    const opActive = isOperatorActive(convId);
+    const aiPaused = opActive || aiConfig.autoReplyMode === 'paused' || aiConfig.autoReplyEnabled === false;
+
     if (!existing) {
       convMap.set(convId, {
         id: convId,
@@ -203,10 +230,14 @@ function buildConversationsList(statusFilter) {
         created_at: mTime,
         updated_at: mTime,
         profile_name: m.senderName || null,
+        operator_active: opActive,
+        ai_paused: aiPaused,
       });
     } else {
       existing.updated_at = mTime;
       existing.last_customer_message_at = mTime;
+      existing.operator_active = opActive;
+      existing.ai_paused = aiPaused;
       if (m.remoteJid) existing.remoteJid = m.remoteJid;
       if (m.senderName && m.direction === 'inbound') {
         existing.profile_name = m.senderName;
@@ -228,6 +259,64 @@ function buildConversationsList(statusFilter) {
 
 // ─── AI Reply Engine ─────────────────────────────────────────────────────────
 
+function renderWelcomeMessage(template, businessName) {
+  const name = businessName || 'our company';
+  const raw =
+    template && template.trim().length > 0
+      ? template.trim()
+      : 'Hi! Thank you for contacting {businessName}. We received your message and our team will be with you shortly. How can we help you today?';
+  return raw.replace(/\{businessName\}/gi, name);
+}
+
+function hasBeenGreetedRecently(senderPhone, hours = 24) {
+  const clean = String(senderPhone || '').replace(/[^0-9]/g, '');
+  if (!clean) return false;
+  const cutoff = Date.now() - hours * 60 * 60 * 1000;
+  return messageLog.some((m) => {
+    if (m.direction !== 'outbound') return false;
+    const mClean = (m.phone || '').replace(/[^0-9]/g, '');
+    if (!mClean.endsWith(clean) && !clean.endsWith(mClean)) return false;
+    const time = new Date(m.timestamp).getTime();
+    return time > cutoff;
+  });
+}
+
+function isDuplicateOrRecentOutbound(senderPhone, replyText) {
+  if (!replyText) return true;
+  const clean = String(senderPhone || '').replace(/[^0-9]/g, '');
+  const normReply = replyText.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  const cutoff = Date.now() - 2 * 60 * 60 * 1000; // last 2 hours
+  const recentOutbounds = messageLog
+    .filter((m) => {
+      if (m.direction !== 'outbound') return false;
+      const mClean = (m.phone || '').replace(/[^0-9]/g, '');
+      if (!mClean.endsWith(clean) && !clean.endsWith(mClean)) return false;
+      const time = new Date(m.timestamp).getTime();
+      return time > cutoff;
+    })
+    .slice(0, 4);
+
+  for (const m of recentOutbounds) {
+    const normPrev = (m.message || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (normReply === normPrev) {
+      return true; // Exact match
+    }
+    const isReplyWelcome =
+      normReply.includes('thankyouforcontacting') ||
+      normReply.includes('receivedyourmessage') ||
+      normReply.includes('receivedyournote');
+    const isPrevWelcome =
+      normPrev.includes('thankyouforcontacting') ||
+      normPrev.includes('receivedyourmessage') ||
+      normPrev.includes('receivedyournote');
+    if (isReplyWelcome && isPrevWelcome) {
+      return true; // Prevent greeting loop
+    }
+  }
+  return false;
+}
+
 function getRecentConversationHistory(senderPhone, limit = 8) {
   const clean = String(senderPhone || '').replace(/[^0-9]/g, '');
   if (!clean) return [];
@@ -245,110 +334,177 @@ function getRecentConversationHistory(senderPhone, limit = 8) {
   }));
 }
 
-function generateSmartFallback(incomingText, pastHistory) {
+function generateSmartFallback(incomingText, pastHistory, senderPhone) {
   const lower = incomingText.toLowerCase().trim();
+  const company = aiConfig.businessName || 'our company';
+  const desc = aiConfig.businessDescription || '';
+  const isOpsGrids = company.toLowerCase().includes('opsgrids');
 
-  // If customer is just acknowledging or agreeing
+  // 1. Acknowledgements
   if (/^(ok|okay|k|thx|thanks|thank you|cool|sure|got it|noted|alright|fine)\b/.test(lower)) {
-    return "You're welcome! Feel free to ask any questions about OpsGrids software or let us know if you'd like a personalized walkthrough.";
+    return `You're welcome! Feel free to ask any other questions about ${company} or let us know if you need anything else.`;
   }
 
-  // CRM & Sales Pipeline
+  // 2. Demo, Walkthrough, Consultation or Meeting
   if (
-    lower.includes('crm') ||
-    lower.includes('lead') ||
-    lower.includes('sales') ||
-    lower.includes('pipeline') ||
-    lower.includes('deal') ||
-    lower.includes('contact')
-  ) {
-    return 'OpsGrids CRM manages your complete sales pipeline, customer contacts, deal stages, and conversion tracking in one unified place. Would you like to see how it works?';
-  }
-
-  // Attendance, HRMS & People
-  if (
-    lower.includes('attendance') ||
-    lower.includes('hrms') ||
-    lower.includes('leave') ||
-    lower.includes('employee') ||
-    lower.includes('clock') ||
-    lower.includes('shift') ||
-    lower.includes('payroll')
-  ) {
-    return 'OpsGrids HRMS includes real-time mobile and biometric attendance tracking, shift scheduling, and leave approval workflows. Would you like more details?';
-  }
-
-  // Finance, Invoicing, Billing & Payments
-  if (
-    lower.includes('invoice') ||
-    lower.includes('billing') ||
-    lower.includes('payment') ||
-    lower.includes('gst') ||
-    lower.includes('tax') ||
-    lower.includes('subscription')
-  ) {
-    return 'OpsGrids Finance creates GST-compliant invoices and collects payments via UPI, cards, and net banking with automated reconciliation. Can we help set this up for your team?';
-  }
-
-  // Inventory, Stock & Operations
-  if (
-    lower.includes('inventory') ||
-    lower.includes('stock') ||
-    lower.includes('warehouse') ||
-    lower.includes('sku') ||
-    lower.includes('purchase order') ||
-    lower.includes('dispatch')
-  ) {
-    return 'OpsGrids Inventory tracks multi-warehouse stock levels, SKU movements, purchase orders, and vendor shipments in real time. Would you like a demo?';
-  }
-
-  // Engage & WhatsApp Communication
-  if (
-    lower.includes('whatsapp') ||
-    lower.includes('engage') ||
-    lower.includes('campaign') ||
-    lower.includes('email') ||
-    lower.includes('message') ||
-    lower.includes('inbox')
-  ) {
-    return 'OpsGrids Engage provides 2-way WhatsApp shared inboxes, automated AI auto-replies 24/7, and broadcast marketing campaigns with zero platform dependency.';
-  }
-
-  // Pricing, Cost & Demo
-  if (
-    lower.includes('price') ||
-    lower.includes('cost') ||
     lower.includes('demo') ||
     lower.includes('walkthrough') ||
     lower.includes('trial') ||
+    lower.includes('meeting') ||
+    lower.includes('appointment') ||
+    lower.includes('consultation') ||
+    lower.includes('presentation')
+  ) {
+    return `We would be delighted to arrange a demo for ${company}! Could you please share your preferred date/time or email address so our team can coordinate?`;
+  }
+
+  // 3. Pricing, Cost, Rates, Quotation
+  if (
+    lower.includes('price') ||
+    lower.includes('pricing') ||
+    lower.includes('cost') ||
+    lower.includes('quot') ||
+    lower.includes('rate') ||
     lower.includes('how much')
   ) {
-    return 'OpsGrids pricing is modular based on the features your business needs (CRM, Attendance, Invoicing, Inventory). Would you like to schedule a 10-minute live walkthrough this week?';
+    return `Thank you for inquiring about ${company} pricing. Please let us know which items or requirements you are interested in so we can provide a tailored quote.`;
   }
 
-  // Products overview
+  // 4. Products / Services / About
   if (
     lower.includes('product') ||
-    lower.includes('software') ||
-    lower.includes('feature') ||
     lower.includes('service') ||
     lower.includes('what do you do') ||
+    lower.includes('what do you sell') ||
+    lower.includes('catalog') ||
+    lower.includes('catalogue') ||
     lower.includes('about')
   ) {
-    return 'OpsGrids provides unified software for CRM, Attendance & HRMS, Invoicing, Inventory, and WhatsApp customer communication. Which solution are you most interested in?';
+    if (desc) {
+      return `${company}: ${desc}. Would you like more details or a customized proposal?`;
+    }
+    if (isOpsGrids) {
+      return 'OpsGrids provides unified software for CRM, Attendance & HRMS, GST Invoicing, Inventory, and WhatsApp customer communication. Which solution are you most interested in?';
+    }
+    return `Thank you for your interest in ${company}! Please let us know what specific products or services you are looking for.`;
   }
 
-  // Greetings
+  // 5. If company is OpsGrids specifically, check product keywords
+  if (isOpsGrids) {
+    if (
+      lower.includes('crm') ||
+      lower.includes('lead') ||
+      lower.includes('sales') ||
+      lower.includes('pipeline') ||
+      lower.includes('deal') ||
+      lower.includes('contact')
+    ) {
+      return 'OpsGrids CRM manages your complete sales pipeline, customer contacts, deal stages, and conversion tracking in one unified place. Would you like to see how it works?';
+    }
+    if (
+      lower.includes('attendance') ||
+      lower.includes('hrms') ||
+      lower.includes('leave') ||
+      lower.includes('employee') ||
+      lower.includes('clock') ||
+      lower.includes('shift') ||
+      lower.includes('payroll')
+    ) {
+      return 'OpsGrids HRMS includes real-time mobile and biometric attendance tracking, shift scheduling, and leave approval workflows. Would you like more details?';
+    }
+    if (
+      lower.includes('invoice') ||
+      lower.includes('billing') ||
+      lower.includes('payment') ||
+      lower.includes('gst') ||
+      lower.includes('tax') ||
+      lower.includes('subscription')
+    ) {
+      return 'OpsGrids Finance creates GST-compliant invoices and collects payments via UPI, cards, and net banking with automated reconciliation. Can we help set this up for your team?';
+    }
+    if (
+      lower.includes('inventory') ||
+      lower.includes('stock') ||
+      lower.includes('warehouse') ||
+      lower.includes('sku') ||
+      lower.includes('purchase order') ||
+      lower.includes('dispatch')
+    ) {
+      return 'OpsGrids Inventory tracks multi-warehouse stock levels, SKU movements, purchase orders, and vendor shipments in real time. Would you like a demo?';
+    }
+    if (
+      lower.includes('whatsapp') ||
+      lower.includes('engage') ||
+      lower.includes('campaign') ||
+      lower.includes('inbox')
+    ) {
+      return 'OpsGrids Engage provides 2-way WhatsApp shared inboxes, automated AI auto-replies 24/7, and broadcast marketing campaigns with zero platform dependency.';
+    }
+  }
+
+  // 6. Greetings
   if (/^(hi|hello|hey|namaste|good morning|good afternoon|good evening)\b/.test(lower)) {
-    return 'Hello! Welcome to OpsGrids. We provide unified software for CRM, Attendance, Invoicing, Inventory, and WhatsApp communication. How can we help your business today?';
+    const greeted = hasBeenGreetedRecently(senderPhone, 12);
+    if (greeted) {
+      return `Hello again! How can our team at ${company} help you today?`;
+    }
+    return renderWelcomeMessage(aiConfig.welcomeMessage, company);
   }
 
-  return 'Thank you for contacting OpsGrids! We help businesses unify CRM, Attendance, Invoicing, and Inventory on one platform. How can I assist you today?';
+  // 7. General inquiry
+  const greeted = hasBeenGreetedRecently(senderPhone, 12);
+  if (greeted) {
+    return `Thank you for your message! Our team at ${company} has received it and will reply shortly.`;
+  }
+  return renderWelcomeMessage(aiConfig.welcomeMessage, company);
 }
 
-async function generateAIReply(incomingText, senderPhone) {
-  if (aiConfig.autoReplyEnabled === false) {
-    return null; // Auto-replies paused
+async function generateAIReply(incomingText, senderPhone, isSimulation = false) {
+  if (aiConfig.autoReplyMode === 'paused' || aiConfig.autoReplyEnabled === false) {
+    console.log(`[⏸️ AI Paused] Auto-replies are paused in settings.`);
+    return null;
+  }
+
+  const cleanPhone = String(senderPhone || '').replace(/[^0-9]/g, '');
+  const convId = 'wa-conv-' + cleanPhone;
+
+  // Check operator active takeover
+  if (!isSimulation && isOperatorActive(convId)) {
+    console.log(`[⏸️ AI Paused] Human operator is active in ${convId}. Skipping auto-reply.`);
+    return null;
+  }
+
+  const company = aiConfig.businessName || 'OpsGrids';
+  const desc = aiConfig.businessDescription || '';
+  const isOpsGrids = company.toLowerCase().includes('opsgrids');
+
+  // Check welcome_only mode
+  if (aiConfig.autoReplyMode === 'welcome_only') {
+    const greeted = hasBeenGreetedRecently(senderPhone, 24);
+    if (greeted) {
+      console.log(`[ℹ️ Welcome Only] ${cleanPhone} was already greeted in last 24h. Skipping auto-reply.`);
+      return null;
+    }
+    const welcome = renderWelcomeMessage(aiConfig.welcomeMessage, company);
+    return welcome;
+  }
+
+  // If in all_inbound mode:
+  // First, check anti-repetition: if customer just said "Hi" again and was already greeted in 12h
+  const lower = incomingText.toLowerCase().trim();
+  const isBareGreeting =
+    /^(hi|hello|hey|namaste|good morning|good afternoon|good evening|hola)\b/.test(lower) &&
+    lower.split(/\s+/).length <= 3;
+  if (isBareGreeting) {
+    const greeted = hasBeenGreetedRecently(senderPhone, 12);
+    if (greeted) {
+      const followUp = `Hello again! How can our team at ${company} help you today?`;
+      if (isDuplicateOrRecentOutbound(senderPhone, followUp)) {
+        console.log(`[ℹ️ Suppressed] Recent greeting already sent to ${cleanPhone}.`);
+        return null;
+      }
+      return followUp;
+    }
   }
 
   const geminiKey = aiConfig.geminiKey || process.env.GEMINI_API_KEY;
@@ -359,27 +515,29 @@ async function generateAIReply(incomingText, senderPhone) {
   const pastHistory = getRecentConversationHistory(senderPhone, 8);
   pastHistory.push({ role: 'user', content: incomingText });
 
-  const systemPrompt = `You are the helpful, intelligent customer operations AI assistant for ${aiConfig.businessName || 'OpsGrids'} (https://opsgrids.com).
+  const systemPrompt = `You are the helpful, professional customer operations AI assistant for ${company}.
 You are replying directly to a customer on WhatsApp.
 
-ABOUT OPSGRIDS SOFTWARE PLATFORM & PRODUCT CATALOGUE:
-OpsGrids is an integrated enterprise business operating system unifying core business operations:
-1. OpsGrids Engage: Omnichannel marketing & 2-way customer communication (WhatsApp shared inbox, 24/7 AI auto-replies, broadcast email campaigns, verified sending domains).
-2. OpsGrids CRM & Revenue: Sales pipeline tracking, lead stages, customer 360, deal lifecycle, quotations.
-3. OpsGrids HRMS & People: Real-time clock-in/out attendance tracking, shift schedules, leave approval workflows, employee directory.
-4. OpsGrids Finance & Invoicing: GST-compliant invoices, automated recurring billing, payment collection via UPI, cards, and net banking (Razorpay/Cashfree).
-5. OpsGrids Inventory & Operations: Multi-warehouse stock tracking, SKU movements, purchase orders, vendor management, shipment dispatch.
-6. OpsGrids ITSM & Support: Omnichannel customer ticketing, SLAs, incident tracking.
-7. OpsGrids Storefront: B2B/B2C digital store catalog, order checkout, real-time inventory synchronization.
+ABOUT ${company.toUpperCase()}:
+- Company Name: ${company}
+- Business Profile: ${desc || (isOpsGrids ? 'Enterprise business software suite unifying CRM, HRMS Attendance, GST Invoicing, and Inventory.' : 'Trusted customer-centric business providing quality products and services.')}
+${aiConfig.customKnowledge ? `\nCUSTOM PRODUCTS, SERVICES, POLICIES & KNOWLEDGE:\n${aiConfig.customKnowledge}\n` : (isOpsGrids ? `
+OPSGRIDS SOFTWARE SUITE:
+1. OpsGrids Engage: 2-way WhatsApp inbox, automated AI auto-replies, email broadcasts.
+2. OpsGrids CRM: Pipeline tracking, leads, contact management, deal stages.
+3. OpsGrids HRMS: Real-time clock-in attendance, shift schedules, leave approvals.
+4. OpsGrids Finance: GST invoicing, recurring billing, UPI/card payment collection.
+5. OpsGrids Inventory: Multi-warehouse stock tracking, SKU movements, purchase orders.
+` : '')}
 
-${aiConfig.customKnowledge ? `CUSTOM BUSINESS & PRODUCT KNOWLEDGE:\n${aiConfig.customKnowledge}\n` : ''}
+CRITICAL RULES:
+1. Speak ONLY on behalf of ${company}. DO NOT mention other brands or unrelated software.
+2. Be conversational, polite, and brief (1 to 3 sentences maximum — this is a WhatsApp message).
+3. DO NOT repeat the introductory welcome message if the user is already having an ongoing conversation.
+4. Address the customer's specific question or request directly.
+5. If the customer asks for a demo, quote, or appointment, invite them to share their preferred time, requirements, or email address.`;
 
-CRITICAL GUIDELINES:
-- Keep your response conversational, polite, helpful, and concise (1 to 3 sentences maximum — this is a WhatsApp message).
-- DO NOT use markdown headers (###), bullet points walls, or email salutations ("Dear Customer", "Sincerely").
-- Answer the customer's specific question using the product catalogue above and previous dialogue history.
-- Never repeat the same introductory greeting if the customer is already in an ongoing conversation.
-- If asked for a demo, pricing, or onboarding, invite them for a quick walkthrough or mention they can visit https://opsgrids.com.`;
+  let reply = null;
 
   // 1. Google Gemini (if selected or auto)
   if ((provider === 'auto' || provider === 'gemini') && geminiKey) {
@@ -403,10 +561,7 @@ CRITICAL GUIDELINES:
 
       if (res.ok) {
         const data = await res.json();
-        const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-        if (reply) {
-          return reply;
-        }
+        reply = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
       } else {
         const errBody = await res.text();
         console.error('[!] Gemini API error:', res.status, errBody);
@@ -417,7 +572,7 @@ CRITICAL GUIDELINES:
   }
 
   // 2. OpenAI ChatGPT (if selected or auto fallback)
-  if ((provider === 'auto' || provider === 'openai') && openaiKey) {
+  if (!reply && (provider === 'auto' || provider === 'openai') && openaiKey) {
     try {
       const model = aiConfig.openaiModel || process.env.OPENAI_MODEL || 'gpt-4o-mini';
       const messages = [{ role: 'system', content: systemPrompt }, ...pastHistory];
@@ -433,10 +588,7 @@ CRITICAL GUIDELINES:
 
       if (res.ok) {
         const data = await res.json();
-        const reply = data?.choices?.[0]?.message?.content?.trim();
-        if (reply) {
-          return reply;
-        }
+        reply = data?.choices?.[0]?.message?.content?.trim() || null;
       } else {
         const errBody = await res.text();
         console.error('[!] OpenAI API error:', res.status, errBody);
@@ -446,8 +598,18 @@ CRITICAL GUIDELINES:
     }
   }
 
-  // 3. Intelligent product-aware fallback
-  return generateSmartFallback(incomingText, pastHistory);
+  // 3. Fallback
+  if (!reply) {
+    reply = generateSmartFallback(incomingText, pastHistory, senderPhone);
+  }
+
+  // 4. Anti-duplication check
+  if (reply && isDuplicateOrRecentOutbound(senderPhone, reply)) {
+    console.log(`[ℹ️ Suppressed] Duplicate reply suppressed for ${cleanPhone}: "${reply}"`);
+    return null;
+  }
+
+  return reply;
 }
 
 // ─── Baileys Connection ──────────────────────────────────────────────────────
@@ -551,6 +713,10 @@ async function initWhatsAppSocket() {
           const text =
             msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
           if (text) {
+            const cleanDigits = (displayPhone || '').replace(/[^0-9]/g, '');
+            if (cleanDigits) {
+              markOperatorActive('wa-conv-' + cleanDigits);
+            }
             pushMessage({
               id: msg.key.id || 'out-' + Date.now(),
               direction: 'outbound',
@@ -586,19 +752,21 @@ async function initWhatsAppSocket() {
         // Generate AI reply
         try {
           const replyText = await generateAIReply(text, rawSender);
-          console.log(`[📤 Sending Reply] To ${displayPhone}: "${replyText}"`);
-          await sock.sendMessage(remoteJid, { text: replyText });
+          if (replyText && typeof replyText === 'string' && replyText.trim().length > 0) {
+            console.log(`[📤 Sending Reply] To ${displayPhone}: "${replyText}"`);
+            await sock.sendMessage(remoteJid, { text: replyText });
 
-          pushMessage({
-            id: 'reply-' + Date.now(),
-            direction: 'outbound',
-            phone: displayPhone,
-            remoteJid,
-            senderName: 'OpsGrids AI',
-            message: replyText,
-            timestamp: new Date().toISOString(),
-            status: 'ai_replied',
-          });
+            pushMessage({
+              id: 'reply-' + Date.now(),
+              direction: 'outbound',
+              phone: displayPhone,
+              remoteJid,
+              senderName: `${aiConfig.businessName || 'Business'} AI`,
+              message: replyText,
+              timestamp: new Date().toISOString(),
+              status: 'ai_replied',
+            });
+          }
         } catch (err) {
           console.error(`[!] Failed to reply to ${displayPhone}:`, err.message);
         }
@@ -776,8 +944,8 @@ const server = http.createServer(async (req, res) => {
   if (pathname === '/api/whatsapp-personal/simulate' && req.method === 'POST') {
     const body = await parseBody(req);
     const phone = String(body.phone || '+91 98765 43210');
-    const msg = String(body.message || 'Hello, I want to learn about OpsGrids.');
-    const reply = await generateAIReply(msg, phone.replace(/[^0-9]/g, ''));
+    const msg = String(body.message || 'Hello, I want to learn about our services.');
+    const reply = await generateAIReply(msg, phone.replace(/[^0-9]/g, ''), true);
 
     const simulatedInbound = {
       id: 'sim-in-' + Date.now(),
@@ -792,8 +960,8 @@ const server = http.createServer(async (req, res) => {
       id: 'sim-out-' + Date.now(),
       direction: 'outbound',
       phone,
-      senderName: 'OpsGrids AI',
-      message: reply,
+      senderName: `${aiConfig.businessName || 'Business'} AI`,
+      message: reply || '(Auto-reply paused for this inquiry)',
       timestamp: new Date().toISOString(),
       status: 'ai_replied',
     };
@@ -922,11 +1090,34 @@ const server = http.createServer(async (req, res) => {
     };
     pushMessage(outbound);
 
+    // Operator manual reply activates human takeover and pauses AI
+    markOperatorActive(convId);
+
     sendJson(res, req, 200, {
       message_id: outbound.id,
       state: outbound.status,
       conversation_id: convId,
     });
+    return;
+  }
+
+  // POST /api/whatsapp-personal/conversations/:id/resume-ai
+  const convResumeMatch = pathname.match(/^\/api\/whatsapp-personal\/conversations\/([^/]+)\/resume-ai$/);
+  if (convResumeMatch && req.method === 'POST') {
+    const convId = decodeURIComponent(convResumeMatch[1]);
+    operatorActiveMap.delete(convId);
+    console.log(`[🤖 AI Resumed] Handed ${convId} back to AI auto-reply.`);
+    sendJson(res, req, 200, { ok: true, convId, operator_active: false });
+    return;
+  }
+
+  // POST /api/whatsapp-personal/conversations/:id/pause-ai
+  const convPauseMatch = pathname.match(/^\/api\/whatsapp-personal\/conversations\/([^/]+)\/pause-ai$/);
+  if (convPauseMatch && req.method === 'POST') {
+    const convId = decodeURIComponent(convPauseMatch[1]);
+    operatorActiveMap.set(convId, Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+    console.log(`[⏸️ AI Paused] Operator paused AI for ${convId}.`);
+    sendJson(res, req, 200, { ok: true, convId, operator_active: true });
     return;
   }
 
@@ -1003,9 +1194,15 @@ const server = http.createServer(async (req, res) => {
         ? `${openaiKey.slice(0, 4)}...${openaiKey.slice(-4)}`
         : '',
       openaiModel: aiConfig.openaiModel,
-      businessName: aiConfig.businessName,
-      customKnowledge: aiConfig.customKnowledge,
-      autoReplyEnabled: aiConfig.autoReplyEnabled,
+      businessName: aiConfig.businessName || 'OpsGrids',
+      businessDescription: aiConfig.businessDescription || '',
+      welcomeMessage:
+        aiConfig.welcomeMessage ||
+        'Hi! Thank you for contacting {businessName}. We received your message and will follow up shortly. How can we help you today?',
+      customKnowledge: aiConfig.customKnowledge || '',
+      autoReplyMode: aiConfig.autoReplyMode || 'welcome_only',
+      humanTakeoverMinutes: aiConfig.humanTakeoverMinutes || 30,
+      autoReplyEnabled: aiConfig.autoReplyMode !== 'paused',
     });
     return;
   }
@@ -1029,24 +1226,42 @@ const server = http.createServer(async (req, res) => {
     if (typeof body.businessName === 'string') {
       aiConfig.businessName = body.businessName.trim();
     }
+    if (typeof body.businessDescription === 'string') {
+      aiConfig.businessDescription = body.businessDescription.trim();
+    }
+    if (typeof body.welcomeMessage === 'string') {
+      aiConfig.welcomeMessage = body.welcomeMessage.trim();
+    }
     if (typeof body.customKnowledge === 'string') {
       aiConfig.customKnowledge = body.customKnowledge.trim();
     }
+    if (body.autoReplyMode !== undefined) {
+      aiConfig.autoReplyMode = body.autoReplyMode;
+    }
+    if (typeof body.humanTakeoverMinutes === 'number') {
+      aiConfig.humanTakeoverMinutes = Math.max(1, body.humanTakeoverMinutes);
+    }
     if (body.autoReplyEnabled !== undefined) {
+      if (!body.autoReplyEnabled) {
+        aiConfig.autoReplyMode = 'paused';
+      } else if (aiConfig.autoReplyMode === 'paused') {
+        aiConfig.autoReplyMode = 'all_inbound';
+      }
       aiConfig.autoReplyEnabled = Boolean(body.autoReplyEnabled);
     }
 
     persistAiConfig();
     console.log(
-      `[+] WhatsApp AI configuration saved: Provider=${aiConfig.provider}, GeminiKey=${Boolean(aiConfig.geminiKey)}, OpenAIKey=${Boolean(aiConfig.openaiKey)}, Business="${aiConfig.businessName}"`,
+      `[+] WhatsApp AI configuration saved: Provider=${aiConfig.provider}, Mode=${aiConfig.autoReplyMode}, GeminiKey=${Boolean(aiConfig.geminiKey)}, OpenAIKey=${Boolean(aiConfig.openaiKey)}, Business="${aiConfig.businessName}"`,
     );
 
     sendJson(res, req, 200, {
       ok: true,
-      message: 'WhatsApp AI settings and product knowledge updated successfully.',
+      message: 'WhatsApp AI settings and client profile updated successfully.',
       hasGeminiKey: Boolean(aiConfig.geminiKey || process.env.GEMINI_API_KEY),
       hasOpenaiKey: Boolean(aiConfig.openaiKey || process.env.OPENAI_API_KEY),
       provider: aiConfig.provider,
+      autoReplyMode: aiConfig.autoReplyMode,
     });
     return;
   }

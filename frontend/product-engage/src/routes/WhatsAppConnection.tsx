@@ -386,10 +386,13 @@ function PersonalWhatsAppPortal() {
   const [hasOpenaiKey, setHasOpenaiKey] = useState(false);
   const [openaiKeyMasked, setOpenaiKeyMasked] = useState("");
   const [businessName, setBusinessName] = useState("OpsGrids");
+  const [businessDescription, setBusinessDescription] = useState("");
+  const [welcomeMessage, setWelcomeMessage] = useState("");
+  const [autoReplyMode, setAutoReplyMode] = useState<"all_inbound" | "welcome_only" | "paused">("welcome_only");
+  const [humanTakeoverMinutes, setHumanTakeoverMinutes] = useState(30);
   const [customKnowledge, setCustomKnowledge] = useState("");
   const [showGeminiKey, setShowGeminiKey] = useState(false);
   const [showOpenaiKey, setShowOpenaiKey] = useState(false);
-  const [autoReplyEnabled, setAutoReplyEnabled] = useState(true);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
 
@@ -401,8 +404,11 @@ function PersonalWhatsAppPortal() {
       setHasOpenaiKey(cfg.hasOpenaiKey);
       setOpenaiKeyMasked(cfg.openaiKeyMasked);
       setBusinessName(cfg.businessName || "OpsGrids");
+      setBusinessDescription(cfg.businessDescription || "");
+      setWelcomeMessage(cfg.welcomeMessage || "");
+      setAutoReplyMode(cfg.autoReplyMode || "welcome_only");
+      setHumanTakeoverMinutes(cfg.humanTakeoverMinutes || 30);
       setCustomKnowledge(cfg.customKnowledge || "");
-      setAutoReplyEnabled(cfg.autoReplyEnabled !== false);
     });
   }, []);
 
@@ -414,8 +420,12 @@ function PersonalWhatsAppPortal() {
         geminiKey: geminiKeyInput.trim() || undefined,
         openaiKey: openaiKeyInput.trim() || undefined,
         businessName,
+        businessDescription,
+        welcomeMessage,
+        autoReplyMode,
+        humanTakeoverMinutes,
         customKnowledge,
-        autoReplyEnabled,
+        autoReplyEnabled: autoReplyMode !== "paused",
       });
       if (res.ok) {
         setSavedNotice(true);
@@ -1018,14 +1028,122 @@ function PersonalWhatsAppPortal() {
       {activeTab === "config" && (
         <div className="flex flex-col gap-6">
           <div>
-            <h3 className="text-body-sm font-bold text-ink">AI Auto-Responder & Model Configuration</h3>
+            <h3 className="text-body-sm font-bold text-ink">Client Identity & AI Configuration</h3>
             <p className="text-caption text-muted">
-              Configure your AI Model Provider, API keys, and custom product knowledge. Incoming customer messages will receive intelligent, context-aware replies based on your conversation history.
+              Configure your organization or client identity, custom greeting, auto-reply policy, and AI model keys. Auto-replies adapt to your company profile without repetitive canned messages.
             </p>
           </div>
 
+          {/* 1. Client Company Identity & Greeting */}
+          <div className="flex flex-col gap-4 rounded-card bg-surface-muted p-4 border border-line">
+            <h4 className="text-body-sm font-bold text-ink">Company & Client Profile</h4>
+            <p className="text-caption text-muted">
+              Specify your company name, industry description, and welcome greeting. Outbound messages will reflect your organization instead of hardcoded generic lines.
+            </p>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="flex flex-col gap-2">
+                <label htmlFor="business-name-input" className="text-caption font-bold text-ink">
+                  Company / Brand Name
+                </label>
+                <input
+                  id="business-name-input"
+                  type="text"
+                  value={businessName}
+                  onChange={(e) => setBusinessName(e.target.value)}
+                  placeholder="e.g. Abhay Pharma, Acme Logistics, OpsGrids"
+                  className="w-full rounded-chip border border-line bg-card py-2 px-3 text-body-sm text-ink"
+                />
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <label htmlFor="business-desc-input" className="text-caption font-bold text-ink">
+                  Business Description / Industry
+                </label>
+                <input
+                  id="business-desc-input"
+                  type="text"
+                  value={businessDescription}
+                  onChange={(e) => setBusinessDescription(e.target.value)}
+                  placeholder="e.g. Wholesale pharmaceutical distributor of medicines and surgical supplies"
+                  className="w-full rounded-chip border border-line bg-card py-2 px-3 text-body-sm text-ink"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <label htmlFor="welcome-msg-input" className="text-caption font-bold text-ink">
+                  Welcome Greeting Message
+                </label>
+                <span className="text-caption text-muted">
+                  Tip: Use <code className="text-accent font-mono">&#123;businessName&#125;</code> to insert brand
+                </span>
+              </div>
+              <textarea
+                id="welcome-msg-input"
+                rows={2}
+                value={welcomeMessage}
+                onChange={(e) => setWelcomeMessage(e.target.value)}
+                placeholder="Hi! Thank you for contacting {businessName}. We received your message and our team will be with you shortly. How can we help you today?"
+                className="w-full rounded-card border border-line bg-card p-3 text-body-sm text-ink"
+              />
+            </div>
+          </div>
+
+          {/* 2. Auto-Reply Strategy & Human Takeover */}
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="flex flex-col gap-2 rounded-card bg-surface-muted p-4 border border-line">
+              <label htmlFor="auto-reply-mode-select" className="text-caption font-bold text-ink">
+                Auto-Reply Strategy
+              </label>
+              <select
+                id="auto-reply-mode-select"
+                value={autoReplyMode}
+                onChange={(e) => setAutoReplyMode(e.target.value as "all_inbound" | "welcome_only" | "paused")}
+                className="rounded-chip border border-line bg-card p-2 text-body-sm text-ink"
+              >
+                <option value="welcome_only">Welcome Message Only (Initial Contact) — Recommended</option>
+                <option value="all_inbound">AI Conversational Assistant (24/7 Multi-Turn)</option>
+                <option value="paused">Off / Manual Operator Only (No Auto-Replies)</option>
+              </select>
+              <p className="text-caption text-muted">
+                {autoReplyMode === "welcome_only" && "Greets incoming customers once. Leaves all follow-up replies to human agents in the Inbox."}
+                {autoReplyMode === "all_inbound" && "Intelligent AI answers questions continuously with conversation history, pausing when an agent types."}
+                {autoReplyMode === "paused" && "Automated responses are disabled. All messages must be answered manually."}
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-2 rounded-card bg-surface-muted p-4 border border-line">
+              <label htmlFor="human-takeover-input" className="text-caption font-bold text-ink">
+                Human Operator Takeover Cooldown
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  id="human-takeover-input"
+                  type="number"
+                  min={1}
+                  max={1440}
+                  value={humanTakeoverMinutes}
+                  onChange={(e) => setHumanTakeoverMinutes(Math.max(1, parseInt(e.target.value || "30", 10)))}
+                  className="w-24 rounded-chip border border-line bg-card py-2 px-3 text-body-sm text-ink font-mono"
+                />
+                <span className="text-caption text-ink font-medium">minutes</span>
+              </div>
+              <p className="text-caption text-muted">
+                When an operator replies manually in the Inbox, AI auto-replies are silenced for this duration to prevent interrupting human conversations.
+              </p>
+            </div>
+          </div>
+
+          {/* 3. Model Provider & API Keys */}
+          <div className="flex flex-col gap-4 rounded-card bg-surface-muted p-4 border border-line">
+            <div className="flex items-center gap-2">
+              <KeyIcon className="size-4 text-accent" />
+              <h4 className="text-body-sm font-bold text-ink">AI Model Provider & API Keys</h4>
+            </div>
+
+            <div className="flex flex-col gap-2">
               <label htmlFor="ai-provider-select" className="text-caption font-bold text-ink">AI Model Provider</label>
               <select
                 id="ai-provider-select"
@@ -1037,35 +1155,6 @@ function PersonalWhatsAppPortal() {
                 <option value="gemini">Google Gemini 1.5 Flash (Fast & High-Intelligence)</option>
                 <option value="openai">OpenAI ChatGPT (gpt-4o-mini)</option>
               </select>
-              <p className="text-caption text-muted">
-                Choose which foundation model powers your WhatsApp conversations.
-              </p>
-            </div>
-
-            <div className="flex flex-col gap-2 rounded-card bg-surface-muted p-4 border border-line">
-              <span className="text-caption font-bold text-ink">Auto-Reply Status</span>
-              <div className="flex items-center gap-3 pt-1">
-                <button
-                  type="button"
-                  onClick={() => setAutoReplyEnabled(!autoReplyEnabled)}
-                  className={`rounded-chip px-3 py-1 text-body-sm font-semibold transition-colors ${
-                    autoReplyEnabled ? "bg-positive text-surface" : "bg-muted/30 text-ink"
-                  }`}
-                >
-                  {autoReplyEnabled ? "✓ Active (24/7 Contextual Replies)" : "Paused"}
-                </button>
-              </div>
-              <p className="text-caption text-muted">
-                When active, all incoming customer WhatsApp messages get instant context-aware replies.
-              </p>
-            </div>
-          </div>
-
-          {/* API Keys Configuration */}
-          <div className="flex flex-col gap-4 rounded-card bg-surface-muted p-4 border border-line">
-            <div className="flex items-center gap-2">
-              <KeyIcon className="size-4 text-accent" />
-              <h4 className="text-body-sm font-bold text-ink">Model Provider API Keys</h4>
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2">
@@ -1141,47 +1230,30 @@ function PersonalWhatsAppPortal() {
             </div>
           </div>
 
-          {/* Business & Product Knowledge */}
+          {/* 4. Products Knowledge Base */}
           <div className="flex flex-col gap-3 rounded-card bg-surface-muted p-4 border border-line">
-            <h4 className="text-body-sm font-bold text-ink">Business & Product Intelligence</h4>
+            <h4 className="text-body-sm font-bold text-ink">Custom Products, Services & Pricing Knowledge</h4>
             <p className="text-caption text-muted">
-              The AI auto-responder is pre-trained with OpsGrids software products (CRM, Attendance, Invoicing, Inventory, WhatsApp Communication, Support). Customize it with your company details and catalog below.
+              Add your product lines, price ranges, warranty/delivery policies, branch addresses, or FAQs. The AI answers customer inquiries using this exact knowledge.
             </p>
-
-            <div className="flex flex-col gap-2">
-              <label htmlFor="business-name-input" className="text-caption font-bold text-ink">Company / Brand Name</label>
-              <input
-                id="business-name-input"
-                type="text"
-                value={businessName}
-                onChange={(e) => setBusinessName(e.target.value)}
-                placeholder="OpsGrids or your company name"
-                className="w-full rounded-chip border border-line bg-card py-2 px-3 text-body-sm text-ink"
-              />
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <label htmlFor="custom-knowledge-input" className="text-caption font-bold text-ink">
-                Custom Products, Services & Pricing Guidelines
-              </label>
-              <textarea
-                id="custom-knowledge-input"
-                rows={4}
-                value={customKnowledge}
-                onChange={(e) => setCustomKnowledge(e.target.value)}
-                placeholder="Add special product lines, pricing, delivery policies, branch locations, or FAQs here..."
-                className="w-full rounded-card border border-line bg-card p-3 text-body-sm text-ink"
-              />
-            </div>
+            <textarea
+              id="custom-knowledge-input"
+              rows={4}
+              value={customKnowledge}
+              onChange={(e) => setCustomKnowledge(e.target.value)}
+              placeholder="e.g. Products: Generic medicines, clinical surgical supplies. Delivery: Same-day delivery across regional hubs. Bulk order minimum: ₹5,000."
+              className="w-full rounded-card border border-line bg-card p-3 text-body-sm text-ink"
+            />
           </div>
 
+          {/* 5. Anti-Repeat & Deduplication Shield */}
           <div className="rounded-card bg-surface-muted p-4 border border-line flex flex-col gap-2">
             <span className="text-caption font-bold text-ink">Spam & Duplicate Shield</span>
             <div className="flex items-center gap-2 text-caption text-positive font-semibold">
-              <CheckCircleIcon className="size-4" /> Enabled: SHA-256 body hash deduplication active
+              <CheckCircleIcon className="size-4" /> Enabled: Dynamic deduplication & operator protection active
             </div>
             <p className="text-caption text-muted">
-              Duplicate incoming messages sent within 10 minutes from the same contact are automatically suppressed so customers are never spammed.
+              The bridge automatically suppresses repeating identical messages, blocks greeting loops on multi-turn conversations, and yields to human agents.
             </p>
           </div>
 
@@ -1195,7 +1267,7 @@ function PersonalWhatsAppPortal() {
             </Button>
             {savedNotice && (
               <span className="text-caption font-semibold text-positive">
-                ✓ WhatsApp AI settings, API keys, and product knowledge saved successfully!
+                ✓ WhatsApp client identity, auto-reply policy, and API keys saved successfully!
               </span>
             )}
           </div>
