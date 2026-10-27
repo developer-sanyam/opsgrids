@@ -5,7 +5,10 @@ import { useAsync } from "@opsgrids/client";
 import {
   CheckCircleIcon,
   CheckIcon,
+  EyeIcon,
+  EyeOffIcon,
   InboxIcon,
+  KeyIcon,
   MessageSquareIcon,
   QrCode,
   RefreshIcon,
@@ -13,7 +16,13 @@ import {
   SparkIcon,
 } from "@opsgrids/ui";
 
-import { connectWhatsApp, getWhatsAppConnection, replaceWhatsApp } from "@/api/client";
+import {
+  connectWhatsApp,
+  getWhatsAppAiConfig,
+  getWhatsAppConnection,
+  replaceWhatsApp,
+  saveWhatsAppAiConfig,
+} from "@/api/client";
 import type { WhatsAppConnectionIn, WhatsAppConnectionOut } from "@/api/types";
 import { failureMessage } from "@/lib/errors";
 import {
@@ -370,8 +379,68 @@ function PersonalWhatsAppPortal() {
 
   // Config state
   const [aiProvider, setAiProvider] = useState<"gemini" | "openai" | "auto">("auto");
+  const [geminiKeyInput, setGeminiKeyInput] = useState("");
+  const [openaiKeyInput, setOpenaiKeyInput] = useState("");
+  const [hasGeminiKey, setHasGeminiKey] = useState(false);
+  const [geminiKeyMasked, setGeminiKeyMasked] = useState("");
+  const [hasOpenaiKey, setHasOpenaiKey] = useState(false);
+  const [openaiKeyMasked, setOpenaiKeyMasked] = useState("");
+  const [businessName, setBusinessName] = useState("OpsGrids");
+  const [customKnowledge, setCustomKnowledge] = useState("");
+  const [showGeminiKey, setShowGeminiKey] = useState(false);
+  const [showOpenaiKey, setShowOpenaiKey] = useState(false);
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(true);
+  const [isSavingConfig, setIsSavingConfig] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
+
+  useEffect(() => {
+    getWhatsAppAiConfig().then((cfg) => {
+      setAiProvider(cfg.provider);
+      setHasGeminiKey(cfg.hasGeminiKey);
+      setGeminiKeyMasked(cfg.geminiKeyMasked);
+      setHasOpenaiKey(cfg.hasOpenaiKey);
+      setOpenaiKeyMasked(cfg.openaiKeyMasked);
+      setBusinessName(cfg.businessName || "OpsGrids");
+      setCustomKnowledge(cfg.customKnowledge || "");
+      setAutoReplyEnabled(cfg.autoReplyEnabled !== false);
+    });
+  }, []);
+
+  const handleSaveAiConfig = async () => {
+    setIsSavingConfig(true);
+    try {
+      const res = await saveWhatsAppAiConfig({
+        provider: aiProvider,
+        geminiKey: geminiKeyInput.trim() || undefined,
+        openaiKey: openaiKeyInput.trim() || undefined,
+        businessName,
+        customKnowledge,
+        autoReplyEnabled,
+      });
+      if (res.ok) {
+        setSavedNotice(true);
+        if (geminiKeyInput.trim()) {
+          setHasGeminiKey(true);
+          setGeminiKeyMasked(
+            `${geminiKeyInput.slice(0, 6)}...${geminiKeyInput.slice(-4)}`,
+          );
+          setGeminiKeyInput("");
+        }
+        if (openaiKeyInput.trim()) {
+          setHasOpenaiKey(true);
+          setOpenaiKeyMasked(
+            `${openaiKeyInput.slice(0, 4)}...${openaiKeyInput.slice(-4)}`,
+          );
+          setOpenaiKeyInput("");
+        }
+        setTimeout(() => setSavedNotice(false), 3000);
+      }
+    } catch {
+      setSavedNotice(false);
+    } finally {
+      setIsSavingConfig(false);
+    }
+  };
 
   // ─── Live Bridge Polling ───────────────────────────────────────────────────
   const fetchStatusAndQr = useCallback(async () => {
@@ -947,11 +1016,13 @@ function PersonalWhatsAppPortal() {
 
       {/* Tab 3: AI Configuration */}
       {activeTab === "config" && (
-        <div className="flex flex-col gap-4">
-          <h3 className="text-body-sm font-bold text-ink">AI Auto-Responder Configuration</h3>
-          <p className="text-caption text-muted">
-            Configure how your WhatsApp auto-replies behave without touching backend code.
-          </p>
+        <div className="flex flex-col gap-6">
+          <div>
+            <h3 className="text-body-sm font-bold text-ink">AI Auto-Responder & Model Configuration</h3>
+            <p className="text-caption text-muted">
+              Configure your AI Model Provider, API keys, and custom product knowledge. Incoming customer messages will receive intelligent, context-aware replies based on your conversation history.
+            </p>
+          </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="flex flex-col gap-2 rounded-card bg-surface-muted p-4 border border-line">
@@ -963,11 +1034,11 @@ function PersonalWhatsAppPortal() {
                 className="rounded-chip border border-line bg-card p-2 text-body-sm text-ink"
               >
                 <option value="auto">Auto (Detects GEMINI_API_KEY or OPENAI_API_KEY)</option>
-                <option value="gemini">Google Gemini 1.5 Flash (Fast & Structured)</option>
+                <option value="gemini">Google Gemini 1.5 Flash (Fast & High-Intelligence)</option>
                 <option value="openai">OpenAI ChatGPT (gpt-4o-mini)</option>
               </select>
               <p className="text-caption text-muted">
-                Keys can be provided via environment or in portal settings.
+                Choose which foundation model powers your WhatsApp conversations.
               </p>
             </div>
 
@@ -990,6 +1061,120 @@ function PersonalWhatsAppPortal() {
             </div>
           </div>
 
+          {/* API Keys Configuration */}
+          <div className="flex flex-col gap-4 rounded-card bg-surface-muted p-4 border border-line">
+            <div className="flex items-center gap-2">
+              <KeyIcon className="size-4 text-accent" />
+              <h4 className="text-body-sm font-bold text-ink">Model Provider API Keys</h4>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              {/* Google Gemini Key */}
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <label htmlFor="gemini-key-input" className="text-caption font-bold text-ink">
+                    Google Gemini API Key
+                  </label>
+                  {hasGeminiKey && (
+                    <span className="text-caption font-semibold text-positive">
+                      ✓ Active: {geminiKeyMasked}
+                    </span>
+                  )}
+                </div>
+                <div className="relative flex items-center">
+                  <input
+                    id="gemini-key-input"
+                    type={showGeminiKey ? "text" : "password"}
+                    value={geminiKeyInput}
+                    onChange={(e) => setGeminiKeyInput(e.target.value)}
+                    placeholder={hasGeminiKey ? "Enter new key to replace existing..." : "AIzaSy..."}
+                    className="w-full rounded-chip border border-line bg-card py-2 pl-3 pr-8 text-body-sm text-ink font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowGeminiKey(!showGeminiKey)}
+                    className="absolute right-3 text-muted hover:text-ink"
+                    title={showGeminiKey ? "Hide key" : "Show key"}
+                  >
+                    {showGeminiKey ? <EyeOffIcon className="size-4" /> : <EyeIcon className="size-4" />}
+                  </button>
+                </div>
+                <p className="text-caption text-muted">
+                  Get a free API key at <a href="https://aistudio.google.com" target="_blank" rel="noreferrer" className="text-accent underline">Google AI Studio</a>.
+                </p>
+              </div>
+
+              {/* OpenAI Key */}
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <label htmlFor="openai-key-input" className="text-caption font-bold text-ink">
+                    OpenAI API Key
+                  </label>
+                  {hasOpenaiKey && (
+                    <span className="text-caption font-semibold text-positive">
+                      ✓ Active: {openaiKeyMasked}
+                    </span>
+                  )}
+                </div>
+                <div className="relative flex items-center">
+                  <input
+                    id="openai-key-input"
+                    type={showOpenaiKey ? "text" : "password"}
+                    value={openaiKeyInput}
+                    onChange={(e) => setOpenaiKeyInput(e.target.value)}
+                    placeholder={hasOpenaiKey ? "Enter new key to replace existing..." : "sk-..."}
+                    className="w-full rounded-chip border border-line bg-card py-2 pl-3 pr-8 text-body-sm text-ink font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowOpenaiKey(!showOpenaiKey)}
+                    className="absolute right-3 text-muted hover:text-ink"
+                    title={showOpenaiKey ? "Hide key" : "Show key"}
+                  >
+                    {showOpenaiKey ? <EyeOffIcon className="size-4" /> : <EyeIcon className="size-4" />}
+                  </button>
+                </div>
+                <p className="text-caption text-muted">
+                  Get your API key from <a href="https://platform.openai.com" target="_blank" rel="noreferrer" className="text-accent underline">platform.openai.com</a>.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Business & Product Knowledge */}
+          <div className="flex flex-col gap-3 rounded-card bg-surface-muted p-4 border border-line">
+            <h4 className="text-body-sm font-bold text-ink">Business & Product Intelligence</h4>
+            <p className="text-caption text-muted">
+              The AI auto-responder is pre-trained with OpsGrids software products (CRM, Attendance, Invoicing, Inventory, WhatsApp Communication, Support). Customize it with your company details and catalog below.
+            </p>
+
+            <div className="flex flex-col gap-2">
+              <label htmlFor="business-name-input" className="text-caption font-bold text-ink">Company / Brand Name</label>
+              <input
+                id="business-name-input"
+                type="text"
+                value={businessName}
+                onChange={(e) => setBusinessName(e.target.value)}
+                placeholder="OpsGrids or your company name"
+                className="w-full rounded-chip border border-line bg-card py-2 px-3 text-body-sm text-ink"
+              />
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <label htmlFor="custom-knowledge-input" className="text-caption font-bold text-ink">
+                Custom Products, Services & Pricing Guidelines
+              </label>
+              <textarea
+                id="custom-knowledge-input"
+                rows={4}
+                value={customKnowledge}
+                onChange={(e) => setCustomKnowledge(e.target.value)}
+                placeholder="Add special product lines, pricing, delivery policies, branch locations, or FAQs here..."
+                className="w-full rounded-card border border-line bg-card p-3 text-body-sm text-ink"
+              />
+            </div>
+          </div>
+
           <div className="rounded-card bg-surface-muted p-4 border border-line flex flex-col gap-2">
             <span className="text-caption font-bold text-ink">Spam & Duplicate Shield</span>
             <div className="flex items-center gap-2 text-caption text-positive font-semibold">
@@ -1000,19 +1185,17 @@ function PersonalWhatsAppPortal() {
             </p>
           </div>
 
-          <div>
+          <div className="flex items-center gap-3">
             <Button
               size="sm"
-              onClick={() => {
-                setSavedNotice(true);
-                setTimeout(() => setSavedNotice(false), 2500);
-              }}
+              onClick={handleSaveAiConfig}
+              disabled={isSavingConfig}
             >
-              Save Configuration
+              {isSavingConfig ? "Saving Configuration..." : "Save Configuration & Keys"}
             </Button>
             {savedNotice && (
-              <span className="ml-3 text-caption font-semibold text-positive">
-                ✓ WhatsApp AI settings saved successfully!
+              <span className="text-caption font-semibold text-positive">
+                ✓ WhatsApp AI settings, API keys, and product knowledge saved successfully!
               </span>
             )}
           </div>

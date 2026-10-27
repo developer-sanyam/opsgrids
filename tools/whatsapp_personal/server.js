@@ -39,6 +39,7 @@ const AUTH_DIR = process.env.WA_AUTH_DIR || path.resolve(__dirname, 'auth_info_b
 const DATA_DIR = path.dirname(AUTH_DIR);
 const MESSAGES_FILE = path.join(DATA_DIR, 'messages.json');
 const STATUS_FILE = path.join(DATA_DIR, 'conversations_status.json');
+const AI_CONFIG_FILE = path.join(DATA_DIR, 'ai_config.json');
 const PORT = parseInt(process.env.WA_BRIDGE_PORT || '3100', 10);
 const logger = pino({ level: 'silent' });
 
@@ -56,6 +57,18 @@ const conversationMemory = new Map();
 
 // Conversation status tracking (open | closed)
 const conversationStatusMap = new Map();
+
+// AI Configuration state
+let aiConfig = {
+  provider: 'auto', // 'auto' | 'gemini' | 'openai'
+  geminiKey: process.env.GEMINI_API_KEY || '',
+  geminiModel: process.env.GEMINI_MODEL || 'gemini-1.5-flash',
+  openaiKey: process.env.OPENAI_API_KEY || '',
+  openaiModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+  businessName: 'OpsGrids',
+  customKnowledge: '',
+  autoReplyEnabled: true,
+};
 
 // In-memory message log (recent inbound and outbound)
 const messageLog = [
@@ -104,6 +117,33 @@ function loadPersistedState() {
     }
   } catch (err) {
     console.error('[!] Failed to load conversations_status.json:', err.message);
+  }
+
+  try {
+    if (fs.existsSync(AI_CONFIG_FILE)) {
+      const data = fs.readFileSync(AI_CONFIG_FILE, 'utf8');
+      const loaded = JSON.parse(data);
+      aiConfig = { ...aiConfig, ...loaded };
+      if (!aiConfig.geminiKey && process.env.GEMINI_API_KEY) {
+        aiConfig.geminiKey = process.env.GEMINI_API_KEY;
+      }
+      if (!aiConfig.openaiKey && process.env.OPENAI_API_KEY) {
+        aiConfig.openaiKey = process.env.OPENAI_API_KEY;
+      }
+    }
+  } catch (err) {
+    console.error('[!] Failed to load ai_config.json:', err.message);
+  }
+}
+
+function persistAiConfig() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    fs.writeFileSync(AI_CONFIG_FILE, JSON.stringify(aiConfig, null, 2), 'utf8');
+  } catch (err) {
+    console.error('[!] Failed to persist ai_config.json:', err.message);
   }
 }
 
@@ -188,26 +228,165 @@ function buildConversationsList(statusFilter) {
 
 // ─── AI Reply Engine ─────────────────────────────────────────────────────────
 
+function getRecentConversationHistory(senderPhone, limit = 8) {
+  const clean = String(senderPhone || '').replace(/[^0-9]/g, '');
+  if (!clean) return [];
+  const matches = messageLog
+    .filter((m) => {
+      const mClean = (m.phone || '').replace(/[^0-9]/g, '');
+      return mClean.endsWith(clean) || clean.endsWith(mClean);
+    })
+    .slice(0, limit)
+    .reverse();
+
+  return matches.map((m) => ({
+    role: m.direction === 'outbound' ? 'assistant' : 'user',
+    content: m.message,
+  }));
+}
+
+function generateSmartFallback(incomingText, pastHistory) {
+  const lower = incomingText.toLowerCase().trim();
+
+  // If customer is just acknowledging or agreeing
+  if (/^(ok|okay|k|thx|thanks|thank you|cool|sure|got it|noted|alright|fine)\b/.test(lower)) {
+    return "You're welcome! Feel free to ask any questions about OpsGrids software or let us know if you'd like a personalized walkthrough.";
+  }
+
+  // CRM & Sales Pipeline
+  if (
+    lower.includes('crm') ||
+    lower.includes('lead') ||
+    lower.includes('sales') ||
+    lower.includes('pipeline') ||
+    lower.includes('deal') ||
+    lower.includes('contact')
+  ) {
+    return 'OpsGrids CRM manages your complete sales pipeline, customer contacts, deal stages, and conversion tracking in one unified place. Would you like to see how it works?';
+  }
+
+  // Attendance, HRMS & People
+  if (
+    lower.includes('attendance') ||
+    lower.includes('hrms') ||
+    lower.includes('leave') ||
+    lower.includes('employee') ||
+    lower.includes('clock') ||
+    lower.includes('shift') ||
+    lower.includes('payroll')
+  ) {
+    return 'OpsGrids HRMS includes real-time mobile and biometric attendance tracking, shift scheduling, and leave approval workflows. Would you like more details?';
+  }
+
+  // Finance, Invoicing, Billing & Payments
+  if (
+    lower.includes('invoice') ||
+    lower.includes('billing') ||
+    lower.includes('payment') ||
+    lower.includes('gst') ||
+    lower.includes('tax') ||
+    lower.includes('subscription')
+  ) {
+    return 'OpsGrids Finance creates GST-compliant invoices and collects payments via UPI, cards, and net banking with automated reconciliation. Can we help set this up for your team?';
+  }
+
+  // Inventory, Stock & Operations
+  if (
+    lower.includes('inventory') ||
+    lower.includes('stock') ||
+    lower.includes('warehouse') ||
+    lower.includes('sku') ||
+    lower.includes('purchase order') ||
+    lower.includes('dispatch')
+  ) {
+    return 'OpsGrids Inventory tracks multi-warehouse stock levels, SKU movements, purchase orders, and vendor shipments in real time. Would you like a demo?';
+  }
+
+  // Engage & WhatsApp Communication
+  if (
+    lower.includes('whatsapp') ||
+    lower.includes('engage') ||
+    lower.includes('campaign') ||
+    lower.includes('email') ||
+    lower.includes('message') ||
+    lower.includes('inbox')
+  ) {
+    return 'OpsGrids Engage provides 2-way WhatsApp shared inboxes, automated AI auto-replies 24/7, and broadcast marketing campaigns with zero platform dependency.';
+  }
+
+  // Pricing, Cost & Demo
+  if (
+    lower.includes('price') ||
+    lower.includes('cost') ||
+    lower.includes('demo') ||
+    lower.includes('walkthrough') ||
+    lower.includes('trial') ||
+    lower.includes('how much')
+  ) {
+    return 'OpsGrids pricing is modular based on the features your business needs (CRM, Attendance, Invoicing, Inventory). Would you like to schedule a 10-minute live walkthrough this week?';
+  }
+
+  // Products overview
+  if (
+    lower.includes('product') ||
+    lower.includes('software') ||
+    lower.includes('feature') ||
+    lower.includes('service') ||
+    lower.includes('what do you do') ||
+    lower.includes('about')
+  ) {
+    return 'OpsGrids provides unified software for CRM, Attendance & HRMS, Invoicing, Inventory, and WhatsApp customer communication. Which solution are you most interested in?';
+  }
+
+  // Greetings
+  if (/^(hi|hello|hey|namaste|good morning|good afternoon|good evening)\b/.test(lower)) {
+    return 'Hello! Welcome to OpsGrids. We provide unified software for CRM, Attendance, Invoicing, Inventory, and WhatsApp communication. How can we help your business today?';
+  }
+
+  return 'Thank you for contacting OpsGrids! We help businesses unify CRM, Attendance, Invoicing, and Inventory on one platform. How can I assist you today?';
+}
+
 async function generateAIReply(incomingText, senderPhone) {
-  const geminiKey = process.env.GEMINI_API_KEY;
-  const openaiKey = process.env.OPENAI_API_KEY;
+  if (aiConfig.autoReplyEnabled === false) {
+    return null; // Auto-replies paused
+  }
 
-  const history = conversationMemory.get(senderPhone) || [];
-  history.push({ role: 'user', content: incomingText });
-  if (history.length > 10) history.shift();
+  const geminiKey = aiConfig.geminiKey || process.env.GEMINI_API_KEY;
+  const openaiKey = aiConfig.openaiKey || process.env.OPENAI_API_KEY;
+  const provider = aiConfig.provider || 'auto';
 
-  const systemPrompt = `You are a helpful customer operations AI assistant for OpsGrids.
-You are replying to a customer on WhatsApp.
-Keep your response short, conversational, polite, and concise (1 to 2 sentences).
-Do not use markdown headers or lengthy corporate email templates.
-OpsGrids helps companies unify CRM, Attendance, Invoicing, and Inventory on one platform.`;
+  // Build dialogue history from real conversation messages
+  const pastHistory = getRecentConversationHistory(senderPhone, 8);
+  pastHistory.push({ role: 'user', content: incomingText });
 
-  // 1. Google Gemini
-  if (geminiKey) {
+  const systemPrompt = `You are the helpful, intelligent customer operations AI assistant for ${aiConfig.businessName || 'OpsGrids'} (https://opsgrids.com).
+You are replying directly to a customer on WhatsApp.
+
+ABOUT OPSGRIDS SOFTWARE PLATFORM & PRODUCT CATALOGUE:
+OpsGrids is an integrated enterprise business operating system unifying core business operations:
+1. OpsGrids Engage: Omnichannel marketing & 2-way customer communication (WhatsApp shared inbox, 24/7 AI auto-replies, broadcast email campaigns, verified sending domains).
+2. OpsGrids CRM & Revenue: Sales pipeline tracking, lead stages, customer 360, deal lifecycle, quotations.
+3. OpsGrids HRMS & People: Real-time clock-in/out attendance tracking, shift schedules, leave approval workflows, employee directory.
+4. OpsGrids Finance & Invoicing: GST-compliant invoices, automated recurring billing, payment collection via UPI, cards, and net banking (Razorpay/Cashfree).
+5. OpsGrids Inventory & Operations: Multi-warehouse stock tracking, SKU movements, purchase orders, vendor management, shipment dispatch.
+6. OpsGrids ITSM & Support: Omnichannel customer ticketing, SLAs, incident tracking.
+7. OpsGrids Storefront: B2B/B2C digital store catalog, order checkout, real-time inventory synchronization.
+
+${aiConfig.customKnowledge ? `CUSTOM BUSINESS & PRODUCT KNOWLEDGE:\n${aiConfig.customKnowledge}\n` : ''}
+
+CRITICAL GUIDELINES:
+- Keep your response conversational, polite, helpful, and concise (1 to 3 sentences maximum — this is a WhatsApp message).
+- DO NOT use markdown headers (###), bullet points walls, or email salutations ("Dear Customer", "Sincerely").
+- Answer the customer's specific question using the product catalogue above and previous dialogue history.
+- Never repeat the same introductory greeting if the customer is already in an ongoing conversation.
+- If asked for a demo, pricing, or onboarding, invite them for a quick walkthrough or mention they can visit https://opsgrids.com.`;
+
+  // 1. Google Gemini (if selected or auto)
+  if ((provider === 'auto' || provider === 'gemini') && geminiKey) {
     try {
-      const model = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+      const model = aiConfig.geminiModel || process.env.GEMINI_MODEL || 'gemini-1.5-flash';
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
-      const contents = history.map((h) => ({
+      const contents = pastHistory.map((h) => ({
         role: h.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: h.content }],
       }));
@@ -226,21 +405,22 @@ OpsGrids helps companies unify CRM, Attendance, Invoicing, and Inventory on one 
         const data = await res.json();
         const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
         if (reply) {
-          history.push({ role: 'assistant', content: reply });
-          conversationMemory.set(senderPhone, history);
           return reply;
         }
+      } else {
+        const errBody = await res.text();
+        console.error('[!] Gemini API error:', res.status, errBody);
       }
     } catch (err) {
       console.error('[!] Gemini API call failed:', err.message);
     }
   }
 
-  // 2. OpenAI
-  if (openaiKey) {
+  // 2. OpenAI ChatGPT (if selected or auto fallback)
+  if ((provider === 'auto' || provider === 'openai') && openaiKey) {
     try {
-      const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-      const messages = [{ role: 'system', content: systemPrompt }, ...history];
+      const model = aiConfig.openaiModel || process.env.OPENAI_MODEL || 'gpt-4o-mini';
+      const messages = [{ role: 'system', content: systemPrompt }, ...pastHistory];
 
       const res = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
@@ -255,22 +435,19 @@ OpsGrids helps companies unify CRM, Attendance, Invoicing, and Inventory on one 
         const data = await res.json();
         const reply = data?.choices?.[0]?.message?.content?.trim();
         if (reply) {
-          history.push({ role: 'assistant', content: reply });
-          conversationMemory.set(senderPhone, history);
           return reply;
         }
+      } else {
+        const errBody = await res.text();
+        console.error('[!] OpenAI API error:', res.status, errBody);
       }
     } catch (err) {
       console.error('[!] OpenAI API call failed:', err.message);
     }
   }
 
-  // 3. Built-in contextual fallback
-  const fallback =
-    'Hi! Thank you for contacting OpsGrids. OpsGrids unifies CRM, attendance, and inventory under one roof. We received your note and will follow up shortly.';
-  history.push({ role: 'assistant', content: fallback });
-  conversationMemory.set(senderPhone, history);
-  return fallback;
+  // 3. Intelligent product-aware fallback
+  return generateSmartFallback(incomingText, pastHistory);
 }
 
 // ─── Baileys Connection ──────────────────────────────────────────────────────
@@ -806,6 +983,70 @@ const server = http.createServer(async (req, res) => {
       ok: true,
       message: outbound,
       sentLive,
+    });
+    return;
+  }
+
+  // GET /api/whatsapp-personal/ai-config
+  if (pathname === '/api/whatsapp-personal/ai-config' && req.method === 'GET') {
+    const geminiKey = aiConfig.geminiKey || process.env.GEMINI_API_KEY || '';
+    const openaiKey = aiConfig.openaiKey || process.env.OPENAI_API_KEY || '';
+    sendJson(res, req, 200, {
+      provider: aiConfig.provider,
+      hasGeminiKey: Boolean(geminiKey),
+      geminiKeyMasked: geminiKey
+        ? `${geminiKey.slice(0, 6)}...${geminiKey.slice(-4)}`
+        : '',
+      geminiModel: aiConfig.geminiModel,
+      hasOpenaiKey: Boolean(openaiKey),
+      openaiKeyMasked: openaiKey
+        ? `${openaiKey.slice(0, 4)}...${openaiKey.slice(-4)}`
+        : '',
+      openaiModel: aiConfig.openaiModel,
+      businessName: aiConfig.businessName,
+      customKnowledge: aiConfig.customKnowledge,
+      autoReplyEnabled: aiConfig.autoReplyEnabled,
+    });
+    return;
+  }
+
+  // POST /api/whatsapp-personal/ai-config
+  if (pathname === '/api/whatsapp-personal/ai-config' && req.method === 'POST') {
+    const body = await parseBody(req);
+    if (body.provider !== undefined) aiConfig.provider = body.provider;
+    if (typeof body.geminiKey === 'string' && body.geminiKey.trim() !== '') {
+      aiConfig.geminiKey = body.geminiKey.trim();
+    }
+    if (typeof body.geminiModel === 'string' && body.geminiModel.trim() !== '') {
+      aiConfig.geminiModel = body.geminiModel.trim();
+    }
+    if (typeof body.openaiKey === 'string' && body.openaiKey.trim() !== '') {
+      aiConfig.openaiKey = body.openaiKey.trim();
+    }
+    if (typeof body.openaiModel === 'string' && body.openaiModel.trim() !== '') {
+      aiConfig.openaiModel = body.openaiModel.trim();
+    }
+    if (typeof body.businessName === 'string') {
+      aiConfig.businessName = body.businessName.trim();
+    }
+    if (typeof body.customKnowledge === 'string') {
+      aiConfig.customKnowledge = body.customKnowledge.trim();
+    }
+    if (body.autoReplyEnabled !== undefined) {
+      aiConfig.autoReplyEnabled = Boolean(body.autoReplyEnabled);
+    }
+
+    persistAiConfig();
+    console.log(
+      `[+] WhatsApp AI configuration saved: Provider=${aiConfig.provider}, GeminiKey=${Boolean(aiConfig.geminiKey)}, OpenAIKey=${Boolean(aiConfig.openaiKey)}, Business="${aiConfig.businessName}"`,
+    );
+
+    sendJson(res, req, 200, {
+      ok: true,
+      message: 'WhatsApp AI settings and product knowledge updated successfully.',
+      hasGeminiKey: Boolean(aiConfig.geminiKey || process.env.GEMINI_API_KEY),
+      hasOpenaiKey: Boolean(aiConfig.openaiKey || process.env.OPENAI_API_KEY),
+      provider: aiConfig.provider,
     });
     return;
   }

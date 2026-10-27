@@ -1047,3 +1047,63 @@ export async function simulateInboundWhatsApp(phone?: string, message?: string):
     body: JSON.stringify({ phone, message }),
   });
 }
+
+export interface WhatsAppAiConfig {
+  provider: "auto" | "gemini" | "openai";
+  hasGeminiKey: boolean;
+  geminiKeyMasked: string;
+  geminiModel: string;
+  hasOpenaiKey: boolean;
+  openaiKeyMasked: string;
+  openaiModel: string;
+  businessName: string;
+  customKnowledge: string;
+  autoReplyEnabled: boolean;
+}
+
+/** Fetch WhatsApp AI Auto-Responder configuration and active keys. */
+export async function getWhatsAppAiConfig(): Promise<WhatsAppAiConfig> {
+  try {
+    const res = await fetch("/api/whatsapp-personal/ai-config");
+    if (res.ok) return await res.json();
+  } catch {
+    // Offline
+  }
+  return {
+    provider: "auto",
+    hasGeminiKey: false,
+    geminiKeyMasked: "",
+    geminiModel: "gemini-1.5-flash",
+    hasOpenaiKey: false,
+    openaiKeyMasked: "",
+    openaiModel: "gpt-4o-mini",
+    businessName: "OpsGrids",
+    customKnowledge: "",
+    autoReplyEnabled: true,
+  };
+}
+
+export interface SaveWhatsAppAiConfigIn {
+  provider?: "auto" | "gemini" | "openai" | undefined;
+  geminiKey?: string | undefined;
+  geminiModel?: string | undefined;
+  openaiKey?: string | undefined;
+  openaiModel?: string | undefined;
+  businessName?: string | undefined;
+  customKnowledge?: string | undefined;
+  autoReplyEnabled?: boolean | undefined;
+}
+
+/** Save WhatsApp AI Model Provider API keys, model, and product knowledge. */
+export async function saveWhatsAppAiConfig(
+  input: SaveWhatsAppAiConfigIn,
+): Promise<{ ok: boolean; message: string }> {
+  const res = await fetch("/api/whatsapp-personal/ai-config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (res.ok) return await res.json();
+  const err = (await res.json().catch(() => ({}))) as { error?: string };
+  throw new Error(err.error || "Failed to save AI configuration");
+}
