@@ -918,6 +918,17 @@ async function initWhatsAppSocket() {
           status: 'received',
         });
 
+        // Customer message reopens the conversation if it was closed
+        const cleanCustomerDigits = (displayPhone || '').replace(/[^0-9]/g, '');
+        if (cleanCustomerDigits) {
+          const customerConvId = 'wa-conv-' + cleanCustomerDigits;
+          if (conversationStatusMap.get(customerConvId) === 'closed') {
+            conversationStatusMap.delete(customerConvId);
+            persistConversationStatus();
+            console.log(`[📂 Inbound Reopened] Customer message reopened ${customerConvId}.`);
+          }
+        }
+
         // Generate AI reply
         try {
           const replyText = await generateAIReply(text, rawSender);
@@ -1259,6 +1270,10 @@ const server = http.createServer(async (req, res) => {
     };
     pushMessage(outbound);
 
+    // A reply reopens the conversation if it was closed
+    conversationStatusMap.delete(convId);
+    persistConversationStatus();
+
     // Operator manual reply activates human takeover and pauses AI
     markOperatorActive(convId);
 
@@ -1267,6 +1282,19 @@ const server = http.createServer(async (req, res) => {
       state: outbound.status,
       conversation_id: convId,
     });
+    return;
+  }
+
+  // POST /api/whatsapp-personal/conversations/:id/reopen
+  const convReopenMatch = pathname.match(/^\/api\/whatsapp-personal\/conversations\/([^/]+)\/reopen$/);
+  if (convReopenMatch && req.method === 'POST') {
+    const convId = decodeURIComponent(convReopenMatch[1]);
+    conversationStatusMap.delete(convId);
+    persistConversationStatus();
+    console.log(`[📂 Conversation Reopened] ${convId} is now open.`);
+    const items = buildConversationsList();
+    const found = items.find((c) => c.id === convId);
+    sendJson(res, req, 200, found || { id: convId, status: 'open' });
     return;
   }
 

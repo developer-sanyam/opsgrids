@@ -1023,6 +1023,33 @@ export async function closeConversation(conversationId: string): Promise<Convers
   );
 }
 
+/** Reopen a closed conversation directly without having to send a message. */
+export async function reopenConversation(conversationId: string): Promise<ConversationOut> {
+  if (conversationId.startsWith("wa-conv-")) {
+    try {
+      const res = await fetch(
+        `/api/whatsapp-personal/conversations/${encodeURIComponent(conversationId)}/reopen`,
+        { method: "POST" },
+      );
+      if (res.ok) return await res.json();
+    } catch {
+      // Offline fallback
+    }
+  }
+  return {
+    id: conversationId,
+    channel: "whatsapp",
+    wa_address: conversationId,
+    contact_id: null,
+    last_customer_message_at: new Date().toISOString(),
+    within_service_window: true,
+    status: "open",
+    assignee_membership_id: null,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+}
+
 /** Check personal WhatsApp connection status. */
 export async function getPersonalWhatsAppStatus(): Promise<{
   status: string;

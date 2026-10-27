@@ -15,6 +15,7 @@ import {
   listConversationMessages,
   listWhatsAppTemplates,
   pauseAiForConversation,
+  reopenConversation,
   replyToConversation,
   resumeAiForConversation,
 } from "@/api/client";
@@ -267,9 +268,6 @@ export function ConversationThread({
   const [actionFailure, setActionFailure] = useState<string | null>(null);
   const [actionPending, setActionPending] = useState(false);
 
-  // There is no `POST .../reopen`: a closed conversation reopens itself the moment either side
-  // writes to it again — a reply from here, or the customer's next message through the webhook —
-  // so the only explicit action this screen offers is closing one that is still open.
   async function close() {
     if (actionPending) return;
     setActionPending(true);
@@ -277,6 +275,21 @@ export function ConversationThread({
     try {
       await closeConversation(conversation.id);
       announce("Conversation closed.");
+      onChanged();
+    } catch (caught) {
+      setActionFailure(failureMessage(caught));
+    } finally {
+      setActionPending(false);
+    }
+  }
+
+  async function reopen() {
+    if (actionPending) return;
+    setActionPending(true);
+    setActionFailure(null);
+    try {
+      await reopenConversation(conversation.id);
+      announce("Conversation reopened.");
       onChanged();
     } catch (caught) {
       setActionFailure(failureMessage(caught));
@@ -332,10 +345,23 @@ export function ConversationThread({
             </Button>
           </Can>
         ) : (
-          <span className="inline-flex items-center gap-1.5 text-xs text-muted">
-            <RefreshIcon className="size-3.5" aria-hidden />
-            Closed — a reply reopens it
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 text-xs text-muted">
+              <RefreshIcon className="size-3.5" aria-hidden />
+              Closed — a reply reopens it
+            </span>
+            <Can permission="engage.inbox.conversation.write" scope="ORG">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void reopen()}
+                disabled={actionPending}
+                leadingIcon={<RefreshIcon className="size-4" />}
+              >
+                Reopen
+              </Button>
+            </Can>
+          </div>
         )}
       </div>
 
