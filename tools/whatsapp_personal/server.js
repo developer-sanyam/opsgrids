@@ -82,7 +82,7 @@ function isOperatorActive(convId) {
 let aiConfig = {
   provider: 'auto', // 'auto' | 'gemini' | 'openai'
   geminiKey: process.env.GEMINI_API_KEY || '',
-  geminiModel: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+  geminiModel: process.env.GEMINI_MODEL || 'gemini-flash-latest',
   openaiKey: process.env.OPENAI_API_KEY || '',
   openaiModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
   businessName: 'OpsGrids',
@@ -715,8 +715,8 @@ CRITICAL RULES:
   // 1. Google Gemini (if selected or auto)
   if ((provider === 'auto' || provider === 'gemini') && geminiKey) {
     try {
-      let model = aiConfig.geminiModel || process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-      if (model === 'gemini-1.5-flash') model = 'gemini-2.5-flash';
+      let model = aiConfig.geminiModel || process.env.GEMINI_MODEL || 'gemini-flash-latest';
+      if (model === 'gemini-1.5-flash' || model === 'gemini-2.5-flash') model = 'gemini-flash-latest';
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
       const contents = pastHistory.map((h) => ({
         role: h.role === 'assistant' ? 'model' : 'user',
@@ -1470,8 +1470,8 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       try {
-        let testModel = aiConfig.geminiModel || 'gemini-2.5-flash';
-        if (testModel === 'gemini-1.5-flash') testModel = 'gemini-2.5-flash';
+        let testModel = aiConfig.geminiModel || 'gemini-flash-latest';
+        if (testModel === 'gemini-1.5-flash' || testModel === 'gemini-2.5-flash') testModel = 'gemini-flash-latest';
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${testModel}:generateContent?key=${testGeminiKey}`;
         const resp = await fetch(url, {
           method: 'POST',
