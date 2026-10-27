@@ -1090,6 +1090,7 @@ export interface WhatsAppAiConfig {
   autoReplyMode: "all_inbound" | "welcome_only" | "paused";
   humanTakeoverMinutes: number;
   autoReplyEnabled: boolean;
+  lastAiError?: string | null;
 }
 
 /** Fetch WhatsApp AI Auto-Responder configuration and active keys. */
@@ -1159,4 +1160,22 @@ export async function pauseAiForConversation(conversationId: string): Promise<vo
   await fetch(`/api/whatsapp-personal/conversations/${encodeURIComponent(conversationId)}/pause-ai`, {
     method: "POST",
   });
+}
+
+/** Test connectivity and credentials with Google Gemini or OpenAI. */
+export async function testWhatsAppAi(input: {
+  provider: "auto" | "gemini" | "openai";
+  geminiKey?: string | undefined;
+  openaiKey?: string | undefined;
+}): Promise<{ ok: boolean; message: string }> {
+  try {
+    const res = await fetch("/api/whatsapp-personal/test-ai", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    return await res.json();
+  } catch (err: unknown) {
+    return { ok: false, message: (err as Error)?.message || "Failed to test AI connection." };
+  }
 }

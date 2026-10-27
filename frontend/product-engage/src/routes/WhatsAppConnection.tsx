@@ -22,6 +22,7 @@ import {
   getWhatsAppConnection,
   replaceWhatsApp,
   saveWhatsAppAiConfig,
+  testWhatsAppAi,
 } from "@/api/client";
 import type { WhatsAppConnectionIn, WhatsAppConnectionOut } from "@/api/types";
 import { failureMessage } from "@/lib/errors";
@@ -395,6 +396,9 @@ function PersonalWhatsAppPortal() {
   const [showOpenaiKey, setShowOpenaiKey] = useState(false);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
+  const [lastAiError, setLastAiError] = useState<string | null>(null);
+  const [isTestingAi, setIsTestingAi] = useState(false);
+  const [testAiResult, setTestAiResult] = useState<{ ok: boolean; message: string } | null>(null);
 
   useEffect(() => {
     getWhatsAppAiConfig().then((cfg) => {
@@ -409,8 +413,34 @@ function PersonalWhatsAppPortal() {
       setAutoReplyMode(cfg.autoReplyMode || "welcome_only");
       setHumanTakeoverMinutes(cfg.humanTakeoverMinutes || 30);
       setCustomKnowledge(cfg.customKnowledge || "");
+      setLastAiError(cfg.lastAiError || null);
     });
   }, []);
+
+  const handleTestAi = async () => {
+    setIsTestingAi(true);
+    setTestAiResult(null);
+    try {
+      const res = await testWhatsAppAi({
+        provider: aiProvider,
+        geminiKey: geminiKeyInput.trim() || undefined,
+        openaiKey: openaiKeyInput.trim() || undefined,
+      });
+      setTestAiResult(res);
+      if (res.ok) {
+        setLastAiError(null);
+      } else {
+        setLastAiError(res.message);
+      }
+    } catch (err: unknown) {
+      setTestAiResult({
+        ok: false,
+        message: (err as Error)?.message || "Failed to test AI connection.",
+      });
+    } finally {
+      setIsTestingAi(false);
+    }
+  };
 
   const handleSaveAiConfig = async () => {
     setIsSavingConfig(true);
@@ -1034,6 +1064,34 @@ function PersonalWhatsAppPortal() {
             </p>
           </div>
 
+          {lastAiError && (
+            <InlineAlert tone="danger" title="AI Provider Notice">
+              <div className="flex flex-col gap-1">
+                <span className="font-medium text-ink">{lastAiError}</span>
+                <span className="text-caption text-muted">
+                  Tip: If your OpenAI balance is exhausted (HTTP 429), you can switch the AI Model Provider to <strong>Google Gemini</strong> and provide a free API key from{" "}
+                  <a
+                    href="https://aistudio.google.com/app/apikey"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-accent underline font-semibold"
+                  >
+                    Google AI Studio
+                  </a>.
+                </span>
+              </div>
+            </InlineAlert>
+          )}
+
+          {testAiResult && (
+            <InlineAlert
+              tone={testAiResult.ok ? "success" : "danger"}
+              title={testAiResult.ok ? "AI Connection Verified" : "AI Connection Test Result"}
+            >
+              {testAiResult.message}
+            </InlineAlert>
+          )}
+
           {/* 1. Client Company Identity & Greeting */}
           <div className="flex flex-col gap-4 rounded-card bg-surface-muted p-4 border border-line">
             <h4 className="text-body-sm font-bold text-ink">Company & Client Profile</h4>
@@ -1257,13 +1315,21 @@ function PersonalWhatsAppPortal() {
             </p>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <Button
               size="sm"
               onClick={handleSaveAiConfig}
               disabled={isSavingConfig}
             >
               {isSavingConfig ? "Saving Configuration..." : "Save Configuration & Keys"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleTestAi}
+              disabled={isTestingAi}
+            >
+              {isTestingAi ? "Testing AI Key..." : "Test AI Connection"}
             </Button>
             {savedNotice && (
               <span className="text-caption font-semibold text-positive">

@@ -94,6 +94,9 @@ let aiConfig = {
   autoReplyEnabled: true,
 };
 
+// Tracks last AI API error (e.g. OpenAI quota 429) to display diagnostics in portal
+let lastAiError = null;
+
 // In-memory message log (recent inbound and outbound)
 const messageLog = [
   {
@@ -556,6 +559,12 @@ function generateSmartFallback(incomingText, pastHistory, senderPhone) {
     lower.includes('service') ||
     lower.includes('what do you do') ||
     lower.includes('what do you sell') ||
+    lower.includes('what else') ||
+    lower.includes('anything else') ||
+    lower.includes('any thing else') ||
+    lower.includes('provide') ||
+    lower.includes('offer') ||
+    lower.includes('solution') ||
     lower.includes('catalog') ||
     lower.includes('catalogue') ||
     lower.includes('all the products') ||
@@ -585,7 +594,18 @@ function generateSmartFallback(incomingText, pastHistory, senderPhone) {
     return `Thank you for inquiring about ${company} pricing. Please let us know your requirements so we can provide a tailored quote.`;
   }
 
-  // 8. Greetings
+  // 8. Polite small talk ("how are you", "how are you doing")
+  if (
+    lower.includes('how are you') ||
+    lower.includes('how are u') ||
+    lower.includes('how do you do') ||
+    lower.includes("how's it going") ||
+    lower.includes('how is it going')
+  ) {
+    return `We're doing great, thank you! How can our team at ${company} assist you today?`;
+  }
+
+  // 9. Greetings
   if (/^(hi|hello|hey|namaste|good morning|good afternoon|good evening)\b/.test(lower)) {
     const greeted = hasBeenGreetedRecently(senderPhone, 12);
     if (greeted) {
@@ -715,12 +735,20 @@ CRITICAL RULES:
       if (res.ok) {
         const data = await res.json();
         reply = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
+        if (reply) lastAiError = null;
       } else {
         const errBody = await res.text();
         console.error('[!] Gemini API error:', res.status, errBody);
+        try {
+          const parsed = JSON.parse(errBody);
+          lastAiError = `Gemini (${res.status}): ${parsed?.error?.message || errBody}`;
+        } catch {
+          lastAiError = `Gemini (${res.status}): ${errBody}`;
+        }
       }
     } catch (err) {
       console.error('[!] Gemini API call failed:', err.message);
+      lastAiError = `Gemini call failed: ${err.message}`;
     }
   }
 
@@ -742,12 +770,20 @@ CRITICAL RULES:
       if (res.ok) {
         const data = await res.json();
         reply = data?.choices?.[0]?.message?.content?.trim() || null;
+        if (reply) lastAiError = null;
       } else {
         const errBody = await res.text();
         console.error('[!] OpenAI API error:', res.status, errBody);
+        try {
+          const parsed = JSON.parse(errBody);
+          lastAiError = `OpenAI (${res.status}): ${parsed?.error?.message || errBody}`;
+        } catch {
+          lastAiError = `OpenAI (${res.status}): ${errBody}`;
+        }
       }
     } catch (err) {
       console.error('[!] OpenAI API call failed:', err.message);
+      lastAiError = `OpenAI call failed: ${err.message}`;
     }
   }
 
@@ -769,12 +805,11 @@ CRITICAL RULES:
     } else if (/^(yes|yeah|sure|ok|okay)\b/.test(lowerIn)) {
       reply = `Awesome! Please share your preferred day/time and email address, and our specialist will connect with you.`;
     } else {
-      reply = null;
+      reply = `We're here to help! Could you let us know what specific questions you have about ${company}, or would you like to schedule a quick walkthrough?`;
     }
 
     if (reply && isDuplicateOrRecentOutbound(senderPhone, reply)) {
-      console.log(`[ℹ️ Suppressed] Progressive alternative also recently sent to ${cleanPhone}.`);
-      return null;
+      reply = `Feel free to ask any questions about ${company}'s solutions, or let us know if you'd like a team member to call you directly.`;
     }
   }
 
@@ -1400,6 +1435,125 @@ const server = http.createServer(async (req, res) => {
       autoReplyMode: aiConfig.autoReplyMode || 'welcome_only',
       humanTakeoverMinutes: aiConfig.humanTakeoverMinutes || 30,
       autoReplyEnabled: aiConfig.autoReplyMode !== 'paused',
+      lastAiError: lastAiError,
+    });
+    return;
+  }
+
+  // POST /api/whatsapp-personal/test-ai
+  if (pathname === '/api/whatsapp-personal/test-ai' && req.method === 'POST') {
+    const body = await parseBody(req);
+    const targetProvider = body.provider || aiConfig.provider || 'auto';
+    const testGeminiKey =
+      (body.geminiKey && body.geminiKey.trim()) ||
+      aiConfig.geminiKey ||
+      process.env.GEMINI_API_KEY ||
+      '';
+    const testOpenaiKey =
+      (body.openaiKey && body.openaiKey.trim()) ||
+      aiConfig.openaiKey ||
+      process.env.OPENAI_API_KEY ||
+      '';
+
+    if (targetProvider === 'gemini' || (targetProvider === 'auto' && testGeminiKey)) {
+      if (!testGeminiKey) {
+        sendJson(res, req, 200, {
+          ok: false,
+          message:
+            'Google Gemini API key is missing. Get a free key at aistudio.google.com and paste it here.',
+        });
+        return;
+      }
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${testGeminiKey}`;
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: 'Hello' }] }],
+            generationConfig: { maxOutputTokens: 5 },
+          }),
+        });
+        if (resp.ok) {
+          lastAiError = null;
+          sendJson(res, req, 200, {
+            ok: true,
+            message: '✓ Google Gemini 1.5 Flash is active and responding successfully!',
+          });
+          return;
+        } else {
+          const errText = await resp.text();
+          let msg = errText;
+          try {
+            const parsed = JSON.parse(errText);
+            msg = parsed?.error?.message || errText;
+          } catch {}
+          lastAiError = `Gemini (${resp.status}): ${msg}`;
+          sendJson(res, req, 200, {
+            ok: false,
+            message: `Gemini API returned error (${resp.status}): ${msg}`,
+          });
+          return;
+        }
+      } catch (err) {
+        sendJson(res, req, 200, { ok: false, message: `Gemini test failed: ${err.message}` });
+        return;
+      }
+    }
+
+    if (targetProvider === 'openai' || (targetProvider === 'auto' && testOpenaiKey)) {
+      if (!testOpenaiKey) {
+        sendJson(res, req, 200, {
+          ok: false,
+          message:
+            'OpenAI API key is missing. Enter a key from platform.openai.com/api-keys.',
+        });
+        return;
+      }
+      try {
+        const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${testOpenaiKey}`,
+          },
+          body: JSON.stringify({
+            model: 'gpt-4o-mini',
+            messages: [{ role: 'user', content: 'hi' }],
+            max_tokens: 5,
+          }),
+        });
+        if (resp.ok) {
+          lastAiError = null;
+          sendJson(res, req, 200, {
+            ok: true,
+            message: '✓ OpenAI (gpt-4o-mini) is active and responding successfully!',
+          });
+          return;
+        } else {
+          const errText = await resp.text();
+          let msg = errText;
+          try {
+            const parsed = JSON.parse(errText);
+            msg = parsed?.error?.message || errText;
+          } catch {}
+          lastAiError = `OpenAI (${resp.status}): ${msg}`;
+          sendJson(res, req, 200, {
+            ok: false,
+            message: `OpenAI API returned error (${resp.status}): ${msg}`,
+          });
+          return;
+        }
+      } catch (err) {
+        sendJson(res, req, 200, { ok: false, message: `OpenAI test failed: ${err.message}` });
+        return;
+      }
+    }
+
+    sendJson(res, req, 200, {
+      ok: false,
+      message:
+        'No API key provided. Please enter a Google Gemini API key or OpenAI API key to test.',
     });
     return;
   }
